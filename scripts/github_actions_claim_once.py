@@ -1,5 +1,6 @@
 import json
 import os
+import selectors
 import subprocess
 import sys
 import time
@@ -84,27 +85,29 @@ def main() -> int:
         deadline = time.monotonic() + timeout_seconds
         timed_out = False
         assert proc.stdout is not None
-        while True:
-            line = proc.stdout.readline()
-            if line:
-                chunks.append(line)
-                print(line, end="", flush=True)
-
-            if proc.poll() is not None:
-                remainder = proc.stdout.read()
-                if remainder:
-                    chunks.append(remainder)
-                    print(remainder, end="", flush=True)
-                break
+        selector = selectors.DefaultSelector()
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        while proc.poll() is None:
+            for key, _ in selector.select(timeout=0.2):
+                line = key.fileobj.readline()
+                if line:
+                    chunks.append(line)
+                    print(line, end="", flush=True)
 
             if time.monotonic() > deadline:
                 timed_out = True
+                timeout_msg = f"FINAL_ERROR:timeout after {timeout_seconds}s\n"
+                chunks.append(timeout_msg)
+                print(timeout_msg, end="", flush=True)
                 proc.kill()
-                print(f"FINAL_ERROR:timeout after {timeout_seconds}s", flush=True)
+                proc.wait()
                 break
 
-            if not line:
-                time.sleep(0.2)
+        remainder = proc.stdout.read()
+        if remainder:
+            chunks.append(remainder)
+            print(remainder, end="", flush=True)
+        selector.close()
 
         output = "".join(chunks)
         print("::endgroup::")
