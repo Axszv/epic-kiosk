@@ -119,6 +119,9 @@ class EpicSettings(AgentConfig):
 
     ENABLE_APSCHEDULER: bool = Field(default=True)
     TASK_TIMEOUT_SECONDS: int = Field(default=900)
+    LOGIN_RESULT_TIMEOUT_SECONDS: int = Field(
+        default_factory=lambda: int(os.getenv("LOGIN_RESULT_TIMEOUT_SECONDS", "180"))
+    )
     REDIS_URL: str = Field(default="redis://redis:6379/0")
     CELERY_WORKER_CONCURRENCY: int = Field(default=1)
     CELERY_TASK_TIME_LIMIT: int = Field(default=1200)

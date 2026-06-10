@@ -284,7 +284,7 @@ class EpicAgent:
 
         # 尝试获取登录状态，增加超时处理
         try:
-            status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=10000)
+            status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
         except Exception as e:
             # 如果超时，可能还在修正页面或有其他问题
             current_url = self.page.url

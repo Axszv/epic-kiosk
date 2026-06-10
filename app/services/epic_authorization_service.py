@@ -226,7 +226,10 @@ class EpicAuthorization:
                     if result.get("accountId"):
                         captcha_task.cancel()
                         logger.success("✅ 登录成功")
-                        await asyncio.wait_for(self._handle_right_account_validation(), timeout=60)
+                        await asyncio.wait_for(
+                            self._handle_right_account_validation(),
+                            timeout=settings.LOGIN_RESULT_TIMEOUT_SECONDS,
+                        )
                         logger.success("✅ 账号验证成功")
                         return (True, ErrorType.SUCCESS)
             except asyncio.CancelledError:
@@ -234,7 +237,10 @@ class EpicAuthorization:
 
             # 第二阶段：继续等待验证码处理后的结果（最多再等 60 秒）
             try:
-                result = await asyncio.wait_for(self._is_login_success_signal.get(), timeout=60)
+                result = await asyncio.wait_for(
+                    self._is_login_success_signal.get(),
+                    timeout=settings.LOGIN_RESULT_TIMEOUT_SECONDS,
+                )
 
                 if result.get("error"):
                     error_code = result.get("code", "")
@@ -249,7 +255,10 @@ class EpicAuthorization:
                         return (False, ErrorType.UNKNOWN)
 
                 logger.success("✅ 登录成功")
-                await asyncio.wait_for(self._handle_right_account_validation(), timeout=60)
+                await asyncio.wait_for(
+                    self._handle_right_account_validation(),
+                    timeout=settings.LOGIN_RESULT_TIMEOUT_SECONDS,
+                )
                 logger.success("✅ 账号验证成功")
                 return (True, ErrorType.SUCCESS)
 
@@ -484,7 +493,7 @@ class EpicAuthorization:
 
             # 检查登录状态（增加超时处理）
             try:
-                status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=15000)
+                status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
             except Exception as e:
                 # 超时时检查是否在修正页面
                 current_url = self.page.url
