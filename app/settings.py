@@ -54,6 +54,17 @@ class EpicSettings(AgentConfig):
         default_factory=lambda: os.getenv("API_BASE_URL") or os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"),
         description="OpenAI-compatible API base URL",
     )
+    API_USER_AGENT: str = Field(
+        default_factory=lambda: os.getenv(
+            "API_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+        ),
+        description="User-Agent for OpenAI-compatible API requests",
+    )
+    API_SERVICE_TIER: str = Field(
+        default_factory=lambda: os.getenv("API_SERVICE_TIER", "fast"),
+        description="Optional service_tier for OpenAI-compatible API requests",
+    )
 
     # === 全局统一模型配置 ===
     # 兼容旧配置（GEMINI_MODEL 作为默认）
@@ -328,7 +339,8 @@ def _apply_openai_compatible_patch():
 
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": settings.API_USER_AGENT,
             }
 
             # 构建消息列表
@@ -365,6 +377,9 @@ JSON Schema:
                 "max_tokens": max_tokens,
                 # 注意：不使用 response_format，部分视觉模型不支持
             }
+
+            if settings.API_SERVICE_TIER:
+                payload["service_tier"] = settings.API_SERVICE_TIER
 
             retryable_statuses = {408, 409, 429, 500, 502, 503, 504}
             max_attempts = int(os.getenv("API_MAX_RETRIES", "3"))
