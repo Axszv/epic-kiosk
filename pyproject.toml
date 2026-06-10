@@ -1,0 +1,53 @@
+[project]
+name = "epic-kiosk"
+version = "0.4.1"
+dependencies = [
+    "apscheduler>=3.11.0",
+    "pydantic-settings>=2.8.1",
+    "celery[redis]>=5.4.0",
+    "hcaptcha-challenger[camoufox]>=0.18.13",
+    "openai", # === [新增] 用于通过 AiHubMix 中转调用 Gemini ===
+]
+requires-python = ">=3.12,<=3.13"
+authors = [
+    { name = "一万", email = "10000ge10000@gmail.com" }
+]
+description = "🍷 Gracefully claim weekly free games from Epic Store."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+keywords = ["epic", "epic-kiosk", "epic-games-store"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/10000ge10000/epic-kiosk"
+Documentation = "https://github.com/10000ge10000/epic-kiosk"
+Repository = "https://github.com/10000ge10000/epic-kiosk.git"
+Issues = "https://github.com/10000ge10000/epic-kiosk/issues"
+Changelog = "https://github.com/10000ge10000/epic-kiosk/blob/main/CHANGELOG.md"
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312", "py313"]
+skip-string-normalization = true
+
+
+[dependency-groups]
+dev = [
+    "black>=25.1.0",
+    "celery-types>=0.23.0",
+    "pytest>=8.3.5",
+    "ruff>=0.12.3",
+]

@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Epic 自动驾驶</title>
+    <!-- Favicon - 多尺寸支持 -->
+    <link rel="icon" type="image/png" sizes="32x32" href="https://static-assets-prod.unrealengine.com/account-portal/static/epic-favicon-96x96.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="https://static-assets-prod.unrealengine.com/account-portal/static/epic-favicon-96x96.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="https://static-assets-prod.unrealengine.com/account-portal/static/epic_logo.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600;800&display=swap');
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        #particles-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .content-wrapper {
+            position: relative;
+            z-index: 1;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+        }
+
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .game-card:hover {
+            transform: translateY(-5px) scale(1.03);
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+            border-color: rgba(96, 165, 250, 0.6);
+            transition: all 0.3s;
+        }
+
+        .terminal {
+            font-family: 'JetBrains Mono', monospace;
+            background: #000;
+            border: 1px solid #333;
+        }
+        .terminal-text {
+            color: #4ade80;
+            text-shadow: 0 0 5px rgba(74, 222, 128, 0.5);
+        }
+
+        .fade-in { animation: fadeIn 0.4s ease-out forwards; opacity: 0; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+        .modal-enter { animation: modalIn 0.25s ease-out forwards; }
+        @keyframes modalIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+        #toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .toast {
+            padding: 14px 20px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            animation: toastIn 0.25s ease-out forwards;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            max-width: 360px;
+        }
+
+        @keyframes toastIn { from { opacity: 0; transform: translateX(80px); } to { opacity: 1; transform: translateX(0); } }
+        .toast.hiding { animation: toastOut 0.25s ease-out forwards; }
+        @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(80px); } }
+        .toast-success { background: linear-gradient(135deg, #059669, #10b981); color: white; }
+        .toast-error { background: linear-gradient(135deg, #dc2626, #ef4444); color: white; }
+        .toast-warning { background: linear-gradient(135deg, #d97706, #f59e0b); color: white; }
+        .toast-info { background: linear-gradient(135deg, #2563eb, #3b82f6); color: white; }
+
+        .skeleton {
+            background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 8px;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* 统计卡片 - 更紧凑的横向布局 */
+        .stats-bar {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem 1.5rem;
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(139, 92, 246, 0.08));
+            border: 1px solid rgba(59, 130, 246, 0.15);
+            border-radius: 14px;
+            transition: all 0.2s;
+        }
+        .stat-item:hover { border-color: rgba(59, 130, 246, 0.3); transform: translateY(-2px); }
+        .stat-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .stat-label { font-size: 14px; color: #94a3b8; white-space: nowrap; }
+        .stat-value { font-size: 24px; font-weight: 700; }
+
+        .announcement-bar {
+            background: linear-gradient(90deg, rgba(59, 130, 246, 0.15), rgba(139, 92, 246, 0.15));
+            border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+        }
+
+        .free-game-card {
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s;
+        }
+        .free-game-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+        }
+        .free-game-card::before {
+            content: 'FREE';
+            position: absolute;
+            top: 12px;
+            right: -28px;
+            background: linear-gradient(135deg, #059669, #10b981);
+            color: white;
+            font-size: 11px;
+            font-weight: bold;
+            padding: 4px 32px;
+            transform: rotate(45deg);
+            z-index: 10;
+            box-shadow: 0 2px 10px rgba(16, 185, 129, 0.5);
+        }
+
+        .custom-checkbox {
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid #475569;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .custom-checkbox:checked {
+            background: #3b82f6;
+            border-color: #3b82f6;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3E%3C/svg%3E");
+        }
+
+        .main-content {
+            flex: 1;
+            width: 100%;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 2rem;
+            display: flex;
+            flex-direction: column;
+        }
+        .tab-content { width: 100%; }
+
+        /* ===== PC 端：工作区居中布局 (≥768px) ===== */
+        @media (min-width: 768px) {
+            .tab-content-centered {
+                flex: 1;
+                width: 100%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+        }
+
+        /* ===== 移动端：正常滚动流 (<768px) ===== */
+        @media (max-width: 767px) {
+            .main-content {
+                padding: 0 1rem;
+            }
+            .tab-content-centered {
+                width: 100%;
+                padding: 1rem 0;
+            }
+            .work-area-container {
+                flex-direction: column !important;
+                align-items: stretch !important;
+                justify-content: flex-start !important;
+                gap: 1rem !important;
+            }
+            .work-panel-wrapper {
+                width: 100% !important;
+            }
+            .work-panel {
+                width: 100% !important;
+                max-width: 100% !important;
+                padding: 1.5rem !important;
+            }
+            /* 移动端日志面板：默认隐藏，使用 max-height 控制 */
+            .status-panel-wrapper {
+                transform: translateY(20px) !important;
+                width: 100% !important;
+                max-height: 0 !important;
+                opacity: 0 !important;
+                overflow: hidden !important;
+            }
+            .status-panel-wrapper.is-visible {
+                transform: translateY(0) !important;
+                width: 100% !important;
+                max-height: 500px !important;
+                opacity: 1 !important;
+            }
+            .status-panel {
+                width: 100% !important;
+                max-width: 100% !important;
+                max-height: 40vh !important;
+            }
+            .stat-item {
+                padding: 0.75rem 1rem;
+            }
+            .stat-icon {
+                width: 36px;
+                height: 36px;
+            }
+            .stat-value {
+                font-size: 18px;
+            }
+            footer {
+                display: none;
+            }
+        }
+
+        /* 其他 tab 支持滚动 */
+        .tab-content-scroll {
+            flex: 1;
+            width: 100%;
+            overflow-y: auto;
+            padding-bottom: 1rem;
+        }
+
+        /* ===== 工作区动态布局 ===== */
+        .work-area-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            gap: 0;
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .work-area-container.is-working {
+            justify-content: space-between;
+            gap: 2rem;
+        }
+
+        /* 工作面板 */
+        .work-panel-wrapper {
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .work-panel {
+            padding: 2.5rem;
+            border-radius: 20px;
+            width: 480px;
+            max-width: 90vw;
+        }
+        .work-area-container.is-working .work-panel-wrapper {
+            flex-shrink: 0;
+        }
+
+        /* 系统日志面板（独立，工作中显示在右侧） */
+        .status-panel-wrapper {
+            opacity: 0;
+            transform: translateX(50px);
+            width: 0;
+            overflow: hidden;
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .status-panel-wrapper.is-visible {
+            opacity: 1;
+            transform: translateX(0);
+            width: 480px;
+            flex-shrink: 0;
+        }
+        .status-panel {
+            padding: 1.5rem;
+            border-radius: 20px;
+            width: 480px;
+            max-width: 90vw;
+            max-height: 70vh;
+        }
+
+        /* 游戏卡片网格 - 更大的封面 */
+        .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1.5rem; width: 100%; }
+        .free-games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 2rem; width: 100%; max-width: 1100px; margin: 0 auto; }
+
+        .work-input {
+            padding: 1rem 1.25rem;
+            border-radius: 12px;
+            font-size: 16px;
+        }
+        .work-btn {
+            padding: 1rem 1.5rem;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        /* Tab 按钮 - 更大更醒目 */
+        .tab-btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 50px;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .tab-btn-active {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: white;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+        }
+        .tab-btn-inactive {
+            color: #94a3b8;
+        }
+        .tab-btn-inactive:hover {
+            color: white;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* 底部图标放大 */
+        .footer-icon {
+            width: 28px;
+            height: 28px;
+            transition: all 0.2s;
+        }
+        .footer-icon:hover {
+            transform: scale(1.2);
+        }
+
+        /* Tailwind CSS 加载前的 SVG 尺寸预设，防止闪烁 */
+        svg.w-4.h-4 { width: 16px !important; height: 16px !important; }
+        svg.w-6.h-6 { width: 24px !important; height: 24px !important; }
+        svg.w-7.h-7 { width: 28px !important; height: 28px !important; }
+        svg.w-8.h-8 { width: 32px !important; height: 32px !important; }
+        .w-12.h-12 { width: 48px !important; height: 48px !important; }
+        .stat-icon { width: 44px !important; height: 44px !important; }
+
+        /* 页面加载遮罩 - 防止内容闪烁 */
+        #page-loader {
+            position: fixed;
+            inset: 0;
+            background: #0f172a;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999;
+            transition: opacity 0.3s ease-out;
+        }
+        #page-loader.fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+        #page-loader .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(59, 130, 246, 0.3);
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <!-- 页面加载遮罩 -->
+    <div id="page-loader"><div class="spinner"></div></div>
+
+    <canvas id="particles-canvas"></canvas>
+    <div id="toast-container"></div>
+
+    <!-- 顶部公告栏 - 可手动关闭 -->
+    <div id="announcement-bar" class="announcement-bar py-3 px-4 text-center text-sm relative">
+        <div class="flex items-center justify-center gap-2 flex-wrap pr-8">
+            <span>📢</span>
+            <span class="text-blue-200">欢迎大家使用 Epic 自动驾驶！有问题欢迎关注我的 B 站频道：
+                <a href="https://space.bilibili.com/59438380" target="_blank" class="text-blue-400 hover:text-blue-300 font-semibold hover:underline">一万AI分享</a>
+                ，获取更多教程和更新动态
+            </span>
+        </div>
+        <button onclick="closeAnnouncement()" class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors text-lg" title="关闭公告">✕</button>
+    </div>
+
+    <div class="content-wrapper p-4 md:p-6">
+
+        <!-- 头部 -->
+        <div class="w-full flex flex-col md:flex-row justify-between items-center mb-5 fade-in gap-4" style="animation-delay: 0.1s;">
+            <div class="flex items-center gap-4">
+                <div class="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30" style="width:48px;height:48px;flex-shrink:0">
+                    <svg class="w-7 h-7 text-white" style="width:28px;height:28px;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-black tracking-tight text-white">Epic <span class="text-blue-400">自动驾驶</span></h1>
+                    <p class="text-xs text-gray-400 font-mono tracking-widest uppercase">Automated Asset Management</p>
+                </div>
+            </div>
+
+            <!-- 更大更醒目的 Tab 按钮 -->
+            <div class="bg-slate-800/60 p-1 rounded-full border border-white/10 flex backdrop-blur-md gap-1">
+                <button onclick="switchTab('deposit')" id="tab-deposit" class="tab-btn tab-btn-active">自动驾驶</button>
+                <button onclick="switchTab('query')" id="tab-query" class="tab-btn tab-btn-inactive">资产清单</button>
+                <button onclick="switchTab('free-games')" id="tab-free-games" class="tab-btn tab-btn-inactive">免费游戏</button>
+            </div>
+        </div>
+
+        <!-- 统计状态栏 - 紧凑横向布局 -->
+        <div class="w-full mb-5 fade-in" style="animation-delay: 0.12s;">
+            <div class="stats-bar flex-wrap justify-center md:justify-start">
+                <div class="stat-item">
+                    <div class="stat-icon bg-blue-500/20" style="width:44px;height:44px;flex-shrink:0">
+                        <svg class="w-6 h-6 text-blue-400" style="width:24px;height:24px;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    </div>
+                    <div>
+                        <p class="stat-label">有效账号</p>
+                        <p class="stat-value text-white" id="stat-accounts">--</p>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-icon bg-green-500/20" style="width:44px;height:44px;flex-shrink:0">
+                        <svg class="w-6 h-6 text-green-400" style="width:24px;height:24px;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    </div>
+                    <div>
+                        <p class="stat-label">今日领取</p>
+                        <p class="stat-value text-green-400" id="stat-today">--</p>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-icon bg-purple-500/20" style="width:44px;height:44px;flex-shrink:0">
+                        <svg class="w-6 h-6 text-purple-400" style="width:24px;height:24px;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
+                    </div>
+                    <div>
+                        <p class="stat-label">累计领取</p>
+                        <p class="stat-value text-purple-400" id="stat-total">--</p>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-icon bg-amber-500/20" style="width:44px;height:44px;flex-shrink:0">
+                        <svg class="w-6 h-6 text-amber-400" style="width:24px;height:24px;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    </div>
+                    <div>
+                        <p class="stat-label">队列任务</p>
+                        <p class="stat-value text-amber-400" id="stat-queue">--</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主内容区域 -->
+        <div class="main-content">
+
+            <!-- 自动驾驶 Tab -->
+            <div id="view-deposit" class="tab-content-centered fade-in" style="animation-delay: 0.15s;">
+                <div id="work-area-container" class="work-area-container">
+                    <!-- 左侧：工作面板 -->
+                    <div class="work-panel-wrapper">
+                        <div class="work-panel glass-panel">
+                            <h2 class="text-2xl font-bold text-white mb-6 text-center">Epic 自动驾驶</h2>
+
+                            <div class="bg-amber-500/10 border border-amber-500/25 rounded-xl p-4 mb-6 text-sm text-amber-100/90">
+                                <div class="flex items-start gap-3">
+                                    <span class="text-xl">⚠️</span>
+                                    <ul class="space-y-2 list-disc list-inside">
+                                        <li>建议使用新账号：
+                                            <a href="https://www.epicgames.com/id/register" target="_blank" class="text-amber-400 hover:text-amber-300 font-semibold hover:underline">注册 →</a>
+                                        </li>
+                                        <li>必须关闭两步验证 (2FA)：
+                                            <a href="https://www.epicgames.com/account/password" target="_blank" class="text-amber-400 hover:text-amber-300 font-semibold hover:underline">关闭 →</a>
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+
+                            <div id="deposit-form" class="space-y-5">
+                                <input type="email" id="d_email" placeholder="Epic Email" class="w-full bg-slate-900/60 border border-slate-600 text-white work-input focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all">
+                                <div class="relative">
+                                    <input type="password" id="d_password" placeholder="Password" class="w-full bg-slate-900/60 border border-slate-600 text-white work-input focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all pr-12">
+                                    <button onclick="togglePwd('d_password', this)" class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-lg">👁️</button>
+                                </div>
+
+                                <div class="flex items-center gap-3 text-sm text-slate-400">
+                                    <input type="checkbox" id="remember_email" class="custom-checkbox">
+                                    <label for="remember_email" class="cursor-pointer">记住邮箱</label>
+                                </div>
+
+                                <button onclick="startVerify()" id="btn-deposit" class="w-full bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold work-btn shadow-lg shadow-blue-500/30 transition-all flex items-center justify-center gap-2">
+                                    <span class="text-xl">🚀</span>
+                                    <span>启动引擎</span>
+                                </button>
+
+                                <button onclick="deleteAccount()" id="btn-delete" class="w-full bg-transparent border border-red-800/50 text-red-400 hover:bg-red-900/20 hover:border-red-500 hover:text-red-300 font-semibold py-3 rounded-xl transition-all">
+                                    停止托管 / 删除账号
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 右侧：系统日志面板（工作中显示） -->
+                    <div id="status-panel-wrapper" class="status-panel-wrapper">
+                        <div class="status-panel glass-panel flex flex-col">
+                            <div class="flex justify-between items-center mb-3 px-1">
+                                <span class="text-sm font-mono text-slate-400 flex items-center gap-2">
+                                    <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                                    SYSTEM LOGS
+                                </span>
+                                <button onclick="document.getElementById('status-log').innerText='_ Ready.'" class="text-xs text-slate-600 hover:text-slate-400">CLEAR</button>
+                            </div>
+                            <div class="terminal rounded-xl p-4 flex-1 overflow-y-auto flex flex-col-reverse border border-slate-700/50 min-h-[300px]">
+                                <div id="status-log" class="terminal-text text-sm leading-relaxed whitespace-pre-wrap">_ Ready.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 资产清单 Tab -->
+            <div id="view-query" class="tab-content tab-content-scroll hidden">
+                <div class="flex gap-3 mb-6 glass-panel p-3 rounded-xl max-w-xl mx-auto">
+                    <input type="email" id="q_email" placeholder="输入邮箱查询资产..." class="flex-1 bg-transparent border-none text-white px-4 py-2.5 focus:ring-0 text-base">
+                    <button onclick="doQuery()" id="btn-query" class="bg-slate-700 hover:bg-slate-600 text-white px-6 rounded-lg font-bold transition-all">检索</button>
+                </div>
+
+                <div id="skeleton-grid" class="hidden games-grid max-w-4xl mx-auto">
+                    <div class="skeleton h-64 rounded-xl"></div>
+                    <div class="skeleton h-64 rounded-xl"></div>
+                    <div class="skeleton h-64 rounded-xl"></div>
+                    <div class="skeleton h-64 rounded-xl"></div>
+                    <div class="skeleton h-64 rounded-xl"></div>
+                </div>
+
+                <div id="query-result-area" class="hidden">
+                    <div class="flex justify-between items-center mb-4 px-1">
+                        <h3 class="text-lg font-bold text-white">资产列表</h3>
+                        <span id="log-count" class="bg-blue-900 text-blue-300 text-sm px-3 py-1 rounded-full">0</span>
+                    </div>
+                    <div id="games-grid" class="games-grid max-w-4xl mx-auto"></div>
+                    <div id="empty-msg" class="hidden text-center py-16 text-slate-500 text-lg">NO_ASSETS_FOUND</div>
+                </div>
+            </div>
+
+            <!-- 免费游戏 Tab -->
+            <div id="view-free-games" class="tab-content tab-content-scroll hidden">
+                <div class="text-center mb-6">
+                    <h3 class="text-xl font-bold text-white mb-1">本周免费游戏</h3>
+                    <p class="text-sm text-slate-400">来自 Epic Games Store 官方免费促销</p>
+                </div>
+
+                <div id="free-games-skeleton" class="free-games-grid">
+                    <div class="skeleton h-80 rounded-xl"></div>
+                    <div class="skeleton h-80 rounded-xl"></div>
+                </div>
+
+                <div id="free-games-grid" class="hidden free-games-grid"></div>
+
+                <div id="free-games-empty" class="hidden text-center py-16 text-slate-500">
+                    <p class="text-lg mb-2">暂无免费游戏</p>
+                    <p class="text-sm">每周四晚上 11 点 Epic 会更新免费游戏</p>
+                    <a href="https://store.epicgames.com/zh-CN/free-games" target="_blank" class="inline-block mt-4 text-blue-400 hover:text-blue-300 text-base">前往 Epic 官网查看 →</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- 成功弹窗 -->
+        <div id="success-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
+            <div class="bg-slate-900 border border-slate-700 p-6 rounded-2xl shadow-2xl max-w-md w-full text-center modal-enter relative mx-4">
+                <div class="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-8 h-8 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                </div>
+                <h3 class="text-xl font-bold text-white mb-2">领取成功!</h3>
+                <p class="text-slate-400 text-sm mb-4">Epic 自动驾驶已完成任务。</p>
+                <div class="bg-slate-800 rounded-xl p-4 mb-4">
+                    <p class="text-xs text-slate-500 uppercase">New Asset Acquired</p>
+                    <p id="modal-game-name" class="text-lg font-bold text-blue-400 mt-1">Unknown Game</p>
+                </div>
+                <div class="flex flex-col gap-3">
+                    <a id="modal-game-link" href="https://store.epicgames.com/" target="_blank" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all">前往查看</a>
+                    <button onclick="closeModal()" class="w-full bg-transparent border border-slate-700 hover:bg-slate-800 text-slate-400 font-bold py-3 rounded-xl transition-all">关闭</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================================
+             🔥 错误提示弹窗
+             用于显示需要用户手动操作的错误（如 EULA 失败）
+             ============================================================ -->
+        <div id="error-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
+            <div class="bg-slate-900 border border-slate-700 p-6 rounded-2xl shadow-2xl max-w-md w-full text-center modal-enter relative mx-4">
+                <div id="error-modal-icon" class="w-16 h-16 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <span class="text-3xl">⚠️</span>
+                </div>
+                <h3 id="error-modal-title" class="text-xl font-bold text-white mb-2">需要您帮忙操作一下</h3>
+                <div id="error-modal-content" class="bg-slate-800 rounded-xl p-4 mb-4 text-left">
+                    <p id="error-modal-desc" class="text-slate-300 text-sm leading-relaxed">
+                        这个账号需要先同意 Epic 的服务协议，系统自动处理失败了。
+                    </p>
+                    <div id="error-modal-steps" class="mt-4 space-y-3 text-sm text-slate-300">
+                        <p class="font-semibold text-white">请按以下步骤操作：</p>
+                        <ol class="list-decimal list-inside space-y-2">
+                            <li>打开 <a href="https://www.epicgames.com" target="_blank" class="text-blue-400 hover:text-blue-300 underline">Epic 官网</a> 并登录</li>
+                            <li>如果看到"服务协议"或"EULA"页面，点击"接受"按钮</li>
+                            <li>完成后回来重新点击"托管"按钮</li>
+                        </ol>
+                    </div>
+                </div>
+                <div class="flex flex-col gap-3">
+                    <a href="https://www.epicgames.com" target="_blank" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2">
+                        <span>前往 Epic 官网</span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                    </a>
+                    <button onclick="closeErrorModal()" class="w-full bg-transparent border border-slate-700 hover:bg-slate-800 text-slate-400 font-bold py-3 rounded-xl transition-all">我知道了</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 页脚 -->
+        <footer class="w-full mt-8 pt-5 border-t border-slate-800 fade-in" style="animation-delay: 0.2s;">
+            <div class="flex flex-col md:flex-row justify-between items-center gap-4">
+                <div class="text-center md:text-left">
+                    <a href="https://github.com/10000ge10000/epic-kiosk" target="_blank" class="flex items-center gap-2 text-sm text-slate-400 hover:text-white transition-colors">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                        <span>10000ge10000/epic-kiosk</span>
+                    </a>
+                </div>
+                <div class="flex items-center gap-5">
+                    <a href="https://space.bilibili.com/59438380" target="_blank" class="text-slate-500 hover:text-blue-400 transition-colors" title="Bilibili"><svg class="footer-icon" fill="currentColor" viewBox="0 0 24 24"><path d="M17.813 4.653h.854c1.51.054 2.769.578 3.773 1.574 1.004.995 1.524 2.249 1.56 3.758v6.844c-.036 1.51-.556 2.769-1.56 3.773-1.004.996-2.264 1.52-3.773 1.574h-12.714c-1.51-.054-2.769-.578-3.773-1.574-1.004-.995-1.524-2.249-1.56-3.758v-6.844c.036-1.51.556-2.769 1.56-3.773 1.004-.996 2.264-1.52 3.773-1.574h.776l-1.175-1.12a.9.9 0 0 1-.272-.649c0-.271.095-.504.285-.698.19-.194.425-.291.704-.291.278 0 .515.097.71.291l1.896 1.796h5.812l1.896-1.796c.195-.194.432-.291.711-.291.279 0 .514.097.704.291.19.194.285.427.285.698 0 .271-.091.488-.272.649l-1.175 1.12zm-12.876 2.227c-.896.031-1.642.344-2.234.936-.593.593-.902 1.334-.928 2.222v6.864c.026.889.335 1.629.928 2.222.592.593 1.338.905 2.234.936h13.068c.896-.031 1.642-.344 2.234-.936.593-.593.902-1.334.928-2.222v-6.864c-.026-.889-.335-1.629-.928-2.222-.592-.593-1.338-.905-2.234-.936h-13.068z"/></svg></a>
+                    <a href="https://www.youtube.com/channel/UCqgvZnCN9-9pZcL4SWxmnDw" target="_blank" class="text-slate-500 hover:text-red-500 transition-colors" title="YouTube"><svg class="footer-icon" fill="currentColor" viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/></svg></a>
+                    <a href="https://github.com/10000ge10000" target="_blank" class="text-slate-500 hover:text-white transition-colors" title="GitHub"><svg class="footer-icon" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg></a>
+                    <a href="https://blog.910501.xyz/" target="_blank" class="text-slate-500 hover:text-emerald-400 transition-colors" title="Blog"><svg class="footer-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg></a>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        {% raw %}
+        // 初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            initParticles();
+            loadRememberedEmail();
+            fetchSystemStats();
+            setInterval(fetchSystemStats, 30000);
+
+            // 隐藏加载遮罩（延迟确保 Tailwind 已加载）
+            setTimeout(() => {
+                const loader = document.getElementById('page-loader');
+                if (loader) {
+                    loader.classList.add('fade-out');
+                    setTimeout(() => loader.remove(), 300);
+                }
+            }, 100);
+        });
+
+        // 粒子背景
+        function initParticles() {
+            const canvas = document.getElementById('particles-canvas');
+            const ctx = canvas.getContext('2d');
+            let particles = [];
+            const particleCount = 50;
+
+            function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+            resize();
+            window.addEventListener('resize', resize);
+
+            class Particle {
+                constructor() { this.reset(); }
+                reset() { this.x = Math.random() * canvas.width; this.y = Math.random() * canvas.height; this.vx = (Math.random() - 0.5) * 0.5; this.vy = (Math.random() - 0.5) * 0.5; this.radius = Math.random() * 2 + 0.5; this.opacity = Math.random() * 0.5 + 0.1; }
+                update() { this.x += this.vx; this.y += this.vy; if (this.x < 0 || this.x > canvas.width) this.vx *= -1; if (this.y < 0 || this.y > canvas.height) this.vy *= -1; }
+                draw() { ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2); ctx.fillStyle = `rgba(59, 130, 246, ${this.opacity})`; ctx.fill(); }
+            }
+
+            for (let i = 0; i < particleCount; i++) particles.push(new Particle());
+
+            function animate() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                for (let i = 0; i < particles.length; i++) {
+                    for (let j = i + 1; j < particles.length; j++) {
+                        const dx = particles[i].x - particles[j].x, dy = particles[i].y - particles[j].y, dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 150) { ctx.beginPath(); ctx.moveTo(particles[i].x, particles[i].y); ctx.lineTo(particles[j].x, particles[j].y); ctx.strokeStyle = `rgba(59, 130, 246, ${0.1 * (1 - dist / 150)})`; ctx.stroke(); }
+                    }
+                }
+                particles.forEach(p => { p.update(); p.draw(); });
+                requestAnimationFrame(animate);
+            }
+            animate();
+        }
+
+        // Toast
+        function closeAnnouncement() {
+            const bar = document.getElementById('announcement-bar');
+            bar.style.transition = 'opacity 0.3s, transform 0.3s';
+            bar.style.opacity = '0';
+            bar.style.transform = 'translateY(-100%)';
+            setTimeout(() => bar.style.display = 'none', 300);
+        }
+
+        function showToast(message, type = 'info', duration = 4000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            const icons = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' };
+            toast.innerHTML = `<span class="text-lg">${icons[type]}</span><span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => { toast.classList.add('hiding'); setTimeout(() => toast.remove(), 250); }, duration);
+        }
+
+        // 记住邮箱
+        function loadRememberedEmail() {
+            const saved = localStorage.getItem('remembered_email'), checked = localStorage.getItem('remember_email_checked');
+            if (saved && checked === 'true') {
+                document.getElementById('d_email').value = saved;
+                document.getElementById('q_email').value = saved;
+                document.getElementById('remember_email').checked = true;
+            }
+        }
+        function saveRememberedEmail(email) {
+            const shouldRemember = document.getElementById('remember_email').checked;
+            if (shouldRemember && email) { localStorage.setItem('remembered_email', email); localStorage.setItem('remember_email_checked', 'true'); }
+            else if (!shouldRemember) { localStorage.removeItem('remembered_email'); localStorage.setItem('remember_email_checked', 'false'); }
+        }
+
+        // 系统状态
+        async function fetchSystemStats() {
+            try {
+                const res = await axios.get('/api/system_stats');
+                // 账号显示格式: 已验证数/总数 (如: 33/27 → 27/27)
+                const verified = res.data.verified_accounts || 0;
+                const total = res.data.total_accounts || 0;
+                document.getElementById('stat-accounts').textContent = `${verified}/${total}`;
+                document.getElementById('stat-today').textContent = res.data.today_claims;
+                document.getElementById('stat-total').textContent = res.data.total_claims;
+                // 队列任务数 = 等待中 + 处理中
+                const queueTotal = (res.data.queue_length || 0) + (res.data.processing_count || 0);
+                document.getElementById('stat-queue').textContent = queueTotal;
+            } catch (e) { console.error('Failed to fetch stats:', e); }
+        }
+
+        // Tab 切换
+        function switchTab(tab) {
+            ['deposit', 'query', 'free-games'].forEach(t => document.getElementById('view-' + t).classList.add('hidden'));
+            ['deposit', 'query', 'free-games'].forEach(t => {
+                const btn = document.getElementById('tab-' + t);
+                if (tab === t) {
+                    btn.className = 'tab-btn tab-btn-active';
+                } else {
+                    btn.className = 'tab-btn tab-btn-inactive';
+                }
+            });
+            document.getElementById('view-' + tab).classList.remove('hidden');
+            if (tab === 'free-games') fetchFreeGames();
+        }
+
+        // 免费游戏 - 更大的封面
+        async function fetchFreeGames() {
+            const skeleton = document.getElementById('free-games-skeleton'), grid = document.getElementById('free-games-grid'), empty = document.getElementById('free-games-empty');
+            skeleton.classList.remove('hidden'); grid.classList.add('hidden'); empty.classList.add('hidden');
+            try {
+                const res = await axios.get('/api/free_games');
+                skeleton.classList.add('hidden');
+                if (res.data.data.length === 0 || (res.data.data.length === 1 && !res.data.data[0].slug)) { empty.classList.remove('hidden'); return; }
+                grid.innerHTML = res.data.data.map(game => `
+                    <a href="${game.url}" target="_blank" class="free-game-card glass-panel rounded-2xl overflow-hidden block">
+                        <div class="aspect-[16/9] relative overflow-hidden bg-slate-800">
+                            ${game.image ? `<img src="${game.image}" alt="${game.title}" class="w-full h-full object-cover hover:scale-105 transition-transform duration-500" onerror="this.parentElement.innerHTML='<div class=\\'w-full h-full flex items-center justify-center text-5xl\\'>🎮</div>'">` : '<div class="w-full h-full flex items-center justify-center text-5xl">🎮</div>'}
+                        </div>
+                        <div class="p-4">
+                            <h4 class="font-bold text-white text-lg mb-1 truncate">${game.title}</h4>
+                            <p class="text-sm text-green-400 font-semibold">限时免费领取</p>
+                        </div>
+                    </a>
+                `).join('');
+                grid.classList.remove('hidden');
+            } catch (e) { skeleton.classList.add('hidden'); empty.classList.remove('hidden'); showToast('获取免费游戏失败', 'error'); }
+        }
+
+        // Axios 拦截器
+        axios.interceptors.response.use(response => response, error => {
+            if (error.response && error.response.status === 403) showToast(error.response.data.msg || "IP 已被封禁", 'error');
+            return Promise.reject(error);
+        });
+
+        function togglePwd(id, btn) { const el = document.getElementById(id); el.type = el.type === "password" ? "text" : "password"; btn.innerText = el.type === "password" ? "👁️" : "🔒"; }
+
+        // 自动驾驶
+        let pollTimer;
+        async function startVerify() {
+            const email = document.getElementById('d_email').value, password = document.getElementById('d_password').value;
+            if (!email || !password) { showToast('请输入邮箱和密码', 'warning'); return; }
+            saveRememberedEmail(email);
+
+            // 🎬 触发工作区动画：移至左侧，显示日志面板
+            document.getElementById('work-area-container').classList.add('is-working');
+            document.getElementById('status-panel-wrapper').classList.add('is-visible');
+            document.getElementById('deposit-form').classList.add('opacity-50', 'pointer-events-none');
+
+            try {
+                const res = await axios.post('/api/deposit', { email, password });
+                showToast(res.data.msg, 'success');
+                document.getElementById('status-log').innerText = `> ${res.data.msg}`;
+                pollTimer = setInterval(() => checkStatus(email, password), 1500);
+            } catch (e) { resetUI(); }
+        }
+
+        async function deleteAccount() {
+            const email = document.getElementById('d_email').value, password = document.getElementById('d_password').value;
+            if (!email || !password) { showToast('请输入账号密码确认身份', 'warning'); return; }
+            if (!confirm('确定删除此账号托管？')) return;
+            try {
+                const res = await axios.post('/api/delete_account', { email, password });
+                showToast(res.data.msg, res.data.status === 'success' ? 'success' : 'error');
+                if (res.data.status === 'success') { document.getElementById('d_email').value = ''; document.getElementById('d_password').value = ''; localStorage.removeItem('remembered_email'); document.getElementById('remember_email').checked = false; }
+            } catch (e) { showToast('删除失败', 'error'); }
+        }
+
+        async function checkStatus(email, password) {
+            try {
+                const res = await axios.get('/api/status/' + email);
+                const logDiv = document.getElementById('status-log');
+                const newLine = `\n> ${res.data.msg}`;
+                if (!logDiv.innerText.includes(res.data.msg)) logDiv.innerText = newLine + logDiv.innerText;
+
+                const result = res.data.result;
+
+                // ============================================================
+                // 🔥 错误类型处理
+                // 根据不同的 result 类型展示不同的弹窗
+                // ============================================================
+
+                // 成功领取新游戏
+                if (result === 'success_new') {
+                    clearInterval(pollTimer);
+                    await axios.post('/api/confirm_success', { email, password });
+                    showModal(res.data.game_title || "Epic Free Game");
+                    showToast(`🎉 成功领取!`, 'success', 4000);
+                    resetUI(); fetchSystemStats();
+                }
+                // 验证成功或已在库中
+                else if (result === 'success' || result === 'success_owned') {
+                    clearInterval(pollTimer);
+                    await axios.post('/api/confirm_success', { email, password });
+                    showToast('任务完成！', 'success');
+                    resetUI(); fetchSystemStats();
+                }
+                // ============================================================
+                // 🔥 错误类型：需要用户手动操作
+                // ============================================================
+                else if (result && result.startsWith('error_')) {
+                    clearInterval(pollTimer);
+                    const errorType = result.replace('error_', '');
+                    showErrorModal(errorType, res.data.hint);
+                    resetUI();
+                }
+                // 通用失败
+                else if (result === 'fail') {
+                    clearInterval(pollTimer);
+                    showToast('任务失败', 'error');
+                    resetUI();
+                }
+            } catch (e) {}
+        }
+
+        function resetUI() {
+            document.getElementById('deposit-form').classList.remove('opacity-50', 'pointer-events-none');
+            document.getElementById('btn-deposit').innerHTML = '<span class="text-xl">🚀</span><span>启动引擎</span>';
+            // 🎬 恢复布局：工作区居中，隐藏日志面板
+            document.getElementById('work-area-container').classList.remove('is-working');
+            document.getElementById('status-panel-wrapper').classList.remove('is-visible');
+        }
+
+        function showModal(gameName) {
+            document.getElementById('modal-game-name').innerText = gameName;
+            document.getElementById('modal-game-link').href = `https://store.epicgames.com/zh-CN/browse?q=${encodeURIComponent(gameName)}&sortBy=relevancy`;
+            document.getElementById('success-modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('success-modal').classList.add('hidden');
+            switchTab('query');
+            if (document.getElementById('d_email').value) { document.getElementById('q_email').value = document.getElementById('d_email').value; doQuery(); }
+        }
+
+        // ============================================================
+        // 🔥 错误提示弹窗相关函数
+        // 根据不同的错误类型显示不同的提示内容
+        // ============================================================
+
+        // 错误类型配置：标题、描述、图标
+        const ERROR_CONFIGS = {
+            'eula_failed': {
+                title: '需要您帮忙操作一下',
+                desc: '这个账号需要先同意 Epic 的服务协议，系统自动处理失败了。',
+                showSteps: true,
+                icon: '⚠️',
+                iconBg: 'bg-amber-500/20'
+            },
+            'invalid_credentials': {
+                title: '密码错误',
+                desc: '您输入的邮箱或密码不正确，请检查后重新提交。',
+                showSteps: false,
+                icon: '❌',
+                iconBg: 'bg-red-500/20'
+            },
+            'account_locked': {
+                title: '账号被锁定',
+                desc: '该 Epic 账号已被锁定，请登录 Epic 官网解锁后再试。',
+                showSteps: true,
+                icon: '🔒',
+                iconBg: 'bg-red-500/20'
+            },
+            'captcha_failed': {
+                title: '验证码识别困难',
+                desc: '系统遇到了比较难的验证码，请稍后重试。如果多次失败，建议更换账号。',
+                showSteps: false,
+                icon: '🤖',
+                iconBg: 'bg-purple-500/20'
+            },
+            'login_timeout': {
+                title: '登录超时',
+                desc: '网络波动导致登录超时，请稍后重试。',
+                showSteps: false,
+                icon: '⏰',
+                iconBg: 'bg-blue-500/20'
+            },
+            'network_timeout': {
+                title: '网络连接超时',
+                desc: 'Epic 服务可能暂时不可用，请稍后重试。',
+                showSteps: false,
+                icon: '🌐',
+                iconBg: 'bg-blue-500/20'
+            },
+            'cookie_invalid': {
+                title: '登录已过期',
+                desc: '您的登录状态已过期，请重新托管账号。',
+                showSteps: false,
+                icon: '🔑',
+                iconBg: 'bg-amber-500/20'
+            },
+            'unknown': {
+                title: '未知错误',
+                desc: '系统遇到了未知错误，请联系管理员查看日志。',
+                showSteps: false,
+                icon: '❓',
+                iconBg: 'bg-slate-500/20'
+            }
+        };
+
+        function showErrorModal(errorType, hint) {
+            const config = ERROR_CONFIGS[errorType] || ERROR_CONFIGS['unknown'];
+
+            // 更新弹窗内容
+            document.getElementById('error-modal-title').textContent = config.title;
+            document.getElementById('error-modal-desc').textContent = hint || config.desc;
+
+            // 更新图标
+            const iconDiv = document.getElementById('error-modal-icon');
+            iconDiv.className = `w-16 h-16 ${config.iconBg} rounded-full flex items-center justify-center mx-auto mb-4`;
+            iconDiv.innerHTML = `<span class="text-3xl">${config.icon}</span>`;
+
+            // 显示/隐藏操作步骤
+            const stepsDiv = document.getElementById('error-modal-steps');
+            if (config.showSteps) {
+                stepsDiv.classList.remove('hidden');
+            } else {
+                stepsDiv.classList.add('hidden');
+            }
+
+            // 显示弹窗
+            document.getElementById('error-modal').classList.remove('hidden');
+        }
+
+        function closeErrorModal() {
+            document.getElementById('error-modal').classList.add('hidden');
+        }
+
+        // 资产查询 - 更大的卡片
+        async function doQuery() {
+            const email = document.getElementById('q_email').value, btn = document.getElementById('btn-query');
+            if (!email) { showToast('请输入邮箱', 'warning'); return; }
+            btn.disabled = true; btn.innerText = "...";
+            document.getElementById('skeleton-grid').classList.remove('hidden');
+            document.getElementById('query-result-area').classList.add('hidden');
+            try {
+                const res = await axios.post('/api/query', { email: email });
+                document.getElementById('skeleton-grid').classList.add('hidden');
+                if (res.data.status === 'success') {
+                    const logs = res.data.data, grid = document.getElementById('games-grid');
+                    grid.innerHTML = '';
+                    document.getElementById('query-result-area').classList.remove('hidden');
+                    document.getElementById('log-count').innerText = logs.length;
+                    if (logs.length === 0) { document.getElementById('empty-msg').classList.remove('hidden'); }
+                    else {
+                        document.getElementById('empty-msg').classList.add('hidden');
+                        logs.forEach(log => {
+                            grid.innerHTML += `
+                                <a href="https://store.epicgames.com/zh-CN/browse?q=${encodeURIComponent(log.game)}&sortBy=relevancy" target="_blank" class="game-card group relative bg-slate-800 rounded-xl overflow-hidden border border-slate-700 cursor-pointer block">
+                                    <div class="aspect-[3/4] relative overflow-hidden">
+                                        <img src="${log.image}" alt="${log.game}" class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110 opacity-80 group-hover:opacity-100" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>'">
+                                        <div class="absolute inset-0 bg-gradient-to-t from-slate-900 via-transparent to-transparent opacity-90"></div>
+                                        <div class="absolute bottom-3 left-3 right-3">
+                                            <div class="text-xs font-mono text-green-400 mb-1 flex items-center"><span class="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5"></span>${log.time.split(' ')[0]}</div>
+                                            <h4 class="text-white font-bold text-sm leading-tight line-clamp-2">${log.game}</h4>
+                                        </div>
+                                    </div>
+                                </a>`;
+                        });
+                    }
+                    showToast(`找到 ${logs.length} 个游戏`, 'success');
+                }
+            } catch (e) { showToast('查询失败', 'error'); document.getElementById('skeleton-grid').classList.add('hidden'); }
+            finally { btn.disabled = false; btn.innerText = "检索"; }
+        }
+        {% endraw %}
+    </script>
+</body>
+</html>

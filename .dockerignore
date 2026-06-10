@@ -1,0 +1,69 @@
+# ============================================================
+# Docker 构建忽略文件
+# ============================================================
+# 排除不需要打包进镜像的文件，减少镜像体积
+# ============================================================
+
+# Git 相关
+.git/
+.github/
+.gitignore
+
+# Python 缓存和虚拟环境
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+ENV/
+*.egg-info/
+*.egg
+.eggs/
+
+# 用户数据（不应打包进镜像）
+data/user_data/
+data/kiosk.db
+data/images/*.jpg
+data/images/*.png
+data/logs/
+data/runtime/
+
+# 保留必要的目录标记
+!data/images/.gitkeep
+!data/logs/.gitkeep
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 环境变量文件
+.env
+.env.*
+*.local
+
+# Docker 相关（避免递归）
+docker-compose*.yml
+.docker/
+
+# 文档
+*.md
+docs/
+assets/
+
+# 安装脚本（运行时不需要）
+install.sh
+
+# 测试文件
+tests/
+.pytest_cache/
+.coverage
+htmlcov/

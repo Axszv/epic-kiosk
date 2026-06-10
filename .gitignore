@@ -1,0 +1,61 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.so
+.eggs/
+*.egg-info/
+*.egg
+
+# Python 虚拟环境
+.venv/
+venv/
+ENV/
+
+# 用户数据和数据库 (绝对不能上传)
+data/user_data/
+data/kiosk.db
+data/epic_kiosk.db
+data/images/*.jpg
+data/images/*.png
+!data/images/.gitkeep
+data/logs/
+data/runtime/
+data/captcha_debug/
+data/warp/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# Docker 挂载目录
+app/volumes/
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# 日志文件
+*.log
+logs/
+
+# 测试和覆盖率
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# 构建输出
+dist/
+build/
+*.whl

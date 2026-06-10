@@ -1,0 +1,170 @@
+# ============================================================
+# Epic Kiosk - 自动驾驶领取系统（本地编译版本）
+# ============================================================
+# GitHub: https://github.com/10000ge10000/epic-kiosk
+# 公益站点: https://epic.910501.xyz/
+# ============================================================
+#
+# 🚀 部署方式：
+#   1. Linux 一键部署: curl -fsSL https://raw.githubusercontent.com/10000ge10000/epic-kiosk/main/install.sh | bash
+#   2. 手动部署: 克隆项目 → 修改 API Key → docker compose up -d --build
+#
+# ⚠️ 必须修改: API_KEY
+#    获取地址: https://cloud.siliconflow.cn/i/OVI2n57p
+#
+# 📦 镜像说明：
+#   - redis:alpine - 官方镜像，直接拉取
+#   - epic-kiosk-web - 本地编译
+#   - epic-kiosk-worker - 本地编译（含 WARP 网络代理）
+# ============================================================
+
+services:
+  # ============================================================
+  # Redis: 消息队列（官方镜像）
+  # ============================================================
+  redis:
+    image: redis:alpine
+    container_name: epic-redis
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  # ============================================================
+  # Web: 前端服务（FastAPI）
+  # 本地编译，首次部署约需 2-3 分钟
+  # ============================================================
+  web:
+    build:
+      context: .
+    image: epic-kiosk-web:local
+    container_name: epic-web
+    ports:
+      - "18000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - REDIS_HOST=redis
+      - TZ=Asia/Shanghai
+      # 历史数据偏移量配置（用于补偿丢失的记录，其他用户无需修改）
+      - CLAIM_HISTORY_OFFSET=${CLAIM_HISTORY_OFFSET:-0}
+      - ACCOUNT_VERIFIED_OFFSET=${ACCOUNT_VERIFIED_OFFSET:-0}
+      - ACCOUNT_TOTAL_OFFSET=${ACCOUNT_TOTAL_OFFSET:-0}
+      - FREE_GAMES_PROXY_URL=${FREE_GAMES_PROXY_URL:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  # ============================================================
+  # WARP 代理：提供 Cloudflare 网络出口
+  # 用于访问 Epic Games Store（自动重启换 IP）
+  # 镜像: caomingjun/warp（集成 WARP + gost HTTP 代理）
+  # ============================================================
+  warp:
+    image: caomingjun/warp:latest
+    container_name: epic-warp
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+    environment:
+      # gost 监听端口（HTTP 代理）
+      - GOST_ARGS=-L http://:19000
+    volumes:
+      - ./data/warp:/var/lib/cloudflare-warp
+    healthcheck:
+      # 使用 curl 测试代理连通性
+      test: ["CMD-SHELL", "curl -s --connect-timeout 5 -x http://127.0.0.1:19000 https://api.ipify.org || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  # ============================================================
+  # Worker: 后台任务执行器（浏览器自动化）
+  # 本地编译，首次部署约需 5-10 分钟
+  # 通过 WARP 代理访问 Epic Games
+  # ============================================================
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: epic-kiosk-worker:local
+    container_name: epic-worker
+    user: root
+    volumes:
+      - ./data:/app/data
+      - ./data:/app/app/volumes
+      # Docker socket - 允许 worker 重启 WARP 容器
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
+    environment:
+      - REDIS_HOST=redis
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      - ENABLE_APSCHEDULER=false
+      - API_PROVIDER=${API_PROVIDER:-openai_compatible}
+      - API_BASE_URL=${API_BASE_URL}
+      # WARP HTTP 代理（容器内部网络）
+      # HTTP_PROXY/HTTPS_PROXY intentionally disabled: current VM egress policy
+      # blocks Cloudflare WARP registration endpoints.
+      # WARP 代理配置（用于检测和重启）
+      - WARP_PROXY_HOST=epic-warp
+      - WARP_PROXY_PORT=19000
+      # 内部服务不走代理（修复入库 API 失败问题）
+      - NO_PROXY=web,epic-web,redis,epic-redis,localhost,127.0.0.1
+      # ============================================================
+      # ⚠️⚠️⚠️ 必须配置 API Key ⚠️⚠️⚠️
+      # ============================================================
+      # 方式一：直接修改下方环境变量（不推荐，会暴露在配置文件中）
+      # 方式二：创建 .env 文件，添加 API_KEY=sk-xxx（推荐）
+      # ============================================================
+      # 获取步骤：
+      # 1. 访问分享链接 https://cloud.siliconflow.cn/i/OVI2n57p
+      # 2. 登录 SiliconFlow 账号
+      # 3. 进入 API Key 管理页创建新密钥；通过分享链接注册认证后，双方可获得 16 元代金券
+      # 4. 复制 sk- 开头的 API Key
+      # ============================================================
+      - API_KEY=${API_KEY}
+      # 环境变量（绕过父类验证器，无需修改）
+      - GEMINI_API_KEY=not_used
+      # ============================================================
+      # 模型配置（SiliconFlow 实测通过）
+      - CAPTCHA_MODEL=${CAPTCHA_MODEL}
+      - CAPTCHA_MODEL_FALLBACK=${CAPTCHA_MODEL_FALLBACK}
+      - PRIMARY_MODEL=${PRIMARY_MODEL}
+      - PRIMARY_MODEL_FALLBACK=${PRIMARY_MODEL_FALLBACK}
+      - RESPONSE_TIMEOUT=${RESPONSE_TIMEOUT:-120}
+      # 验证码失败后的自动恢复策略
+      - CAPTCHA_FAILURE_MAX_RETRIES=${CAPTCHA_FAILURE_MAX_RETRIES:-2}
+      - CAPTCHA_FAILURE_RETRY_DELAY_SECONDS=${CAPTCHA_FAILURE_RETRY_DELAY_SECONDS:-900}
+      - WARP_RESTART_COOLDOWN_SECONDS=${WARP_RESTART_COOLDOWN_SECONDS:-300}
+      - TASK_SPACING_SECONDS=${TASK_SPACING_SECONDS:-5}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
