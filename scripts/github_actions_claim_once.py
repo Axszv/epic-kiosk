@@ -53,6 +53,13 @@ def append_summary(text: str) -> None:
 
 def main() -> int:
     accounts = load_accounts()
+    account_limit = os.getenv("EPIC_ACCOUNT_LIMIT", "").strip()
+    if account_limit:
+        limit = int(account_limit)
+        if limit <= 0:
+            raise SystemExit("EPIC_ACCOUNT_LIMIT must be a positive integer")
+        accounts = accounts[:limit]
+
     Path("app/volumes/user_data").mkdir(parents=True, exist_ok=True)
     Path("app/volumes/logs").mkdir(parents=True, exist_ok=True)
     Path("app/volumes/runtime").mkdir(parents=True, exist_ok=True)

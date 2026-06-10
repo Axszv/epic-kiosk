@@ -114,6 +114,9 @@ class EpicSettings(AgentConfig):
 
     # 禁用 hcaptcha 文件保存（使用 /tmp 临时目录）
     cache_dir: Path = Path("/tmp/hcaptcha/.cache")
+    EXECUTION_TIMEOUT: float = Field(
+        default_factory=lambda: float(os.getenv("EXECUTION_TIMEOUT", "120"))
+    )
     challenge_dir: Path = Path("/tmp/hcaptcha/.challenge")
     captcha_response_dir: Path = Path("/tmp/hcaptcha/.captcha")
 

@@ -2,6 +2,19 @@ name: Epic Kiosk Claim
 
 on:
   workflow_dispatch:
+    inputs:
+      account_limit:
+        description: "Limit accounts for a manual debug run. Leave empty to run all."
+        required: false
+        default: ""
+      execution_timeout:
+        description: "hcaptcha challenge execution timeout in seconds."
+        required: false
+        default: "120"
+      login_result_timeout:
+        description: "Epic login result timeout in seconds."
+        required: false
+        default: "180"
   schedule:
     # 20:20 UTC = 04:20 Beijing time. Adjust if you prefer another window.
     - cron: "20 20 * * *"
@@ -26,7 +39,8 @@ jobs:
       CAPTCHA_MODEL_FALLBACK: gpt-5.4
       RESPONSE_TIMEOUT: "120"
       TASK_TIMEOUT_SECONDS: "1200"
-      LOGIN_RESULT_TIMEOUT_SECONDS: "180"
+      EXECUTION_TIMEOUT: ${{ github.event.inputs.execution_timeout || '120' }}
+      LOGIN_RESULT_TIMEOUT_SECONDS: ${{ github.event.inputs.login_result_timeout || '180' }}
       CAPTCHA_FAILURE_MAX_RETRIES: "0"
       PYTHONUNBUFFERED: "1"
 
@@ -80,6 +94,7 @@ jobs:
       - name: Run Epic claim
         env:
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
+          EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
         run: python scripts/github_actions_claim_once.py
 
       - name: Save browser state
