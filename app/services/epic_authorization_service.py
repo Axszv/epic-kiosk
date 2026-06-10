@@ -162,6 +162,7 @@ class EpicAuthorization:
 
             # 1. 使用电子邮件地址登录
             email_input = self.page.locator("#email")
+            await email_input.wait_for(state="visible", timeout=60000)
             await email_input.clear()
             await email_input.type(settings.EPIC_EMAIL)
 
@@ -170,6 +171,7 @@ class EpicAuthorization:
 
             # 3. 输入密码
             password_input = self.page.locator("#password")
+            await password_input.wait_for(state="visible", timeout=60000)
             await password_input.clear()
             await password_input.type(settings.EPIC_PASSWORD.get_secret_value())
 

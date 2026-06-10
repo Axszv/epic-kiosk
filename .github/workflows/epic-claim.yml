@@ -72,9 +72,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
-          key: epic-state-${{ github.run_id }}
+          key: epic-state-v2-${{ github.run_id }}
           restore-keys: |
-            epic-state-
+            epic-state-v2-
 
       - name: Run Epic claim
         env:
@@ -82,11 +82,11 @@ jobs:
         run: python scripts/github_actions_claim_once.py
 
       - name: Save browser state
-        if: always()
+        if: success()
         uses: actions/cache/save@v4
         with:
           path: app/volumes
-          key: epic-state-${{ github.run_id }}-${{ github.run_attempt }}
+          key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload logs
         if: always()

@@ -360,6 +360,34 @@ JSON Schema:
                 # 注意：不使用 response_format，部分视觉模型不支持
             }
 
+            retryable_statuses = {408, 409, 429, 500, 502, 503, 504}
+            max_attempts = int(os.getenv("API_MAX_RETRIES", "3"))
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    async with httpx.AsyncClient(timeout=settings.RESPONSE_TIMEOUT) as client:
+                        response = await client.post(url, headers=headers, json=payload)
+
+                    if response.status_code == 200:
+                        return response.json()
+
+                    body_preview = response.text[:500].replace("\n", " ")
+                    error_msg = f"API call failed: {response.status_code} - {body_preview}"
+                    if response.status_code not in retryable_statuses or attempt == max_attempts:
+                        logger.error(f"API_ERROR:{error_msg}")
+                        raise Exception(error_msg)
+
+                    logger.warning(
+                        f"API returned {response.status_code}; retrying attempt {attempt}/{max_attempts}"
+                    )
+                except (httpx.TimeoutException, httpx.TransportError) as exc:
+                    error_msg = f"API request exception: {type(exc).__name__}: {exc}"
+                    if attempt == max_attempts:
+                        logger.error(f"API_ERROR:{error_msg}")
+                        raise Exception(error_msg) from exc
+                    logger.warning(f"{error_msg}; retrying attempt {attempt}/{max_attempts}")
+
+                await asyncio.sleep(min(2 * attempt, 8))
+
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(url, headers=headers, json=payload)
 
