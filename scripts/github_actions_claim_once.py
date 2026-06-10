@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -69,20 +70,46 @@ def main() -> int:
         env["ENABLE_APSCHEDULER"] = "false"
         env.setdefault("GEMINI_API_KEY", "not_used")
 
-        proc = subprocess.run(
+        timeout_seconds = int(os.getenv("TASK_TIMEOUT_SECONDS", "1200"))
+        proc = subprocess.Popen(
             ["xvfb-run", "-a", sys.executable, "app/deploy.py"],
             env=env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=int(os.getenv("TASK_TIMEOUT_SECONDS", "1200")),
+            bufsize=1,
         )
 
-        output = proc.stdout or ""
-        print(output)
+        chunks: list[str] = []
+        deadline = time.monotonic() + timeout_seconds
+        timed_out = False
+        assert proc.stdout is not None
+        while True:
+            line = proc.stdout.readline()
+            if line:
+                chunks.append(line)
+                print(line, end="", flush=True)
+
+            if proc.poll() is not None:
+                remainder = proc.stdout.read()
+                if remainder:
+                    chunks.append(remainder)
+                    print(remainder, end="", flush=True)
+                break
+
+            if time.monotonic() > deadline:
+                timed_out = True
+                proc.kill()
+                print(f"FINAL_ERROR:timeout after {timeout_seconds}s", flush=True)
+                break
+
+            if not line:
+                time.sleep(0.2)
+
+        output = "".join(chunks)
         print("::endgroup::")
 
-        failed = proc.returncode != 0 or any(
+        failed = timed_out or proc.returncode != 0 or any(
             marker in output
             for marker in (
                 "FINAL_ERROR:",
