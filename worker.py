@@ -11,9 +11,14 @@ import socket
 from bs4 import BeautifulSoup
 
 # Redis
-redis_host = os.getenv("REDIS_HOST", "localhost")
-r = redis.Redis(host=redis_host, port=6379, decode_responses=True)
-WEB_BASE_URL = "http://web:8000"
+redis_url = os.getenv("REDIS_URL")
+if redis_url:
+    r = redis.from_url(redis_url, decode_responses=True)
+else:
+    redis_host = os.getenv("REDIS_HOST", "localhost")
+    r = redis.Redis(host=redis_host, port=6379, decode_responses=True)
+
+WEB_BASE_URL = os.getenv("WEB_BASE_URL", "http://web:8000").rstrip("/")
 WEB_API_URL = f"{WEB_BASE_URL}/api/report_game"
 NUKE_API_URL = f"{WEB_BASE_URL}/api/nuke_account" # 核弹接口
 
@@ -43,6 +48,7 @@ CAPTCHA_FAILURE_MAX_RETRIES = int(os.getenv("CAPTCHA_FAILURE_MAX_RETRIES", "2"))
 CAPTCHA_FAILURE_RETRY_DELAY_SECONDS = int(os.getenv("CAPTCHA_FAILURE_RETRY_DELAY_SECONDS", "900"))
 WARP_RESTART_COOLDOWN_SECONDS = int(os.getenv("WARP_RESTART_COOLDOWN_SECONDS", "300"))
 TASK_SPACING_SECONDS = int(os.getenv("TASK_SPACING_SECONDS", "5"))
+NETWORK_DIAGNOSTIC_ON_START = os.getenv("NETWORK_DIAGNOSTIC_ON_START", "").lower() in {"1", "true", "yes"}
 
 
 def check_warp_proxy() -> tuple[bool, str]:
@@ -162,6 +168,77 @@ def ensure_warp_ready() -> bool:
 
     print(f"❌ WARP 代理不可用，已达最大重试次数")
     return False
+
+
+def run_network_diagnostics() -> None:
+    """Log a small remote-network check from inside the worker container."""
+    urls = [
+        "https://www.google.com",
+        "https://store.epicgames.com/en-US/free-games",
+        "https://www.epicgames.com/account/personal",
+    ]
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/126 Safari/537.36"
+        )
+    }
+    print("NETWORK_DIAGNOSTIC:requests:start", flush=True)
+    for url in urls:
+        started = time.time()
+        try:
+            resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+            elapsed = time.time() - started
+            print(
+                f"NETWORK_DIAGNOSTIC:requests:{url}:status={resp.status_code}:"
+                f"elapsed={elapsed:.2f}:final={resp.url}",
+                flush=True,
+            )
+        except Exception as exc:
+            elapsed = time.time() - started
+            print(
+                f"NETWORK_DIAGNOSTIC:requests:{url}:error={type(exc).__name__}:"
+                f"elapsed={elapsed:.2f}:{str(exc)[:180]}",
+                flush=True,
+            )
+
+    browser_script = r'''
+import time
+from camoufox.sync_api import Camoufox
+
+urls = [
+    "https://www.google.com",
+    "https://store.epicgames.com/en-US/free-games",
+    "https://www.epicgames.com/account/personal",
+]
+
+with Camoufox(headless=True) as browser:
+    page = browser.new_page()
+    for url in urls:
+        started = time.time()
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            elapsed = time.time() - started
+            print(f"NETWORK_DIAGNOSTIC:browser:{url}:ok:elapsed={elapsed:.2f}:title={page.title()[:80]}", flush=True)
+        except Exception as exc:
+            elapsed = time.time() - started
+            print(f"NETWORK_DIAGNOSTIC:browser:{url}:error={type(exc).__name__}:elapsed={elapsed:.2f}:{str(exc)[:180]}", flush=True)
+'''
+    print("NETWORK_DIAGNOSTIC:browser:start", flush=True)
+    try:
+        proc = subprocess.run(
+            ["xvfb-run", "-a", "python3", "-c", browser_script],
+            text=True,
+            capture_output=True,
+            timeout=140,
+        )
+        if proc.stdout:
+            print(proc.stdout, end="", flush=True)
+        if proc.stderr:
+            print("NETWORK_DIAGNOSTIC:browser:stderr:" + proc.stderr[-1000:], flush=True)
+        print(f"NETWORK_DIAGNOSTIC:browser:exit={proc.returncode}", flush=True)
+    except Exception as exc:
+        print(f"NETWORK_DIAGNOSTIC:browser:runner_error={type(exc).__name__}:{exc}", flush=True)
 
 
 def restart_warp_for_captcha_retry(email: str) -> bool:
@@ -767,6 +844,9 @@ def run_task(task_data):
         r.set(f"result:{email}", "fail", ex=3600)
 
 def main_loop():
+    if NETWORK_DIAGNOSTIC_ON_START:
+        run_network_diagnostics()
+
     while True:
         move_due_retry_tasks()
         task = r.blpop("task_queue", timeout=10)
