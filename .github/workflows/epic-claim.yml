@@ -15,9 +15,6 @@ on:
         description: "Epic login result timeout in seconds."
         required: false
         default: "180"
-  schedule:
-    # 20:20 UTC = 04:20 Beijing time. Adjust if you prefer another window.
-    - cron: "20 20 * * *"
 
 concurrency:
   group: epic-kiosk-claim
