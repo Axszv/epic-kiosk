@@ -34,7 +34,7 @@ jobs:
       PRIMARY_MODEL_FALLBACK: claude-opus-4-8
       CAPTCHA_MODEL: claude-opus-4-8
       CAPTCHA_MODEL_FALLBACK: claude-opus-4-8
-      API_USER_AGENT: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36
+      API_USER_AGENT: claude-code/2.1.153
       API_SERVICE_TIER: fast
       RESPONSE_TIMEOUT: "120"
       TASK_TIMEOUT_SECONDS: "1200"
