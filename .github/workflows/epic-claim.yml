@@ -30,10 +30,10 @@ jobs:
       API_BASE_URL: ${{ secrets.API_BASE_URL }}
       API_KEY: ${{ secrets.API_KEY }}
       GEMINI_API_KEY: not_used
-      PRIMARY_MODEL: gpt-5.4-mini
-      PRIMARY_MODEL_FALLBACK: gpt-5.4
-      CAPTCHA_MODEL: gpt-5.4-mini
-      CAPTCHA_MODEL_FALLBACK: gpt-5.4
+      PRIMARY_MODEL: claude-opus-4-8
+      PRIMARY_MODEL_FALLBACK: claude-opus-4-8
+      CAPTCHA_MODEL: claude-opus-4-8
+      CAPTCHA_MODEL_FALLBACK: claude-opus-4-8
       API_USER_AGENT: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36
       API_SERVICE_TIER: fast
       RESPONSE_TIMEOUT: "120"
