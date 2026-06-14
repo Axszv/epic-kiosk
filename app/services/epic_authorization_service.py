@@ -219,6 +219,7 @@ class EpicAuthorization:
 
         # 用于记录验证码处理是否成功
         captcha_success = False
+        captcha_in_progress = False
         captcha_task = None
         keepalive_task = None
 
@@ -277,6 +278,8 @@ class EpicAuthorization:
                     await self.page.wait_for_timeout(8000)
                     if result_task.done():
                         return
+                    if captcha_in_progress:
+                        continue
                     with suppress(Exception):
                         password_box = self.page.locator("#password")
                         sign_in_button = self.page.locator("#sign-in").first
@@ -291,7 +294,7 @@ class EpicAuthorization:
 
             async def handle_captcha():
                 """处理验证码（如果需要）"""
-                nonlocal captcha_success
+                nonlocal captcha_success, captcha_in_progress
                 for captcha_attempt in range(1, 4):
                     if result_task.done():
                         return
@@ -299,11 +302,14 @@ class EpicAuthorization:
                         await retrigger_security_check()
                     try:
                         logger.debug(f"处理验证码尝试 [{captcha_attempt}/3]")
+                        captcha_in_progress = True
                         await agent.wait_for_challenge()
                         captcha_success = True
                     except Exception as e:
                         logger.warning(f"验证码处理异常 [{captcha_attempt}/3]: {e}")
                         await retrigger_security_check()
+                    finally:
+                        captcha_in_progress = False
                     await self.page.wait_for_timeout(2000)
 
             # 同时启动两个任务
