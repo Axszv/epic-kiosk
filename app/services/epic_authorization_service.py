@@ -15,7 +15,7 @@ from hcaptcha_challenger.agent import AgentV
 from loguru import logger
 from playwright.async_api import expect, Page, Response
 
-from settings import settings
+from settings import RUNTIME_DIR, settings
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 
@@ -78,6 +78,28 @@ class EpicAuthorization:
         self._is_refresh_csrf_signal = asyncio.Queue()
         self._login_error_code = None  # 存储登录错误码
 
+    async def _save_page_debug(self, label: str):
+        """Save the current page state for GitHub Actions artifacts."""
+        with suppress(Exception):
+            RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+            safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label)
+            debug_info = {
+                "url": self.page.url,
+                "title": await self.page.title(),
+            }
+            RUNTIME_DIR.joinpath(f"{safe_label}.json").write_text(
+                json.dumps(debug_info, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            RUNTIME_DIR.joinpath(f"{safe_label}.html").write_text(
+                await self.page.content(),
+                encoding="utf-8",
+            )
+            await self.page.screenshot(
+                path=str(RUNTIME_DIR.joinpath(f"{safe_label}.png")),
+                full_page=True,
+            )
+
     async def _on_response_anything(self, r: Response):
         if r.request.method != "POST" or "talon" in r.url:
             return
@@ -104,6 +126,7 @@ class EpicAuthorization:
                     # 登录成功，记录 accountId
                     if result.get("accountId"):
                         logger.success(f"✅ 登录 API 返回成功: accountId={result.get('accountId')}")
+                        self._is_login_success_signal.put_nowait(result)
             elif "/id/api/analytics" in r.url and result.get("accountId"):
                 self._is_login_success_signal.put_nowait(result)
             elif "/account/v2/refresh-csrf" in r.url and result.get("success", False) is True:
@@ -498,15 +521,12 @@ class EpicAuthorization:
                 # 超时时检查是否在修正页面
                 current_url = self.page.url
                 logger.debug(f"📍 获取登录状态超时，当前 URL: {current_url}")
+                await self._save_page_debug("auth_nav_timeout")
                 if "correction" in current_url or "eula" in current_url:
                     logger.error("❌ 仍在修正页面，无法继续")
                     return ErrorType.EULA_FAILED
-                logger.error(f"❌ 获取登录状态超时: {e}")
-
-                # 判断是网络问题还是其他问题
-                if "timeout" in str(e).lower():
-                    return ErrorType.NETWORK_TIMEOUT
-                return ErrorType.UNKNOWN
+                logger.warning(f"⚠️ 未找到 egs-navigation，按未登录继续尝试登录: {e}")
+                status = "false"
 
             if status == "true":
                 logger.success("✅ Epic Games 已登录")

@@ -131,6 +131,28 @@ class EpicAgent:
         self._namespaces: List[str] = []
         self._cookies = None
 
+    async def _save_page_debug(self, label: str):
+        """Save the current page state for GitHub Actions artifacts."""
+        with suppress(Exception):
+            RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+            safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label)
+            debug_info = {
+                "url": self.page.url,
+                "title": await self.page.title(),
+            }
+            RUNTIME_DIR.joinpath(f"{safe_label}.json").write_text(
+                json.dumps(debug_info, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            RUNTIME_DIR.joinpath(f"{safe_label}.html").write_text(
+                await self.page.content(),
+                encoding="utf-8",
+            )
+            await self.page.screenshot(
+                path=str(RUNTIME_DIR.joinpath(f"{safe_label}.png")),
+                full_page=True,
+            )
+
     async def _handle_eula_correction(self) -> bool:
         """
         处理 EULA 修正页面
@@ -288,11 +310,12 @@ class EpicAgent:
         except Exception as e:
             # 如果超时，可能还在修正页面或有其他问题
             current_url = self.page.url
+            await self._save_page_debug("collect_nav_timeout")
             if "correction" in current_url or "eula" in current_url:
                 logger.error("❌ 仍在修正页面，无法继续")
                 return False, GameCollectResult.EULA_FAILED
-            logger.error(f"❌ 获取登录状态超时: {e}")
-            return False, GameCollectResult.UNKNOWN_ERROR
+            logger.warning(f"⚠️ 未找到 egs-navigation，认证流程已通过，继续检查订单: {e}")
+            status = "true"
 
         if status == "false":
             logger.error("❌ Cookie 无效，账号未登录")
