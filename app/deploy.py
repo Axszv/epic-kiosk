@@ -153,6 +153,13 @@ async def deploy():
     # Log current configuration for debugging
     sj = settings.model_dump(mode="json")
     sj["headless"] = headless
+    if sj.get("EPIC_EMAIL"):
+        email = sj["EPIC_EMAIL"]
+        if "@" in email:
+            name, domain = email.split("@", 1)
+            sj["EPIC_EMAIL"] = f"{name[:2]}***@{domain}" if len(name) > 2 else f"***@{domain}"
+        else:
+            sj["EPIC_EMAIL"] = "***"
     logger.debug(
         f"Starting deployment with configuration: {json.dumps(sj, indent=2, ensure_ascii=False)}"
     )

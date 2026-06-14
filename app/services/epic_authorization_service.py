@@ -91,8 +91,24 @@ class EpicAuthorization:
                 json.dumps(debug_info, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            await self.page.evaluate(
+                """([email, password]) => {
+                    for (const input of document.querySelectorAll('input, textarea')) {
+                        if (input.value) input.value = '***';
+                    }
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                        if (email) node.nodeValue = node.nodeValue.split(email).join('***');
+                        if (password) node.nodeValue = node.nodeValue.split(password).join('***');
+                    }
+                }""",
+                [settings.EPIC_EMAIL, settings.EPIC_PASSWORD.get_secret_value()],
+            )
+            html = await self.page.content()
+            html = html.replace(settings.EPIC_EMAIL, "***")
+            html = html.replace(settings.EPIC_PASSWORD.get_secret_value(), "***")
             RUNTIME_DIR.joinpath(f"{safe_label}.html").write_text(
-                await self.page.content(),
+                html,
                 encoding="utf-8",
             )
             await self.page.screenshot(
