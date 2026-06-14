@@ -360,11 +360,12 @@ class EpicAuthorization:
             # 第二阶段：继续等待验证码处理后的结果（最多再等 60 秒）
             try:
                 result = await asyncio.wait_for(
-                    self._is_login_success_signal.get(),
+                    result_task,
                     timeout=settings.LOGIN_RESULT_TIMEOUT_SECONDS,
                 )
 
                 if result.get("error"):
+                    captcha_task.cancel()
                     error_code = result.get("code", "")
                     if "invalid_account_credentials" in error_code:
                         logger.error("❌ 账号或密码错误")
@@ -376,6 +377,7 @@ class EpicAuthorization:
                         logger.error(f"❌ 登录失败: {error_code}")
                         return (False, ErrorType.UNKNOWN)
 
+                captcha_task.cancel()
                 logger.success("✅ 登录成功")
                 await asyncio.wait_for(
                     self._handle_right_account_validation(agent),
