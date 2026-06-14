@@ -156,7 +156,18 @@ class EpicAuthorization:
         Returns:
 
         """
-        await self.page.goto("https://www.epicgames.com/account/personal", wait_until="domcontentloaded")
+        try:
+            await self.page.goto(
+                "https://www.epicgames.com/account/personal",
+                wait_until="domcontentloaded",
+                timeout=45000,
+            )
+        except Exception as err:
+            if not self._is_refresh_csrf_signal.empty():
+                logger.warning(f"账号验证页导航超时，但 refresh-csrf 已成功，继续领取流程: {err}")
+                return
+            await self._save_page_debug("account_validation_nav_timeout")
+            raise
         await self.page.wait_for_timeout(2000)
 
         btn_ids = ["#link-success", "#login-reminder-prompt-setup-tfa-skip", "#yes"]
