@@ -130,19 +130,29 @@ class EpicAuthorization:
             elif "/id/api/analytics" in r.url and result.get("accountId"):
                 self._is_login_success_signal.put_nowait(result)
             elif "/account/v2/refresh-csrf" in r.url and result.get("success", False) is True:
+                logger.success("✅ refresh-csrf 返回成功，账号会话已建立")
                 self._is_refresh_csrf_signal.put_nowait(result)
+                self._is_login_success_signal.put_nowait({"csrf": True})
 
-    async def _handle_right_account_validation(self):
+    async def _handle_right_account_validation(self, agent: AgentV):
         """
         以下验证仅会在登录成功后出现
         Returns:
 
         """
-        await self.page.goto("https://www.epicgames.com/account/personal", wait_until="networkidle")
+        await self.page.goto("https://www.epicgames.com/account/personal", wait_until="domcontentloaded")
+        await self.page.wait_for_timeout(2000)
 
         btn_ids = ["#link-success", "#login-reminder-prompt-setup-tfa-skip", "#yes"]
 
         # == 账号长期不登录需要做的额外验证 == #
+
+        with suppress(Exception):
+            await asyncio.wait_for(
+                agent.wait_for_challenge(),
+                timeout=min(settings.EXECUTION_TIMEOUT, 90),
+            )
+        await self.page.wait_for_timeout(500)
 
         while self._is_refresh_csrf_signal.empty() and btn_ids:
             await self.page.wait_for_timeout(500)
@@ -153,6 +163,10 @@ class EpicAuthorization:
                     await expect(reminder_btn).to_be_visible(timeout=1000)
                     await reminder_btn.click(timeout=1000)
                     btn_ids.remove(action)
+
+        if self._is_refresh_csrf_signal.empty():
+            await self._save_page_debug("account_validation_timeout")
+            logger.warning("⚠️ 账号验证阶段未观察到 refresh-csrf，继续依赖已有会话状态")
 
     async def _login(self) -> tuple[bool, ErrorType] | None:
         """
@@ -246,11 +260,11 @@ class EpicAuthorization:
                             return (False, ErrorType.UNKNOWN)
 
                     # 登录成功（无验证码或已通过）
-                    if result.get("accountId"):
+                    if result.get("accountId") or result.get("csrf"):
                         captcha_task.cancel()
                         logger.success("✅ 登录成功")
                         await asyncio.wait_for(
-                            self._handle_right_account_validation(),
+                            self._handle_right_account_validation(agent),
                             timeout=settings.LOGIN_RESULT_TIMEOUT_SECONDS,
                         )
                         logger.success("✅ 账号验证成功")
@@ -279,7 +293,7 @@ class EpicAuthorization:
 
                 logger.success("✅ 登录成功")
                 await asyncio.wait_for(
-                    self._handle_right_account_validation(),
+                    self._handle_right_account_validation(agent),
                     timeout=settings.LOGIN_RESULT_TIMEOUT_SECONDS,
                 )
                 logger.success("✅ 账号验证成功")
@@ -287,6 +301,7 @@ class EpicAuthorization:
 
             except asyncio.TimeoutError:
                 # 判断是验证码问题还是网络问题
+                await self._save_page_debug("login_result_timeout")
                 if not captcha_success:
                     logger.error("❌ 验证码识别超时")
                     return (False, ErrorType.CAPTCHA_FAILED)
@@ -294,6 +309,7 @@ class EpicAuthorization:
                 return (False, ErrorType.LOGIN_TIMEOUT)
 
         except asyncio.TimeoutError:
+            await self._save_page_debug("login_outer_timeout")
             logger.error("❌ 登录超时，请检查账号密码")
             return (False, ErrorType.LOGIN_TIMEOUT)
         except Exception as err:
