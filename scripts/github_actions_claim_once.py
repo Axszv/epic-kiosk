@@ -1,6 +1,7 @@
 import json
 import os
 import selectors
+import shutil
 import subprocess
 import sys
 import time
@@ -51,6 +52,15 @@ def append_summary(text: str) -> None:
     ) if Path(summary_path).exists() else Path(summary_path).write_text(text, encoding="utf-8")
 
 
+def clean_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for item in path.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+
+
 def main() -> int:
     accounts = load_accounts()
     account_limit = os.getenv("EPIC_ACCOUNT_LIMIT", "").strip()
@@ -61,8 +71,8 @@ def main() -> int:
         accounts = accounts[:limit]
 
     Path("app/volumes/user_data").mkdir(parents=True, exist_ok=True)
-    Path("app/volumes/logs").mkdir(parents=True, exist_ok=True)
-    Path("app/volumes/runtime").mkdir(parents=True, exist_ok=True)
+    clean_directory(Path("app/volumes/logs"))
+    clean_directory(Path("app/volumes/runtime"))
 
     append_summary("## Epic Kiosk run\n\n")
     failures = 0

@@ -229,6 +229,10 @@ class EpicAuthorization:
         try:
             point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
             await self.page.goto(point_url, wait_until="domcontentloaded")
+            await self.page.wait_for_timeout(1500)
+            if not self._is_refresh_csrf_signal.empty():
+                logger.success("✅ 检测到已有 refresh-csrf 会话，跳过登录表单")
+                return (True, ErrorType.SUCCESS)
 
             # 1. 使用电子邮件地址登录
             email_input = self.page.locator("#email")
@@ -237,6 +241,11 @@ class EpicAuthorization:
             except Exception:
                 await self._save_page_debug("login_email_wait_timeout")
                 raise
+            with suppress(Exception):
+                if await email_input.get_attribute("readonly"):
+                    if not self._is_refresh_csrf_signal.empty():
+                        logger.success("✅ 邮箱输入框只读且会话已建立，跳过登录表单")
+                        return (True, ErrorType.SUCCESS)
             await email_input.clear()
             await email_input.type(settings.EPIC_EMAIL)
 
