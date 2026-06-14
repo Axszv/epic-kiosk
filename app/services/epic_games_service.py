@@ -258,20 +258,7 @@ class EpicAgent:
             return
         completed_orders: List[OrderItem] = []
         try:
-            cookies = await self.page.context.cookies("https://www.epicgames.com")
-            headers = {}
-            with suppress(Exception):
-                headers["user-agent"] = await self.page.evaluate("navigator.userAgent")
-
-            async with httpx.AsyncClient(
-                cookies={cookie["name"]: cookie["value"] for cookie in cookies},
-                headers=headers,
-                follow_redirects=True,
-                timeout=30,
-            ) as client:
-                resp = await client.get("https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory")
-                resp.raise_for_status()
-                data = resp.json()
+            data = await EpicGames.fetch_order_history(self.page)
             for _order in data["orders"]:
                 order = Order(**_order)
                 if order.orderType != "PURCHASE":
@@ -403,6 +390,43 @@ class EpicGames:
     def __init__(self, page: Page):
         self.page = page
         self._promotions: List[PromotionGame] = []
+
+    @staticmethod
+    async def fetch_order_history(page: Page) -> dict:
+        """Fetch Epic order history with the browser session."""
+        endpoint = "https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory"
+
+        try:
+            result = await page.evaluate(
+                """async (endpoint) => {
+                    const resp = await fetch(endpoint, {
+                        credentials: "include",
+                        headers: { "accept": "application/json" },
+                    });
+                    return { status: resp.status, text: await resp.text() };
+                }""",
+                endpoint,
+            )
+            if 200 <= int(result["status"]) < 300:
+                return json.loads(result["text"])
+            logger.warning(f"浏览器内订单接口返回 HTTP {result['status']}")
+        except Exception as err:
+            logger.warning(f"浏览器内订单接口失败: {err}")
+
+        cookies = await page.context.cookies("https://www.epicgames.com")
+        headers = {}
+        with suppress(Exception):
+            headers["user-agent"] = await page.evaluate("navigator.userAgent")
+
+        async with httpx.AsyncClient(
+            cookies={cookie["name"]: cookie["value"] for cookie in cookies},
+            headers=headers,
+            follow_redirects=True,
+            timeout=30,
+        ) as client:
+            resp = await client.get(endpoint)
+            resp.raise_for_status()
+            return resp.json()
 
     @staticmethod
     async def _agree_license(page: Page):
@@ -563,7 +587,56 @@ class EpicGames:
                 await accept.click()
                 return True
 
-    async def _handle_instant_checkout(self, page: Page):
+    @staticmethod
+    async def _owned_from_product_page(page: Page) -> bool:
+        with suppress(Exception):
+            await page.reload(wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
+
+        with suppress(Exception):
+            body_text = await page.locator("body").text_content(timeout=5000)
+            if body_text and any(marker in body_text for marker in ("In Library", "Owned")):
+                return True
+
+        with suppress(Exception):
+            purchase_btn = page.locator("//button[@data-testid='purchase-cta-button']").first
+            btn_text = (await purchase_btn.text_content(timeout=5000) or "").strip().upper()
+            if any(marker in btn_text for marker in ("IN LIBRARY", "OWNED")):
+                return True
+
+        return False
+
+    @staticmethod
+    async def _owned_from_order_history(page: Page, promotion: PromotionGame) -> bool:
+        try:
+            data = await EpicGames.fetch_order_history(page)
+        except Exception as err:
+            logger.warning(f"订单历史验证失败: {err}")
+            return False
+
+        for raw_order in data.get("orders", []):
+            with suppress(Exception):
+                order = Order(**raw_order)
+                if order.orderType != "PURCHASE":
+                    continue
+                for item in order.items:
+                    if item.namespace == promotion.namespace or item.offerId == promotion.id:
+                        return True
+        return False
+
+    async def _wait_until_owned(self, page: Page, promotion: PromotionGame) -> bool:
+        for attempt in range(1, 5):
+            if await self._owned_from_order_history(page, promotion):
+                logger.success(f"🎉 订单历史确认已领取: {promotion.title}")
+                return True
+            if await self._owned_from_product_page(page):
+                logger.success(f"🎉 商品页确认已入库: {promotion.title}")
+                return True
+            logger.warning(f"⚠️ 未确认入库，等待后重试 [{attempt}/4]: {promotion.title}")
+            await page.wait_for_timeout(5000)
+        return False
+
+    async def _handle_instant_checkout(self, page: Page) -> bool:
         logger.info("🚀 开始即时结账流程...")
         agent = AgentV(page=page, agent_config=settings)
 
@@ -581,30 +654,39 @@ class EpicGames:
                 logger.debug("检查验证码...")
                 await agent.wait_for_challenge()
             except Exception as e:
-                logger.debug(f"验证码检测跳过: {e}")
+                logger.warning(f"结账验证码未确认通过: {e}")
 
             try:
                 if not await payment_btn.is_visible():
-                     logger.success("🎉 领取成功：支付按钮已消失")
-                     return
+                     logger.success("🎉 结账按钮已消失，等待入库验证")
+                     return True
             except Exception:
-                logger.success("🎉 领取成功：iframe 已关闭")
-                return
+                logger.success("🎉 结账 iframe 已关闭，等待入库验证")
+                return True
 
             with suppress(Exception):
                 await payment_btn.click(force=True)
                 await page.wait_for_timeout(2000)
 
-            logger.success("🎉 游戏领取成功！")
+            with suppress(Exception):
+                if not await payment_btn.is_visible(timeout=3000):
+                    logger.success("🎉 二次提交后结账按钮已消失，等待入库验证")
+                    return True
+
+            logger.warning("⚠️ 结账按钮仍可见，尚不能确认领取成功")
+            return False
 
         except Exception as err:
             logger.warning(f"⚠️ 即时结账警告（游戏可能已领取）: {err}")
-            await page.reload()
+            with suppress(Exception):
+                await page.reload()
+            return False
 
-    async def add_promotion_to_cart(self, page: Page, urls: List[str]) -> bool:
+    async def add_promotion_to_cart(self, page: Page, promotions: List[PromotionGame]) -> bool:
         has_pending_cart_items = False
 
-        for url in urls:
+        for promotion in promotions:
+            url = promotion.url
             await page.goto(url, wait_until="load")
 
             # 404 检测
@@ -671,7 +753,11 @@ class EpicGames:
             await purchase_btn.click()
 
             # 点击后，转入即时结账流程
-            await self._handle_instant_checkout(page)
+            checkout_submitted = await self._handle_instant_checkout(page)
+            if not checkout_submitted:
+                raise AssertionError(f"Checkout was not submitted for {promotion.title}")
+            if not await self._wait_until_owned(page, promotion):
+                raise AssertionError(f"Could not verify ownership after checkout: {promotion.title}")
             # ------------------------------------------------------------
 
         return has_pending_cart_items
@@ -720,8 +806,7 @@ class EpicGames:
 
     @retry(retry=retry_if_exception_type(TimeoutError), stop=stop_after_attempt(2), reraise=True)
     async def collect_weekly_games(self, promotions: List[PromotionGame]):
-        urls = [p.url for p in promotions]
-        has_cart_items = await self.add_promotion_to_cart(self.page, urls)
+        has_cart_items = await self.add_promotion_to_cart(self.page, promotions)
 
         if has_cart_items:
             await self._purchase_free_game()
