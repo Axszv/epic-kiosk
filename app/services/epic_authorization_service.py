@@ -76,7 +76,11 @@ class EpicAuthorization:
 
         self._is_login_success_signal = asyncio.Queue()
         self._is_refresh_csrf_signal = asyncio.Queue()
+        self._refresh_csrf_seen = False
         self._login_error_code = None  # 存储登录错误码
+
+    def _has_refresh_csrf_session(self) -> bool:
+        return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
 
     async def _save_page_debug(self, label: str):
         """Save the current page state for GitHub Actions artifacts."""
@@ -150,6 +154,7 @@ class EpicAuthorization:
                 self._is_login_success_signal.put_nowait(result)
             elif "/account/v2/refresh-csrf" in r.url and result.get("success", False) is True:
                 logger.success("✅ refresh-csrf 返回成功，账号会话已建立")
+                self._refresh_csrf_seen = True
                 self._is_refresh_csrf_signal.put_nowait(result)
                 self._is_login_success_signal.put_nowait({"csrf": True})
 
@@ -166,7 +171,7 @@ class EpicAuthorization:
                 timeout=45000,
             )
         except Exception as err:
-            if not self._is_refresh_csrf_signal.empty():
+            if self._has_refresh_csrf_session():
                 logger.warning(f"账号验证页导航超时，但 refresh-csrf 已成功，继续领取流程: {err}")
                 return
             await self._save_page_debug("account_validation_nav_timeout")
@@ -184,7 +189,7 @@ class EpicAuthorization:
             )
         await self.page.wait_for_timeout(500)
 
-        while self._is_refresh_csrf_signal.empty() and btn_ids:
+        while not self._has_refresh_csrf_session() and btn_ids:
             await self.page.wait_for_timeout(500)
             action_chains = btn_ids.copy()
             for action in action_chains:
@@ -194,7 +199,7 @@ class EpicAuthorization:
                     await reminder_btn.click(timeout=1000)
                     btn_ids.remove(action)
 
-        if self._is_refresh_csrf_signal.empty():
+        if not self._has_refresh_csrf_session():
             await self._save_page_debug("account_validation_timeout")
             logger.warning("⚠️ 账号验证阶段未观察到 refresh-csrf，继续依赖已有会话状态")
 
@@ -230,7 +235,7 @@ class EpicAuthorization:
             point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
-            if not self._is_refresh_csrf_signal.empty():
+            if self._has_refresh_csrf_session():
                 logger.success("✅ 检测到已有 refresh-csrf 会话，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
 
@@ -242,7 +247,7 @@ class EpicAuthorization:
                 await self._save_page_debug("login_email_wait_timeout")
                 raise
             for _ in range(30):
-                if not self._is_refresh_csrf_signal.empty():
+                if self._has_refresh_csrf_session():
                     logger.success("✅ 邮箱输入框等待期间会话已建立，跳过登录表单")
                     return (True, ErrorType.SUCCESS)
                 readonly = False
@@ -252,7 +257,16 @@ class EpicAuthorization:
                     break
                 await self.page.wait_for_timeout(500)
 
-            if not self._is_refresh_csrf_signal.empty():
+            if readonly and self._has_refresh_csrf_session():
+                logger.success("✅ 邮箱输入框仍为 readonly，但 refresh-csrf 已成功，跳过登录表单")
+                return (True, ErrorType.SUCCESS)
+
+            if readonly:
+                await self._save_page_debug("login_email_readonly")
+                logger.warning("⚠️ 邮箱输入框持续 readonly，且未确认 refresh-csrf 会话")
+                return (False, ErrorType.CAPTCHA_FAILED)
+
+            if self._has_refresh_csrf_session():
                 logger.success("✅ 会话已建立，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
 
