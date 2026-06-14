@@ -210,12 +210,16 @@ class EpicAuthorization:
         captcha_success = False
 
         try:
-            point_url = "https://www.epicgames.com/account/personal?lang=en-US&productName=egs&sessionInvalidated=true"
+            point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
             await self.page.goto(point_url, wait_until="domcontentloaded")
 
             # 1. 使用电子邮件地址登录
             email_input = self.page.locator("#email")
-            await email_input.wait_for(state="visible", timeout=60000)
+            try:
+                await email_input.wait_for(state="visible", timeout=60000)
+            except Exception:
+                await self._save_page_debug("login_email_wait_timeout")
+                raise
             await email_input.clear()
             await email_input.type(settings.EPIC_EMAIL)
 
@@ -573,8 +577,14 @@ class EpicAuthorization:
             # 检查登录状态（增加超时处理）
             try:
                 if "Just a moment" in await self.page.title():
-                    await self._save_page_debug("auth_cloudflare_check")
-                    raise RuntimeError("Cloudflare security check is visible")
+                    logger.debug("Cloudflare security check is visible, waiting for auto pass")
+                    for _ in range(5):
+                        await self.page.wait_for_timeout(5000)
+                        if "Just a moment" not in await self.page.title():
+                            break
+                    if "Just a moment" in await self.page.title():
+                        await self._save_page_debug("auth_cloudflare_check")
+                        raise RuntimeError("Cloudflare security check is visible")
                 status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
             except Exception as e:
                 # 超时时检查是否在修正页面
