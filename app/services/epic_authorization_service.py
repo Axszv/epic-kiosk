@@ -237,18 +237,38 @@ class EpicAuthorization:
                 """等待登录结果（成功或失败）"""
                 return await self._is_login_success_signal.get()
 
+            async def retrigger_security_check():
+                """Reopen Epic/Talon security checks after a stale challenge."""
+                with suppress(Exception):
+                    password_box = self.page.locator("#password")
+                    if await password_box.is_visible(timeout=1000):
+                        await password_box.clear()
+                        await password_box.type(settings.EPIC_PASSWORD.get_secret_value())
+
+                for selector in ("#talon_error_container_login_prod button", "#sign-in"):
+                    with suppress(Exception):
+                        button = self.page.locator(selector).first
+                        if await button.is_visible(timeout=1500):
+                            logger.debug(f"重新触发安全检查: {selector}")
+                            await button.click(timeout=3000)
+                            await self.page.wait_for_timeout(3000)
+                            return
+
             async def handle_captcha():
                 """处理验证码（如果需要）"""
                 nonlocal captcha_success
                 for captcha_attempt in range(1, 4):
                     if result_task.done():
                         return
+                    if captcha_attempt > 1:
+                        await retrigger_security_check()
                     try:
                         logger.debug(f"处理验证码尝试 [{captcha_attempt}/3]")
                         await agent.wait_for_challenge()
                         captcha_success = True
                     except Exception as e:
                         logger.warning(f"验证码处理异常 [{captcha_attempt}/3]: {e}")
+                        await retrigger_security_check()
                     await self.page.wait_for_timeout(2000)
 
             # 同时启动两个任务
@@ -552,6 +572,9 @@ class EpicAuthorization:
 
             # 检查登录状态（增加超时处理）
             try:
+                if "Just a moment" in await self.page.title():
+                    await self._save_page_debug("auth_cloudflare_check")
+                    raise RuntimeError("Cloudflare security check is visible")
                 status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
             except Exception as e:
                 # 超时时检查是否在修正页面
