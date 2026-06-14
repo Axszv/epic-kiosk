@@ -7,6 +7,10 @@ on:
         description: "Limit accounts for a manual debug run. Leave empty to run all."
         required: false
         default: ""
+      account_index:
+        description: "Run only one 1-based account index. Overrides account_limit."
+        required: false
+        default: ""
       execution_timeout:
         description: "hcaptcha challenge execution timeout in seconds."
         required: false
@@ -93,6 +97,7 @@ jobs:
       - name: Run Epic claim
         env:
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
+          EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
         run: python scripts/github_actions_claim_once.py
 

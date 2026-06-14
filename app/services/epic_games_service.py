@@ -392,29 +392,87 @@ class EpicGames:
         self._promotions: List[PromotionGame] = []
 
     @staticmethod
+    async def _save_debug_page(page: Page, label: str):
+        with suppress(Exception):
+            RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+            safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label)
+            RUNTIME_DIR.joinpath(f"{safe_label}.json").write_text(
+                json.dumps(
+                    {"url": page.url, "title": await page.title()},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            await page.evaluate(
+                """([email, password]) => {
+                    for (const input of document.querySelectorAll('input, textarea')) {
+                        if (input.value) input.value = '***';
+                    }
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                        if (email) node.nodeValue = node.nodeValue.split(email).join('***');
+                        if (password) node.nodeValue = node.nodeValue.split(password).join('***');
+                    }
+                }""",
+                [settings.EPIC_EMAIL, settings.EPIC_PASSWORD.get_secret_value()],
+            )
+            html = await page.content()
+            html = html.replace(settings.EPIC_EMAIL, "***")
+            html = html.replace(settings.EPIC_PASSWORD.get_secret_value(), "***")
+            RUNTIME_DIR.joinpath(f"{safe_label}.html").write_text(html, encoding="utf-8")
+            await page.screenshot(
+                path=str(RUNTIME_DIR.joinpath(f"{safe_label}.png")),
+                full_page=True,
+            )
+
+    @staticmethod
     async def fetch_order_history(page: Page) -> dict:
         """Fetch Epic order history with the browser session."""
         endpoint = "https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory"
+        request_headers = {
+            "accept": "application/json, text/plain, */*",
+            "referer": "https://www.epicgames.com/account/transactions?lang=en-US",
+            "x-requested-with": "XMLHttpRequest",
+        }
 
         try:
-            result = await page.evaluate(
-                """async (endpoint) => {
-                    const resp = await fetch(endpoint, {
-                        credentials: "include",
-                        headers: { "accept": "application/json" },
-                    });
-                    return { status: resp.status, text: await resp.text() };
-                }""",
+            resp = await page.context.request.get(
                 endpoint,
+                headers=request_headers,
+                timeout=30000,
             )
-            if 200 <= int(result["status"]) < 300:
-                return json.loads(result["text"])
-            logger.warning(f"浏览器内订单接口返回 HTTP {result['status']}")
+            if 200 <= int(resp.status) < 300:
+                return await resp.json()
+            logger.warning(f"Playwright order API returned HTTP {resp.status}")
         except Exception as err:
-            logger.warning(f"浏览器内订单接口失败: {err}")
+            logger.warning(f"Playwright order API failed: {err}")
 
-        cookies = await page.context.cookies("https://www.epicgames.com")
-        headers = {}
+        if not page.url.startswith("https://www.epicgames.com/"):
+            logger.warning(f"Skip in-page order fetch from non-account origin: {page.url}")
+        else:
+            try:
+                result = await page.evaluate(
+                    """async (endpoint) => {
+                        const resp = await fetch(endpoint, {
+                            credentials: "include",
+                            headers: {
+                                "accept": "application/json, text/plain, */*",
+                                "x-requested-with": "XMLHttpRequest"
+                            }
+                        });
+                        return { status: resp.status, text: await resp.text() };
+                    }""",
+                    endpoint,
+                )
+                if 200 <= int(result["status"]) < 300:
+                    return json.loads(result["text"])
+                logger.warning(f"In-page order API returned HTTP {result['status']}")
+            except Exception as err:
+                logger.warning(f"In-page order API failed: {err}")
+
+        cookies = await page.context.cookies()
+        headers = dict(request_headers)
         with suppress(Exception):
             headers["user-agent"] = await page.evaluate("navigator.userAgent")
 
@@ -587,23 +645,19 @@ class EpicGames:
                 await accept.click()
                 return True
 
-    @staticmethod
-    async def _owned_from_product_page(page: Page) -> bool:
+    async def _owned_from_product_page(self, page: Page, promotion: PromotionGame) -> bool:
         with suppress(Exception):
             await page.reload(wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
 
         with suppress(Exception):
-            body_text = await page.locator("body").text_content(timeout=5000)
-            if body_text and any(marker in body_text for marker in ("In Library", "Owned")):
-                return True
-
-        with suppress(Exception):
             purchase_btn = page.locator("//button[@data-testid='purchase-cta-button']").first
             btn_text = (await purchase_btn.text_content(timeout=5000) or "").strip().upper()
+            logger.info(f"Ownership CTA for {promotion.title}: {btn_text!r}")
             if any(marker in btn_text for marker in ("IN LIBRARY", "OWNED")):
                 return True
 
+        await self._save_debug_page(page, f"ownership_not_verified_{promotion.namespace}")
         return False
 
     @staticmethod
@@ -629,7 +683,7 @@ class EpicGames:
             if await self._owned_from_order_history(page, promotion):
                 logger.success(f"🎉 订单历史确认已领取: {promotion.title}")
                 return True
-            if await self._owned_from_product_page(page):
+            if await self._owned_from_product_page(page, promotion):
                 logger.success(f"🎉 商品页确认已入库: {promotion.title}")
                 return True
             logger.warning(f"⚠️ 未确认入库，等待后重试 [{attempt}/4]: {promotion.title}")
@@ -713,12 +767,12 @@ class EpicGames:
             # 2. 检查按钮可见性
             try:
                 if not await purchase_btn.is_visible(timeout=5000):
-                    all_text = await page.locator("body").text_content()
-                    if "In Library" in all_text or "Owned" in all_text:
+                    if await self._owned_from_product_page(page, promotion):
                          logger.success(f"✅ 游戏已在库中")
                          continue
-                    logger.warning(f"⚠️ 找不到购买按钮")
-                    continue
+                    raise AssertionError(f"Could not find purchase button for {promotion.title}")
+            except AssertionError:
+                raise
             except Exception:
                 pass
 
@@ -734,10 +788,15 @@ class EpicGames:
 
             # 5. 根据状态判断
             if is_disabled:
-                logger.success(f"✅ 游戏已在库中")
-                continue
+                if any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED"]):
+                    logger.success(f"✅ 游戏已在库中")
+                    continue
+                await self._save_debug_page(page, f"purchase_disabled_{promotion.namespace}")
+                raise AssertionError(
+                    f"Purchase button is disabled without ownership marker for {promotion.title}: {btn_text!r}"
+                )
 
-            if any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED", "UNAVAILABLE", "COMING SOON"]):
+            if any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED"]):
                 logger.success(f"✅ 游戏已在库中")
                 continue
 

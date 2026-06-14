@@ -63,8 +63,16 @@ def clean_directory(path: Path) -> None:
 
 def main() -> int:
     accounts = load_accounts()
+    account_index = os.getenv("EPIC_ACCOUNT_INDEX", "").strip()
     account_limit = os.getenv("EPIC_ACCOUNT_LIMIT", "").strip()
-    if account_limit:
+    if account_index:
+        index = int(account_index)
+        if index <= 0 or index > len(accounts):
+            raise SystemExit(
+                f"EPIC_ACCOUNT_INDEX must be between 1 and {len(accounts)}"
+            )
+        accounts = [accounts[index - 1]]
+    elif account_limit:
         limit = int(account_limit)
         if limit <= 0:
             raise SystemExit("EPIC_ACCOUNT_LIMIT must be a positive integer")
