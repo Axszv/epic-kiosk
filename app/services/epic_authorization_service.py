@@ -208,6 +208,8 @@ class EpicAuthorization:
 
         # 用于记录验证码处理是否成功
         captcha_success = False
+        captcha_task = None
+        keepalive_task = None
 
         try:
             point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
@@ -258,6 +260,24 @@ class EpicAuthorization:
                             await self.page.wait_for_timeout(3000)
                             return
 
+            async def keep_login_flow_alive():
+                """Re-submit the login form if Epic returns to the password step."""
+                while not result_task.done():
+                    await self.page.wait_for_timeout(8000)
+                    if result_task.done():
+                        return
+                    with suppress(Exception):
+                        password_box = self.page.locator("#password")
+                        sign_in_button = self.page.locator("#sign-in").first
+                        if (
+                            await password_box.is_visible(timeout=1000)
+                            and await sign_in_button.is_visible(timeout=1000)
+                        ):
+                            logger.debug("检测到仍停留在密码页，重新提交登录")
+                            await password_box.clear()
+                            await password_box.type(settings.EPIC_PASSWORD.get_secret_value())
+                            await sign_in_button.click(timeout=3000)
+
             async def handle_captcha():
                 """处理验证码（如果需要）"""
                 nonlocal captcha_success
@@ -278,6 +298,7 @@ class EpicAuthorization:
             # 同时启动两个任务
             result_task = asyncio.create_task(wait_for_login_result())
             captcha_task = asyncio.create_task(handle_captcha())
+            keepalive_task = asyncio.create_task(keep_login_flow_alive())
 
             # 第一阶段：15秒内快速检测密码错误
             try:
@@ -362,7 +383,13 @@ class EpicAuthorization:
         finally:
             # 确保清理任务
             try:
-                captcha_task.cancel()
+                if captcha_task:
+                    captcha_task.cancel()
+            except:
+                pass
+            try:
+                if keepalive_task:
+                    keepalive_task.cancel()
             except:
                 pass
 
