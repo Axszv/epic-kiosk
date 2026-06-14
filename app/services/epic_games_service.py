@@ -258,9 +258,20 @@ class EpicAgent:
             return
         completed_orders: List[OrderItem] = []
         try:
-            await self.page.goto("https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory")
-            text_content = await self.page.text_content("//pre")
-            data = json.loads(text_content)
+            cookies = await self.page.context.cookies("https://www.epicgames.com")
+            headers = {}
+            with suppress(Exception):
+                headers["user-agent"] = await self.page.evaluate("navigator.userAgent")
+
+            async with httpx.AsyncClient(
+                cookies={cookie["name"]: cookie["value"] for cookie in cookies},
+                headers=headers,
+                follow_redirects=True,
+                timeout=30,
+            ) as client:
+                resp = await client.get("https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory")
+                resp.raise_for_status()
+                data = resp.json()
             for _order in data["orders"]:
                 order = Order(**_order)
                 if order.orderType != "PURCHASE":
