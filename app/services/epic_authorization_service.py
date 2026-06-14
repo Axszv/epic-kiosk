@@ -241,11 +241,21 @@ class EpicAuthorization:
             except Exception:
                 await self._save_page_debug("login_email_wait_timeout")
                 raise
-            with suppress(Exception):
-                if await email_input.get_attribute("readonly"):
-                    if not self._is_refresh_csrf_signal.empty():
-                        logger.success("✅ 邮箱输入框只读且会话已建立，跳过登录表单")
-                        return (True, ErrorType.SUCCESS)
+            for _ in range(30):
+                if not self._is_refresh_csrf_signal.empty():
+                    logger.success("✅ 邮箱输入框等待期间会话已建立，跳过登录表单")
+                    return (True, ErrorType.SUCCESS)
+                readonly = False
+                with suppress(Exception):
+                    readonly = bool(await email_input.get_attribute("readonly"))
+                if not readonly:
+                    break
+                await self.page.wait_for_timeout(500)
+
+            if not self._is_refresh_csrf_signal.empty():
+                logger.success("✅ 会话已建立，跳过登录表单")
+                return (True, ErrorType.SUCCESS)
+
             await email_input.clear()
             await email_input.type(settings.EPIC_EMAIL)
 
