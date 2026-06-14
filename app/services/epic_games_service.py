@@ -809,14 +809,72 @@ class EpicGames:
             # 6. 尝试领取
             # 只要不是黑名单，也不是购物车，统统当做 "Get/Purchase" 直接点击！
             logger.debug(f"⚡️ 尝试点击按钮: {btn_text}")
-            await purchase_btn.click()
+            max_attempts = max(1, settings.CHECKOUT_MAX_ATTEMPTS)
+            verified = False
+            last_error = f"Checkout was not submitted for {promotion.title}"
 
-            # 点击后，转入即时结账流程
-            checkout_submitted = await self._handle_instant_checkout(page)
-            if not checkout_submitted:
-                raise AssertionError(f"Checkout was not submitted for {promotion.title}")
-            if not await self._wait_until_owned(page, promotion):
-                raise AssertionError(f"Could not verify ownership after checkout: {promotion.title}")
+            for checkout_attempt in range(1, max_attempts + 1):
+                if checkout_attempt > 1:
+                    logger.warning(
+                        f"Retry checkout [{checkout_attempt}/{max_attempts}]: {promotion.title}"
+                    )
+                    with suppress(Exception):
+                        await page.keyboard.press("Escape")
+                    await page.goto(url, wait_until="load")
+                    await page.wait_for_timeout(3000)
+                    purchase_btn = page.locator(
+                        "//button[@data-testid='purchase-cta-button']"
+                    ).first
+                    if not await purchase_btn.is_visible(timeout=10000):
+                        if await self._owned_from_product_page(page, promotion):
+                            verified = True
+                            break
+                        last_error = f"Could not find purchase button for {promotion.title}"
+                        continue
+
+                    btn_text = (await purchase_btn.text_content() or "").strip()
+                    btn_text_upper = btn_text.upper()
+                    is_disabled = await purchase_btn.is_disabled()
+                    logger.info(
+                        f"Retry button state [{checkout_attempt}/{max_attempts}]: "
+                        f"{btn_text!r} | disabled: {is_disabled}"
+                    )
+                    if any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED"]):
+                        verified = True
+                        break
+                    if is_disabled:
+                        await self._save_debug_page(
+                            page, f"retry_purchase_disabled_{promotion.namespace}"
+                        )
+                        last_error = (
+                            "Purchase button is disabled without ownership marker "
+                            f"for {promotion.title}: {btn_text!r}"
+                        )
+                        continue
+
+                await purchase_btn.click()
+
+                # 点击后，转入即时结账流程
+                checkout_submitted = await self._handle_instant_checkout(page)
+                if not checkout_submitted:
+                    logger.warning(
+                        f"Checkout not submitted [{checkout_attempt}/{max_attempts}]: "
+                        f"{promotion.title}"
+                    )
+                    continue
+
+                if await self._wait_until_owned(page, promotion):
+                    verified = True
+                    break
+
+                last_error = f"Could not verify ownership after checkout: {promotion.title}"
+                logger.warning(
+                    f"Ownership not verified [{checkout_attempt}/{max_attempts}]: "
+                    f"{promotion.title}"
+                )
+
+            if not verified:
+                raise AssertionError(last_error)
             # ------------------------------------------------------------
 
         return has_pending_cart_items
