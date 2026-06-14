@@ -240,16 +240,20 @@ class EpicAuthorization:
             async def handle_captcha():
                 """处理验证码（如果需要）"""
                 nonlocal captcha_success
-                try:
-                    await agent.wait_for_challenge()
-                    captcha_success = True
-                except Exception as e:
-                    logger.warning(f"验证码处理异常: {e}")
-                    pass  # 验证码处理失败不影响登录结果判断
+                for captcha_attempt in range(1, 4):
+                    if result_task.done():
+                        return
+                    try:
+                        logger.debug(f"处理验证码尝试 [{captcha_attempt}/3]")
+                        await agent.wait_for_challenge()
+                        captcha_success = True
+                    except Exception as e:
+                        logger.warning(f"验证码处理异常 [{captcha_attempt}/3]: {e}")
+                    await self.page.wait_for_timeout(2000)
 
             # 同时启动两个任务
-            captcha_task = asyncio.create_task(handle_captcha())
             result_task = asyncio.create_task(wait_for_login_result())
+            captcha_task = asyncio.create_task(handle_captcha())
 
             # 第一阶段：15秒内快速检测密码错误
             try:
