@@ -133,6 +133,9 @@ class EpicAuthorization:
                     # 记录错误码并通知登录失败
                     self._login_error_code = result.get("errorCode")
                     error_msg = result.get("errorMessage", "未知错误")
+                    if "csrf_token_invalid" in self._login_error_code:
+                        logger.warning("登录 API 返回 csrf_token_invalid，继续等待 refresh-csrf 会话信号")
+                        return
                     # 记录完整的错误信息
                     logger.error(f"❌ 登录失败: errorCode={self._login_error_code}, message={error_msg}")
                     logger.error(f"❌ 完整错误响应: {json.dumps(result, ensure_ascii=False)}")
