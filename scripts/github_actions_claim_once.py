@@ -63,9 +63,17 @@ def clean_directory(path: Path) -> None:
             item.unlink()
 
 
+def write_run_summary(path: Path, summary: dict) -> None:
+    path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 PROMOTION_RE = re.compile(r'\{"title": "([^"]+)", "url": "([^"]+)"\}')
 OWNERSHIP_CTA_RE = re.compile(r"Ownership CTA for (.*?): '([^']+)'")
+ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\-]+)")
 
 
 def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
@@ -107,6 +115,20 @@ def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
                     break
 
     return evidence
+
+
+def parse_error_markers(output: str) -> list[dict[str, str]]:
+    markers: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_line in output.splitlines():
+        line = ANSI_RE.sub("", raw_line)
+        for kind, value in ERROR_MARKER_RE.findall(line):
+            key = (kind, value)
+            if key in seen:
+                continue
+            seen.add(key)
+            markers.append({"kind": kind, "value": value})
+    return markers
 
 
 def run_account(account: dict[str, str], display_index: int, attempt: int) -> tuple[bool, dict]:
@@ -177,6 +199,7 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
     print("::endgroup::")
 
     evidence = parse_claim_evidence(output)
+    error_markers = parse_error_markers(output)
     missing_evidence = [
         title
         for title, item in evidence.items()
@@ -189,21 +212,29 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
             flush=True,
         )
 
-    failed = timed_out or proc.returncode != 0 or bool(missing_evidence) or any(
-        marker in output
-        for marker in (
-            "FINAL_ERROR:",
-            "ERROR_TYPE:",
-            "GAME_ERROR:",
-            "Traceback",
-            "ModuleNotFoundError",
-        )
+    failure_reasons = []
+    if timed_out:
+        failure_reasons.append(f"process_timeout:{timeout_seconds}s")
+    if proc.returncode != 0:
+        failure_reasons.append(f"returncode:{proc.returncode}")
+    if missing_evidence:
+        failure_reasons.append("missing_ownership_evidence")
+    failure_reasons.extend(
+        f"{marker['kind']}:{marker['value']}" for marker in error_markers
     )
+    if "Traceback" in output:
+        failure_reasons.append("python_traceback")
+    if "ModuleNotFoundError" in output:
+        failure_reasons.append("module_not_found")
+
+    failed = bool(failure_reasons)
     result = {
         "attempt": attempt,
         "timed_out": timed_out,
         "returncode": proc.returncode,
         "failed": failed,
+        "failure_reasons": failure_reasons,
+        "error_markers": error_markers,
         "missing_evidence": missing_evidence,
         "evidence": evidence,
     }
@@ -234,36 +265,62 @@ def main() -> int:
 
     append_summary("## Epic Kiosk run\n\n")
     failures = 0
-    max_attempts = max(1, int(os.getenv("EPIC_ACCOUNT_MAX_ATTEMPTS", "2")))
-    summary = {"accounts": []}
+    max_attempts = max(1, int(os.getenv("EPIC_ACCOUNT_MAX_ATTEMPTS", "3")))
+    summary_path = Path("app/volumes/runtime/github_actions_summary.json")
+    account_results: dict[int, dict] = {}
 
     for original_index, account in indexed_accounts:
         email = account["email"]
         masked = mask_email(email)
-        account_result = {
+        account_results[original_index] = {
             "index": original_index,
             "email": masked,
-            "status": "failed",
+            "status": "pending",
             "attempts": [],
             "final_evidence": {},
         }
 
-        for attempt in range(1, max_attempts + 1):
+    summary = {"accounts": list(account_results.values())}
+    write_run_summary(summary_path, summary)
+
+    for attempt in range(1, max_attempts + 1):
+        pending_indexes = [
+            original_index
+            for original_index, _ in indexed_accounts
+            if account_results[original_index]["status"] != "completed"
+        ]
+        if not pending_indexes:
+            break
+
+        print(
+            f"Starting attempt round {attempt}/{max_attempts} for account(s): "
+            + ", ".join(str(index) for index in pending_indexes),
+            flush=True,
+        )
+
+        for original_index, account in indexed_accounts:
+            account_result = account_results[original_index]
+            if account_result["status"] == "completed":
+                continue
+
             ok, attempt_result = run_account(account, original_index, attempt)
             account_result["attempts"].append(attempt_result)
             account_result["final_evidence"] = attempt_result["evidence"]
             if ok:
                 account_result["status"] = "completed"
-                break
-            if attempt < max_attempts:
+            elif attempt < max_attempts:
                 print(
                     f"Account {original_index} failed attempt {attempt}; "
-                    f"retrying with a fresh browser process."
+                    "retrying in the next round with a fresh browser process."
                 )
 
-        summary["accounts"].append(account_result)
+            write_run_summary(summary_path, summary)
 
+    for original_index, _ in indexed_accounts:
+        account_result = account_results[original_index]
+        masked = account_result["email"]
         if account_result["status"] != "completed":
+            account_result["status"] = "failed"
             failures += 1
             append_summary(
                 f"- account {original_index} {masked}: failed after "
@@ -278,10 +335,16 @@ def main() -> int:
             for title, item in account_result["final_evidence"].items():
                 append_summary(f"  - {title}: {item['status']}\n")
 
-        Path("app/volumes/runtime/github_actions_summary.json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        for attempt_result in account_result["attempts"]:
+            if not attempt_result.get("failed"):
+                continue
+            reasons = attempt_result.get("failure_reasons") or ["unknown_failure"]
+            append_summary(
+                f"  - attempt {attempt_result['attempt']} failed: "
+                f"{', '.join(reasons)}\n"
+            )
+
+        write_run_summary(summary_path, summary)
 
     return 1 if failures else 0
 
