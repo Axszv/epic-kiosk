@@ -2,6 +2,7 @@ import json
 import os
 import re
 import selectors
+import signal
 import shutil
 import subprocess
 import sys
@@ -120,6 +121,9 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
     env.setdefault("GEMINI_API_KEY", "not_used")
 
     timeout_seconds = int(os.getenv("TASK_TIMEOUT_SECONDS", "1200"))
+    popen_kwargs = {}
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(
         ["xvfb-run", "-a", sys.executable, "app/deploy.py"],
         env=env,
@@ -127,6 +131,7 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
+        **popen_kwargs,
     )
 
     chunks: list[str] = []
@@ -147,14 +152,25 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
             timeout_msg = f"FINAL_ERROR:timeout after {timeout_seconds}s\n"
             chunks.append(timeout_msg)
             print(timeout_msg, end="", flush=True)
-            proc.kill()
-            proc.wait()
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
             break
 
-    remainder = proc.stdout.read()
-    if remainder:
-        chunks.append(remainder)
-        print(remainder, end="", flush=True)
+    if not timed_out:
+        remainder = proc.stdout.read()
+        if remainder:
+            chunks.append(remainder)
+            print(remainder, end="", flush=True)
     selector.close()
 
     output = "".join(chunks)
