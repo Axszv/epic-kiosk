@@ -125,12 +125,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Send WxPusher notification
+      - name: Send ServerChan notification
         if: always()
         continue-on-error: true
         env:
-          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
-          WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
           RUN_CONCLUSION: ${{ job.status }}
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python scripts/wxpusher_notify.py
+        run: python scripts/serverchan_notify.py
