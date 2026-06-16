@@ -1,12 +1,15 @@
 import json
 import os
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 
 WXPUSHER_ENDPOINT = "https://wxpusher.zjiecode.com/api/send/message"
+WXPUSHER_STATUS_ENDPOINT = "https://wxpusher.zjiecode.com/api/send/query/status"
 
 
 def load_summary(path: Path) -> dict:
@@ -89,6 +92,7 @@ def send_wxpusher(summary: str, content: str) -> None:
         "summary": summary,
         "contentType": 1,
         "uids": [uid],
+        "verifyPay": False,
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
@@ -117,6 +121,51 @@ def send_wxpusher(summary: str, content: str) -> None:
     if code not in (1000, 200) and not success:
         print(f"WxPusher returned failure: code={code}", file=sys.stderr)
         raise SystemExit(1)
+
+    record_ids = [
+        str(item.get("sendRecordId"))
+        for item in (result.get("data") or [])
+        if item.get("sendRecordId")
+    ]
+    for record_id in record_ids:
+        wait_for_delivery_status(record_id)
+
+
+def query_delivery_status(send_record_id: str) -> dict:
+    params = urllib.parse.urlencode({"sendRecordId": send_record_id})
+    request = urllib.request.Request(f"{WXPUSHER_STATUS_ENDPOINT}?{params}")
+    with urllib.request.urlopen(request, timeout=20) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    return json.loads(raw)
+
+
+def wait_for_delivery_status(send_record_id: str) -> None:
+    status_names = {
+        0: "unknown",
+        1: "waiting",
+        2: "sent",
+        3: "failed",
+    }
+    delays = [5, 15, 30]
+    for attempt, delay in enumerate(delays, start=1):
+        time.sleep(delay)
+        result = query_delivery_status(send_record_id)
+        status_code = result.get("data")
+        status_name = status_names.get(status_code, str(status_code))
+        print(
+            f"WxPusher delivery status for record {send_record_id}: "
+            f"{status_name} ({status_code})"
+        )
+        if status_code == 2:
+            return
+        if status_code == 3:
+            raise SystemExit(1)
+        if attempt == len(delays):
+            print(
+                "WxPusher accepted the message but it is still waiting to be sent.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
 
 
 def main() -> int:
