@@ -124,3 +124,13 @@ jobs:
             app/volumes/runtime
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Send WxPusher notification
+        if: always()
+        continue-on-error: true
+        env:
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+          WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
+          RUN_CONCLUSION: ${{ job.status }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python scripts/wxpusher_notify.py
