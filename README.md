@@ -33,7 +33,7 @@
 
 这是当前 fork 推荐的自动运行方式，不需要常驻 Web 后台。
 
-定时任务当前为每周三、周五北京时间 08:00 和 20:00。也可以在 `Actions -> Epic Kiosk Claim -> Run workflow` 手动触发。
+定时任务当前为每周三、周五北京时间 08:17 和 20:17。也可以在 `Actions -> Epic Kiosk Claim -> Run workflow` 手动触发。
 
 需要在仓库 `Settings -> Secrets and variables -> Actions` 配置：
 
