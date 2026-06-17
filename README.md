@@ -284,6 +284,21 @@ docker compose build --no-cache && docker compose up -d
 
 ---
 
+## 当前 fork 与原版的区别
+
+本仓库基于 `10000ge10000/epic-kiosk` 调整，当前主要服务于 GitHub Actions 自动运行场景。和原版相比，主要区别如下：
+
+- 增加 GitHub Actions 一次性领取工作流，可通过手动触发或定时任务运行，不依赖常驻 Web 后台。
+- 定时任务当前设置为每周三、周五的北京时间 08:00 和 20:00 运行。
+- GitHub Actions 使用 `EPIC_ACCOUNTS_JSON` Secret 管理多账号，避免把账号密码写入仓库。
+- AI 接口切换为 OpenAI-compatible 配置，当前 GitHub Actions 使用 `agnes-2.0-flash` 作为主备模型。
+- 增加账号级重试与严格结果校验，只有检测到每个免费游戏都已入库时才把账号标记为完成，降低漏领风险。
+- 运行结束后会通过 Server酱发送中文通知，通知中包含每个账号的掩码邮箱、尝试次数和游戏入库结果。
+- 保留运行日志、截图、页面快照和 `github_actions_summary.json` 作为 Actions artifact，便于事后排查。
+- 额外保留网络诊断 workflow，用于排查 GitHub Actions 环境访问 Epic 相关地址的连通性。
+
+---
+
 ## 致谢
 
 - 原项目：[QIN2DIM/epic-awesome-gamer](https://github.com/QIN2DIM/epic-awesome-gamer)
