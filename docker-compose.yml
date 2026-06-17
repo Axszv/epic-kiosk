@@ -54,10 +54,9 @@ services:
       - REDIS_HOST=redis
       - TZ=Asia/Shanghai
       # 历史数据偏移量配置（用于补偿丢失的记录，其他用户无需修改）
-      - CLAIM_HISTORY_OFFSET=${CLAIM_HISTORY_OFFSET:-0}
-      - ACCOUNT_VERIFIED_OFFSET=${ACCOUNT_VERIFIED_OFFSET:-0}
-      - ACCOUNT_TOTAL_OFFSET=${ACCOUNT_TOTAL_OFFSET:-0}
-      - FREE_GAMES_PROXY_URL=${FREE_GAMES_PROXY_URL:-}
+      - CLAIM_HISTORY_OFFSET=1132
+      - ACCOUNT_VERIFIED_OFFSET=140
+      - ACCOUNT_TOTAL_OFFSET=140
     depends_on:
       redis:
         condition: service_healthy
@@ -116,17 +115,16 @@ services:
       - ./data:/app/app/volumes
       # Docker socket - 允许 worker 重启 WARP 容器
       - /var/run/docker.sock:/var/run/docker.sock
-      - /usr/bin/docker:/usr/bin/docker:ro
     environment:
       - REDIS_HOST=redis
       - TZ=Asia/Shanghai
       - PYTHONUNBUFFERED=1
       - ENABLE_APSCHEDULER=false
-      - API_PROVIDER=${API_PROVIDER:-openai_compatible}
-      - API_BASE_URL=${API_BASE_URL}
+      - API_PROVIDER=siliconflow
+      - API_BASE_URL=https://api.siliconflow.cn/v1
       # WARP HTTP 代理（容器内部网络）
-      # HTTP_PROXY/HTTPS_PROXY intentionally disabled: current VM egress policy
-      # blocks Cloudflare WARP registration endpoints.
+      - HTTP_PROXY=http://epic-warp:19000
+      - HTTPS_PROXY=http://epic-warp:19000
       # WARP 代理配置（用于检测和重启）
       - WARP_PROXY_HOST=epic-warp
       - WARP_PROXY_PORT=19000
@@ -144,23 +142,25 @@ services:
       # 3. 进入 API Key 管理页创建新密钥；通过分享链接注册认证后，双方可获得 16 元代金券
       # 4. 复制 sk- 开头的 API Key
       # ============================================================
-      - API_KEY=${API_KEY}
+      - API_KEY=${API_KEY:-sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}
       # 环境变量（绕过父类验证器，无需修改）
       - GEMINI_API_KEY=not_used
       # ============================================================
       # 模型配置（SiliconFlow 实测通过）
-      - CAPTCHA_MODEL=${CAPTCHA_MODEL}
-      - CAPTCHA_MODEL_FALLBACK=${CAPTCHA_MODEL_FALLBACK}
-      - PRIMARY_MODEL=${PRIMARY_MODEL}
-      - PRIMARY_MODEL_FALLBACK=${PRIMARY_MODEL_FALLBACK}
-      - RESPONSE_TIMEOUT=${RESPONSE_TIMEOUT:-120}
+      - CAPTCHA_MODEL=Qwen/Qwen3-VL-32B-Instruct
+      - CAPTCHA_MODEL_FALLBACK=Qwen/Qwen3-VL-30B-A3B-Instruct
+      - PRIMARY_MODEL=deepseek-ai/DeepSeek-V4-Flash
+      - PRIMARY_MODEL_FALLBACK=deepseek-ai/DeepSeek-V4-Pro
+      - RESPONSE_TIMEOUT=120
       # 验证码失败后的自动恢复策略
-      - CAPTCHA_FAILURE_MAX_RETRIES=${CAPTCHA_FAILURE_MAX_RETRIES:-2}
-      - CAPTCHA_FAILURE_RETRY_DELAY_SECONDS=${CAPTCHA_FAILURE_RETRY_DELAY_SECONDS:-900}
-      - WARP_RESTART_COOLDOWN_SECONDS=${WARP_RESTART_COOLDOWN_SECONDS:-300}
-      - TASK_SPACING_SECONDS=${TASK_SPACING_SECONDS:-5}
+      - CAPTCHA_FAILURE_MAX_RETRIES=2
+      - CAPTCHA_FAILURE_RETRY_DELAY_SECONDS=900
+      - WARP_RESTART_COOLDOWN_SECONDS=300
+      - TASK_SPACING_SECONDS=5
     depends_on:
       redis:
+        condition: service_healthy
+      warp:
         condition: service_healthy
     restart: always
     logging:

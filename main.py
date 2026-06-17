@@ -36,12 +36,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(USER_DATA_DIR, exist_ok=True)
 
 # 2. Redis
-redis_url = os.getenv("REDIS_URL")
-if redis_url:
-    r = redis.from_url(redis_url, decode_responses=True)
-else:
-    redis_host = os.getenv("REDIS_HOST", "localhost")
-    r = redis.Redis(host=redis_host, port=6379, decode_responses=True)
+redis_host = os.getenv("REDIS_HOST", "localhost")
+r = redis.Redis(host=redis_host, port=6379, decode_responses=True)
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -296,13 +292,9 @@ def daily_job():
 
 scheduler = AsyncIOScheduler()
 scheduler.add_job(daily_job, 'cron', hour=12, minute=0)
-ENABLE_APSCHEDULER = os.getenv("ENABLE_APSCHEDULER", "true").lower() not in {"0", "false", "no"}
 
 @app.on_event("startup")
 async def start_scheduler():
-    if not ENABLE_APSCHEDULER:
-        print("APScheduler disabled by ENABLE_APSCHEDULER=false")
-        return
     if not scheduler.running:
         scheduler.start()
 
@@ -387,12 +379,7 @@ async def get_free_games():
         return {"status": "success", "data": json.loads(cached), "cached": True}
 
     try:
-        client_kwargs = {"timeout": 15, "follow_redirects": True}
-        free_games_proxy = os.getenv("FREE_GAMES_PROXY_URL")
-        if free_games_proxy:
-            client_kwargs["proxy"] = free_games_proxy
-
-        async with httpx.AsyncClient(**client_kwargs) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             # 直接使用 Epic 官方 API
             api_url = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
             headers = {

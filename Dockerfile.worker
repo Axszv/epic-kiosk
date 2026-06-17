@@ -2,17 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# 预创建挂载点目录（解决 Docker 存储驱动挂载权限问题）
 RUN mkdir -p /app/data /app/app/volumes
 
-# The VM blocks Fastly-backed deb.debian.org. Use a reachable Debian mirror for
-# the main repository; security.debian.org may still warn, but packages below
-# are available from the main repository.
-RUN sed -i \
-    -e 's#http://deb.debian.org/debian-security#http://security.debian.org/debian-security#g' \
-    -e 's#http://deb.debian.org/debian#http://ftp.us.debian.org/debian#g' \
-    /etc/apt/sources.list.d/debian.sources
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 安装系统依赖（包含 docker 客户端）
+RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     ca-certificates \
@@ -36,20 +30,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2 \
     xdg-utils \
     xvfb \
-    xauth \
     curl \
+    && curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh && rm get-docker.sh \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-    --trusted-host pypi.tuna.tsinghua.edu.cn \
-    uv
+# 安装 uv
+RUN pip install --no-cache-dir uv
 
+# 复制项目文件
 COPY pyproject.toml ./
 COPY app ./app
 
+# 安装 Python 依赖
 RUN uv pip install --system --no-cache \
-    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
     apscheduler>=3.11.0 \
     pydantic-settings>=2.8.1 \
     celery[redis]>=5.4.0 \
@@ -60,10 +53,13 @@ RUN uv pip install --system --no-cache \
     beautifulsoup4 \
     lxml
 
-# Preload Camoufox when the network allows it; keep the image build usable when
-# browser download endpoints are blocked by egress policy.
+# 安装 Playwright 浏览器依赖
+RUN playwright install firefox && playwright install-deps firefox
+
+# 预装 Camoufox 浏览器 (避免每次运行时下载)
 RUN python3 -c "from camoufox.sync_api import Camoufox; Camoufox(headless=True).__enter__().__exit__(None, None, None)" || true
 
+# 复制 worker 脚本
 COPY worker.py ./
 
 USER root

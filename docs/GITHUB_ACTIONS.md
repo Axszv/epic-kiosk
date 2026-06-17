@@ -1,18 +1,16 @@
-# GitHub Actions deployment
+# GitHub Actions 自动领取
 
-This workflow runs Epic Kiosk as a scheduled one-shot job. It does not provide
-the web dashboard.
+该 workflow 会以一次性任务运行 Epic Kiosk，不提供 Web 后台。
 
-Use a private repository. The workflow caches browser profiles and cookies under
-`app/volumes`, and those files should be treated as account-sensitive state.
+建议使用私有仓库。workflow 会缓存 `app/volumes` 下的浏览器 profile 和 Cookie，这些文件应视为账号敏感状态。
 
-## Required repository secrets
+## 必需 Secrets
 
-Add these in `Settings -> Secrets and variables -> Actions -> Repository secrets`:
+在 `Settings -> Secrets and variables -> Actions -> Repository secrets` 中添加：
 
-- `API_BASE_URL`: OpenAI-compatible API base URL.
-- `API_KEY`: API key for the model provider.
-- `EPIC_ACCOUNTS_JSON`: Epic accounts, for example:
+- `API_BASE_URL`：OpenAI-compatible API 地址。
+- `API_KEY`：模型服务商 API Key。
+- `EPIC_ACCOUNTS_JSON`：Epic 账号列表，例如：
 
 ```json
 [
@@ -23,10 +21,14 @@ Add these in `Settings -> Secrets and variables -> Actions -> Repository secrets
 ]
 ```
 
-## Running
+可选：
 
-Open `Actions -> Epic Kiosk Claim -> Run workflow`.
+- `SERVERCHAN_SENDKEY`：Server酱 SendKey。配置后，运行结束会推送中文领取结果。
 
-The workflow also runs daily at `20:20 UTC` (`04:20 Asia/Shanghai`). Browser
-profiles and cookies are cached under `app/volumes` to reduce fresh-login
-friction between runs.
+## 运行方式
+
+手动运行：打开 `Actions -> Epic Kiosk Claim -> Run workflow`。
+
+定时运行：每周三、周五北京时间 08:00 和 20:00。
+
+workflow 会将运行日志、页面截图和 `github_actions_summary.json` 上传为 artifact，保留 14 天。
