@@ -1,9 +1,6 @@
 name: Epic Kiosk Claim
 
 on:
-  schedule:
-    - cron: "23 0 * * 3,5"
-    - cron: "23 12 * * 3,5"
   workflow_dispatch:
     inputs:
       account_limit:
@@ -25,6 +22,28 @@ on:
       account_max_attempts:
         description: "Maximum attempts per account. Retries use a fresh browser process."
         required: false
+        default: "3"
+  workflow_call:
+    inputs:
+      account_limit:
+        required: false
+        type: string
+        default: ""
+      account_index:
+        required: false
+        type: string
+        default: ""
+      execution_timeout:
+        required: false
+        type: string
+        default: "120"
+      login_result_timeout:
+        required: false
+        type: string
+        default: "180"
+      account_max_attempts:
+        required: false
+        type: string
         default: "3"
 
 concurrency:
@@ -49,11 +68,11 @@ jobs:
       API_SERVICE_TIER: ""
       RESPONSE_TIMEOUT: "120"
       TASK_TIMEOUT_SECONDS: "1200"
-      EXECUTION_TIMEOUT: ${{ github.event.inputs.execution_timeout || '120' }}
-      LOGIN_RESULT_TIMEOUT_SECONDS: ${{ github.event.inputs.login_result_timeout || '180' }}
+      EXECUTION_TIMEOUT: ${{ inputs.execution_timeout || '120' }}
+      LOGIN_RESULT_TIMEOUT_SECONDS: ${{ inputs.login_result_timeout || '180' }}
       CAPTCHA_FAILURE_MAX_RETRIES: "0"
       CHECKOUT_MAX_ATTEMPTS: "3"
-      EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
+      EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ inputs.account_max_attempts || '3' }}
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -106,8 +125,8 @@ jobs:
       - name: Run Epic claim
         env:
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
-          EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
-          EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
+          EPIC_ACCOUNT_INDEX: ${{ inputs.account_index || '' }}
+          EPIC_ACCOUNT_LIMIT: ${{ inputs.account_limit || '' }}
         run: python scripts/github_actions_claim_once.py
 
       - name: Save browser state

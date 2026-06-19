@@ -1,0 +1,43 @@
+name: Epic Kiosk Claim Scheduled
+
+on:
+  schedule:
+    - cron: "23 0 * * 3,5"
+    - cron: "23 12 * * 3,5"
+  workflow_dispatch:
+    inputs:
+      account_limit:
+        description: "Limit accounts for a manual debug run. Leave empty to run all."
+        required: false
+        default: ""
+      account_index:
+        description: "Run only one 1-based account index. Overrides account_limit."
+        required: false
+        default: ""
+      execution_timeout:
+        description: "hcaptcha challenge execution timeout in seconds."
+        required: false
+        default: "120"
+      login_result_timeout:
+        description: "Epic login result timeout in seconds."
+        required: false
+        default: "180"
+      account_max_attempts:
+        description: "Maximum attempts per account. Retries use a fresh browser process."
+        required: false
+        default: "3"
+
+concurrency:
+  group: epic-kiosk-claim
+  cancel-in-progress: false
+
+jobs:
+  claim:
+    uses: ./.github/workflows/epic-claim.yml
+    secrets: inherit
+    with:
+      account_limit: ${{ github.event.inputs.account_limit || '' }}
+      account_index: ${{ github.event.inputs.account_index || '' }}
+      execution_timeout: ${{ github.event.inputs.execution_timeout || '120' }}
+      login_result_timeout: ${{ github.event.inputs.login_result_timeout || '180' }}
+      account_max_attempts: ${{ github.event.inputs.account_max_attempts || '3' }}
