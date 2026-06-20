@@ -2,7 +2,7 @@ name: Epic Kiosk Claim
 
 on:
   schedule:
-    - cron: "17 3 * * 6"
+    - cron: "55 3 * * 6"
   workflow_dispatch:
     inputs:
       account_limit:
