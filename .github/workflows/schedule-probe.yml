@@ -2,7 +2,8 @@ name: Schedule Probe
 
 on:
   schedule:
-    - cron: "25 4 * * 6"
+    - cron: "5 13 * * *"
+      timezone: "Asia/Shanghai"
   workflow_dispatch:
 
 jobs:
