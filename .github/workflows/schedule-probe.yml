@@ -1,0 +1,20 @@
+name: Schedule Probe
+
+on:
+  schedule:
+    - cron: "25 4 * * 6"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Print schedule context
+        run: |
+          date -u
+          echo "event_name=${{ github.event_name }}"
+          echo "repository=${{ github.repository }}"
+          echo "ref=${{ github.ref }}"
+          echo "sha=${{ github.sha }}"
