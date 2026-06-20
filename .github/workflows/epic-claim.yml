@@ -24,8 +24,7 @@ on:
         required: false
         default: "3"
   schedule:
-    - cron: "23 0 * * 3,5"
-    - cron: "23 12 * * 3,5"
+    - cron: "45 5 * * *"
 
 concurrency:
   group: epic-kiosk-claim
