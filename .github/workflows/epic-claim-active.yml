@@ -1,4 +1,4 @@
-name: Epic Kiosk Claim
+name: Epic Kiosk Claim Active
 
 on:
   workflow_dispatch:
@@ -23,6 +23,8 @@ on:
         description: "Maximum attempts per account. Retries use a fresh browser process."
         required: false
         default: "3"
+  schedule:
+    - cron: "*/5 * * * *"
 
 concurrency:
   group: epic-kiosk-claim

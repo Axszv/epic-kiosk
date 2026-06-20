@@ -29,6 +29,6 @@
 
 手动运行：打开 `Actions -> Epic Kiosk Claim -> Run workflow`。
 
-定时运行：由 `Epic Kiosk Claim` 触发。当前为临时验证配置：每 5 分钟尝试触发一次，但只有北京时间 2026-06-20 16:40 到 17:30 之间会实际执行领取。验证通过后改回每周三、周五北京时间 08:23 和 20:23。
+定时运行：当前由 `Epic Kiosk Claim Active` 临时验证触发，每 5 分钟尝试触发一次，但只有北京时间 2026-06-20 17:10 到 18:30 之间会实际执行领取。验证通过后改回 `Epic Kiosk Claim` 每周三、周五北京时间 08:23 和 20:23。
 
 workflow 会将运行日志、页面截图和 `github_actions_summary.json` 上传为 artifact，保留 14 天。
