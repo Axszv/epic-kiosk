@@ -62,7 +62,7 @@ jobs:
         run: |
           now_bjt="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M')"
           echo "now_bjt=${now_bjt}"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || ( "${now_bjt}" > "2026-06-20 16:19" && "${now_bjt}" < "2026-06-20 16:46" ) ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || ( "${now_bjt}" > "2026-06-20 16:39" && "${now_bjt}" < "2026-06-20 17:31" ) ]]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_run=false" >> "$GITHUB_OUTPUT"
