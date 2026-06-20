@@ -2,7 +2,7 @@ name: Epic Kiosk Claim
 
 on:
   schedule:
-    - cron: "5 13 * * *"
+    - cron: "23 8,20 * * WED,FRI"
       timezone: "Asia/Shanghai"
   workflow_dispatch:
     inputs:
