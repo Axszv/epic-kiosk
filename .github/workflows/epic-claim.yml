@@ -24,10 +24,8 @@ on:
         required: false
         default: "3"
   schedule:
-    # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
-    - cron: "23 0 * * 3,5"
-    # 12:23 UTC = 20:23 Beijing time, Wednesday and Friday.
-    - cron: "23 12 * * 3,5"
+    # 20:20 UTC = 04:20 Beijing time.
+    - cron: "20 20 * * *"
 
 concurrency:
   group: epic-kiosk-claim

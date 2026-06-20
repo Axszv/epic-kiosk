@@ -29,6 +29,6 @@
 
 手动运行：打开 `Actions -> Epic Kiosk Claim -> Run workflow`。
 
-定时运行：`Epic Kiosk Claim` 每周三、周五北京时间 08:23 和 20:23 自动运行。
+定时运行：`Epic Kiosk Claim` 每天 UTC 20:20 自动运行。
 
 workflow 会将运行日志、页面截图和 `github_actions_summary.json` 上传为 artifact，保留 14 天。
