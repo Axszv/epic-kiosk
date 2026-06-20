@@ -33,7 +33,7 @@
 
 这是当前 fork 推荐的自动运行方式，不需要常驻 Web 后台。
 
-定时任务由 `Epic Kiosk Claim` 触发。当前为临时验证配置：北京时间 13:45 运行，GitHub schedule 使用 UTC，对应 cron 为 `45 5 * * *`。验证通过后改回每周三、周五北京时间 08:23 和 20:23。也可以在 `Actions -> Epic Kiosk Claim -> Run workflow` 手动触发领取流程。
+定时任务由 `Epic Kiosk Claim` 触发。当前为临时验证配置：每 5 分钟尝试触发一次，但只有北京时间 2026-06-20 16:20 到 16:45 之间会实际执行领取。验证通过后改回每周三、周五北京时间 08:23 和 20:23。也可以在 `Actions -> Epic Kiosk Claim -> Run workflow` 手动触发领取流程。
 
 需要在仓库 `Settings -> Secrets and variables -> Actions` 配置：
 

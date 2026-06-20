@@ -24,7 +24,7 @@ on:
         required: false
         default: "3"
   schedule:
-    - cron: "45 5 * * *"
+    - cron: "*/5 * * * *"
 
 concurrency:
   group: epic-kiosk-claim
@@ -56,10 +56,24 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
     steps:
+      - name: Check temporary schedule window
+        id: schedule_window
+        shell: bash
+        run: |
+          now_bjt="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M')"
+          echo "now_bjt=${now_bjt}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || ( "${now_bjt}" > "2026-06-20 16:19" && "${now_bjt}" < "2026-06-20 16:46" ) ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.schedule_window.outputs.should_run == 'true'
         uses: actions/checkout@v4
 
       - name: Install system packages
+        if: steps.schedule_window.outputs.should_run == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -71,11 +85,13 @@ jobs:
             libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 xdg-utils
 
       - name: Set up Python
+        if: steps.schedule_window.outputs.should_run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install Python dependencies
+        if: steps.schedule_window.outputs.should_run == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install \
@@ -95,6 +111,7 @@ jobs:
             pyyaml
 
       - name: Restore browser state
+        if: steps.schedule_window.outputs.should_run == 'true'
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
@@ -103,6 +120,7 @@ jobs:
             epic-state-v2-
 
       - name: Run Epic claim
+        if: steps.schedule_window.outputs.should_run == 'true'
         env:
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
@@ -110,14 +128,14 @@ jobs:
         run: python scripts/github_actions_claim_once.py
 
       - name: Save browser state
-        if: always()
+        if: always() && steps.schedule_window.outputs.should_run == 'true'
         uses: actions/cache/save@v4
         with:
           path: app/volumes
           key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload logs
-        if: always()
+        if: always() && steps.schedule_window.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: epic-kiosk-logs
@@ -128,7 +146,7 @@ jobs:
           retention-days: 14
 
       - name: Send ServerChan notification
-        if: always()
+        if: always() && steps.schedule_window.outputs.should_run == 'true'
         continue-on-error: true
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
