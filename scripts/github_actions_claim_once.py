@@ -70,10 +70,19 @@ def write_run_summary(path: Path, summary: dict) -> None:
     )
 
 
+def display_evidence_status(status: str) -> str:
+    return {
+        "already_owned": "already_owned",
+        "verified_owned": "verified_owned",
+        "region_unavailable": "region_unavailable_skipped",
+    }.get(status, status)
+
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 PROMOTION_RE = re.compile(r'\{"title": "([^"]+)", "url": "([^"]+)"\}')
 OWNERSHIP_CTA_RE = re.compile(r"Ownership CTA for (.*?): '([^']+)'")
 ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\-]+)")
+REGION_UNAVAILABLE_RE = re.compile(r"REGION_UNAVAILABLE:(.+)")
 
 
 def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
@@ -93,6 +102,20 @@ def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
             if title not in promotions:
                 promotions.append(title)
                 ensure(title)
+            continue
+
+        region_unavailable_match = REGION_UNAVAILABLE_RE.search(line)
+        if region_unavailable_match:
+            title = region_unavailable_match.group(1).strip()
+            if title:
+                if title not in promotions:
+                    promotions.append(title)
+                ensure(title).update(
+                    {
+                        "status": "region_unavailable",
+                        "evidence": line.strip(),
+                    }
+                )
             continue
 
         cta_match = OWNERSHIP_CTA_RE.search(line)
@@ -203,7 +226,7 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
     missing_evidence = [
         title
         for title, item in evidence.items()
-        if item["status"] not in ("already_owned", "verified_owned")
+        if item["status"] not in ("already_owned", "verified_owned", "region_unavailable")
     ]
     if missing_evidence:
         print(
@@ -333,7 +356,9 @@ def main() -> int:
                 f"after {attempt_count} attempt(s)\n"
             )
             for title, item in account_result["final_evidence"].items():
-                append_summary(f"  - {title}: {item['status']}\n")
+                append_summary(
+                    f"  - {title}: {display_evidence_status(item['status'])}\n"
+                )
 
         for attempt_result in account_result["attempts"]:
             if not attempt_result.get("failed"):

@@ -33,6 +33,13 @@ URL_PROMOTIONS = "https://store-site-backend-static.ak.epicgames.com/freeGamesPr
 URL_PRODUCT_PAGE = "https://store.epicgames.com/en-US/p/"
 URL_PRODUCT_BUNDLES = "https://store.epicgames.com/en-US/bundles/"
 
+REGION_UNAVAILABLE_MARKERS = (
+    "currently unavailable in your platform or region",
+    "unavailable in your platform or region",
+    "not available in your region",
+    "unavailable in your region",
+)
+
 
 class GameCollectResult(Enum):
     """
@@ -645,6 +652,22 @@ class EpicGames:
                 await accept.click()
                 return True
 
+    @staticmethod
+    async def _is_region_unavailable_page(page: Page) -> bool:
+        with suppress(Exception):
+            body_text = await page.locator("body").inner_text(timeout=3000)
+            normalized = " ".join(body_text.lower().split())
+            return any(marker in normalized for marker in REGION_UNAVAILABLE_MARKERS)
+        return False
+
+    async def _skip_region_unavailable(self, page: Page, promotion: PromotionGame) -> bool:
+        if not await self._is_region_unavailable_page(page):
+            return False
+
+        logger.warning(f"REGION_UNAVAILABLE:{promotion.title}")
+        await self._save_debug_page(page, f"region_unavailable_{promotion.namespace}")
+        return True
+
     async def _owned_from_product_page(self, page: Page, promotion: PromotionGame) -> bool:
         with suppress(Exception):
             await page.reload(wait_until="domcontentloaded")
@@ -749,6 +772,9 @@ class EpicGames:
                 logger.error(f"❌ Invalid URL (404 Page): {url}")
                 continue
 
+            if await self._skip_region_unavailable(page, promotion):
+                continue
+
             # 处理年龄限制弹窗
             try:
                 continue_btn = page.locator("//button//span[text()='Continue']")
@@ -767,6 +793,8 @@ class EpicGames:
             # 2. 检查按钮可见性
             try:
                 if not await purchase_btn.is_visible(timeout=5000):
+                    if await self._skip_region_unavailable(page, promotion):
+                        continue
                     if await self._owned_from_product_page(page, promotion):
                          logger.success(f"✅ 游戏已在库中")
                          continue
@@ -826,6 +854,9 @@ class EpicGames:
                         "//button[@data-testid='purchase-cta-button']"
                     ).first
                     if not await purchase_btn.is_visible(timeout=10000):
+                        if await self._skip_region_unavailable(page, promotion):
+                            verified = True
+                            break
                         if await self._owned_from_product_page(page, promotion):
                             verified = True
                             break

@@ -42,6 +42,10 @@ def account_sections(summary: dict) -> tuple[int, int, list[str]]:
                 evidence_status = item.get("status", "unknown")
                 if evidence_status == "already_owned":
                     evidence_status = "已在库"
+                elif evidence_status == "verified_owned":
+                    evidence_status = "已入库"
+                elif evidence_status == "region_unavailable":
+                    evidence_status = "锁区跳过（未领取）"
                 block.append(f"- {title}：{evidence_status}")
         else:
             block.append("- 没有领取证据")
