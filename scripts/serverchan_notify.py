@@ -63,7 +63,7 @@ def account_sections(summary: dict) -> tuple[int, int, list[str]]:
         if summary.get("mobile_discovery") or mobile_evidence:
             for platform in ("Android", "iOS"):
                 platform_evidence = mobile_evidence.get(platform) or {}
-                block.append(f"{platform}：")
+                block.extend(["", f"{platform}："])
                 if platform_evidence:
                     for title, item in platform_evidence.items():
                         block.append(
@@ -74,6 +74,8 @@ def account_sections(summary: dict) -> tuple[int, int, list[str]]:
                     block.append("- 没有领取证据")
 
         failed_attempts = [attempt for attempt in attempts if attempt.get("failed")]
+        if failed_attempts:
+            block.extend(["", "重试记录："])
         for attempt in failed_attempts:
             reasons = attempt.get("failure_reasons") or ["unknown_failure"]
             block.append(

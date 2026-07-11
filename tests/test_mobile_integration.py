@@ -154,7 +154,14 @@ class NotificationTests(unittest.TestCase):
                     "index": 1,
                     "email": "ac***@example.com",
                     "status": "completed",
-                    "attempts": [],
+                    "attempts": [
+                        {
+                            "attempt": 1,
+                            "failed": True,
+                            "failure_reasons": ["temporary_failure"],
+                        },
+                        {"attempt": 2, "failed": False},
+                    ],
                     "desktop_evidence": {
                         "Desktop Weekly": {"status": "verified_owned"}
                     },
@@ -177,6 +184,17 @@ class NotificationTests(unittest.TestCase):
         self.assertIn("Android：", body)
         self.assertIn("iOS：", body)
         self.assertIn("锁区跳过（未领取）", body)
+        self.assertIn(
+            "电脑端：\n- Desktop Weekly：已入库\n\n"
+            "Android：\n- Mobile Weekly：已在库\n\n"
+            "iOS：\n- iOS Weekly：锁区跳过（未领取）",
+            body,
+        )
+        self.assertIn(
+            "iOS：\n- iOS Weekly：锁区跳过（未领取）\n\n"
+            "重试记录：\n- 第 1 次尝试失败：temporary_failure",
+            body,
+        )
 
 
 if __name__ == "__main__":
