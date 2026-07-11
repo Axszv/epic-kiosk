@@ -107,10 +107,14 @@ def debug_suffix(offer: dict) -> str:
 
 
 def emit_result(result: dict) -> None:
-    logger.info(
+    marker = (
         "MOBILE_RESULT:"
         f"{result['platform']}:{result['title']}:{result['status']}"
     )
+    # The parent process parses stdout. Loguru's console filter intentionally
+    # hides most INFO messages, so emit the machine-readable marker directly.
+    print(marker, flush=True)
+    logger.info(marker)
 
 
 async def collect_mobile_offer(page, offer: dict) -> dict:
