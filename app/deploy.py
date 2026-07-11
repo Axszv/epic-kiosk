@@ -28,6 +28,7 @@ from pytz import timezone
 
 from services.epic_authorization_service import EpicAuthorization, ErrorType
 from services.epic_games_service import EpicAgent, GameCollectResult
+from services.epic_mobile_service import collect_mobile_offers, load_mobile_offers
 from settings import LOG_DIR, RECORD_DIR
 from settings import settings
 from utils import init_log
@@ -115,6 +116,23 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
         # 使用已认证的页面，而不是创建新页面
         agent = EpicAgent(page)
         game_result = await agent.collect_epic_games()
+
+        mobile_offers = load_mobile_offers(os.getenv("MOBILE_OFFERS_JSON", ""))
+        if mobile_offers:
+            logger.info(f"MOBILE_COLLECTION_START:offers={len(mobile_offers)}")
+            mobile_results = await collect_mobile_offers(page, mobile_offers)
+            successful_statuses = {
+                "already_owned",
+                "verified_owned",
+                "region_unavailable",
+            }
+            logger.info(
+                "MOBILE_COLLECTION_DONE:"
+                f"successful={sum(result.get('status') in successful_statuses for result in mobile_results)}:"
+                f"total={len(mobile_results)}"
+            )
+        else:
+            logger.info("MOBILE_COLLECTION_SKIPPED:no_offers_configured")
 
         # ============================================================
         # 🔥 游戏收集结果处理

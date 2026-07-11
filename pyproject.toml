@@ -8,6 +8,7 @@ dependencies = [
     "hcaptcha-challenger[camoufox]>=0.18.13",
     "playwright==1.60.0",
     "openai", # === [新增] 用于通过 AiHubMix 中转调用 Gemini ===
+    "requests>=2.32.0",
 ]
 requires-python = ">=3.12,<=3.13"
 authors = [

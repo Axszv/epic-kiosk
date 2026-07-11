@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+from mobile_offer_discovery import discover_mobile_offers
+
 
 def mask_email(email: str) -> str:
     if "@" not in email:
@@ -83,6 +85,8 @@ PROMOTION_RE = re.compile(r'\{"title": "([^"]+)", "url": "([^"]+)"\}')
 OWNERSHIP_CTA_RE = re.compile(r"Ownership CTA for (.*?): '([^']+)'")
 ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\-]+)")
 REGION_UNAVAILABLE_RE = re.compile(r"REGION_UNAVAILABLE:(.+)")
+MOBILE_RESULT_RE = re.compile(r"MOBILE_RESULT:([^:\r\n]+):(.*):([a-z_]+)\s*$")
+SUCCESS_EVIDENCE_STATUSES = {"already_owned", "verified_owned", "region_unavailable"}
 
 
 def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
@@ -140,6 +144,37 @@ def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
     return evidence
 
 
+def parse_mobile_evidence(output: str) -> dict[str, dict[str, dict[str, str]]]:
+    evidence: dict[str, dict[str, dict[str, str]]] = {}
+    for raw_line in output.splitlines():
+        line = ANSI_RE.sub("", raw_line)
+        match = MOBILE_RESULT_RE.search(line)
+        if not match:
+            continue
+        platform, title, status = (part.strip() for part in match.groups())
+        if not platform or not title:
+            continue
+        evidence.setdefault(platform, {})[title] = {
+            "status": status,
+            "evidence": f"MOBILE_RESULT:{platform}:{title}:{status}",
+        }
+    return evidence
+
+
+def missing_mobile_evidence(
+    offers: list[dict],
+    evidence: dict[str, dict[str, dict[str, str]]],
+) -> list[str]:
+    missing = []
+    for offer in offers:
+        platform = str(offer.get("platform") or "Mobile")
+        title = str(offer.get("title") or "Unknown mobile offer")
+        item = evidence.get(platform, {}).get(title)
+        if not item or item.get("status") not in SUCCESS_EVIDENCE_STATUSES:
+            missing.append(f"{platform}:{title}")
+    return missing
+
+
 def parse_error_markers(output: str) -> list[dict[str, str]]:
     markers: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -154,7 +189,12 @@ def parse_error_markers(output: str) -> list[dict[str, str]]:
     return markers
 
 
-def run_account(account: dict[str, str], display_index: int, attempt: int) -> tuple[bool, dict]:
+def run_account(
+    account: dict[str, str],
+    display_index: int,
+    attempt: int,
+    mobile_offers: list[dict],
+) -> tuple[bool, dict]:
     email = account["email"]
     masked = mask_email(email)
     print(f"::group::Epic account {display_index}: {masked} (attempt {attempt})")
@@ -162,6 +202,7 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
     env = os.environ.copy()
     env["EPIC_EMAIL"] = email
     env["EPIC_PASSWORD"] = account["password"]
+    env["MOBILE_OFFERS_JSON"] = json.dumps(mobile_offers, ensure_ascii=False)
     env["ENABLE_APSCHEDULER"] = "false"
     env.setdefault("GEMINI_API_KEY", "not_used")
 
@@ -221,17 +262,25 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
     output = "".join(chunks)
     print("::endgroup::")
 
-    evidence = parse_claim_evidence(output)
+    desktop_evidence = parse_claim_evidence(output)
+    mobile_evidence = parse_mobile_evidence(output)
     error_markers = parse_error_markers(output)
-    missing_evidence = [
+    missing_desktop_evidence = [
         title
-        for title, item in evidence.items()
-        if item["status"] not in ("already_owned", "verified_owned", "region_unavailable")
+        for title, item in desktop_evidence.items()
+        if item["status"] not in SUCCESS_EVIDENCE_STATUSES
     ]
-    if missing_evidence:
+    missing_mobile = missing_mobile_evidence(mobile_offers, mobile_evidence)
+    if missing_desktop_evidence:
         print(
-            "Missing strict ownership evidence for: "
-            + ", ".join(missing_evidence),
+            "Missing strict desktop ownership evidence for: "
+            + ", ".join(missing_desktop_evidence),
+            flush=True,
+        )
+    if missing_mobile:
+        print(
+            "Missing strict mobile ownership evidence for: "
+            + ", ".join(missing_mobile),
             flush=True,
         )
 
@@ -240,8 +289,10 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
         failure_reasons.append(f"process_timeout:{timeout_seconds}s")
     if proc.returncode != 0:
         failure_reasons.append(f"returncode:{proc.returncode}")
-    if missing_evidence:
-        failure_reasons.append("missing_ownership_evidence")
+    if missing_desktop_evidence:
+        failure_reasons.append("missing_desktop_ownership_evidence")
+    if missing_mobile:
+        failure_reasons.append("missing_mobile_ownership_evidence")
     failure_reasons.extend(
         f"{marker['kind']}:{marker['value']}" for marker in error_markers
     )
@@ -258,8 +309,10 @@ def run_account(account: dict[str, str], display_index: int, attempt: int) -> tu
         "failed": failed,
         "failure_reasons": failure_reasons,
         "error_markers": error_markers,
-        "missing_evidence": missing_evidence,
-        "evidence": evidence,
+        "missing_desktop_evidence": missing_desktop_evidence,
+        "missing_mobile_evidence": missing_mobile,
+        "desktop_evidence": desktop_evidence,
+        "mobile_evidence": mobile_evidence,
     }
     return not failed, result
 
@@ -287,6 +340,44 @@ def main() -> int:
     clean_directory(Path("app/volumes/runtime"))
 
     append_summary("## Epic Kiosk run\n\n")
+    try:
+        mobile_discovery = discover_mobile_offers()
+        mobile_offers = mobile_discovery["offers"]
+        if not mobile_offers:
+            raise RuntimeError("official Epic mobile discovery returned no weekly free offers")
+    except Exception as err:
+        message = f"Mobile offer discovery failed: {type(err).__name__}: {err}"
+        print(message, flush=True)
+        summary = {
+            "accounts": [],
+            "mobile_discovery": {"status": "failed", "error": message},
+        }
+        write_run_summary(
+            Path("app/volumes/runtime/github_actions_summary.json"),
+            summary,
+        )
+        append_summary(f"- {message}\n")
+        return 1
+
+    Path("app/volumes/runtime/mobile_discovery_summary.json").write_text(
+        json.dumps(mobile_discovery, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(
+        "Discovered mobile weekly free offers: "
+        + ", ".join(
+            f"{offer['platform']}:{offer['title']}" for offer in mobile_offers
+        ),
+        flush=True,
+    )
+    append_summary(
+        "- Mobile discovery: "
+        + ", ".join(
+            f"{offer['platform']} {offer['title']}" for offer in mobile_offers
+        )
+        + "\n\n"
+    )
+
     failures = 0
     max_attempts = max(1, int(os.getenv("EPIC_ACCOUNT_MAX_ATTEMPTS", "3")))
     summary_path = Path("app/volumes/runtime/github_actions_summary.json")
@@ -300,10 +391,17 @@ def main() -> int:
             "email": masked,
             "status": "pending",
             "attempts": [],
-            "final_evidence": {},
+            "desktop_evidence": {},
+            "mobile_evidence": {},
         }
 
-    summary = {"accounts": list(account_results.values())}
+    summary = {
+        "accounts": list(account_results.values()),
+        "mobile_discovery": {
+            "status": "completed",
+            "offers": mobile_offers,
+        },
+    }
     write_run_summary(summary_path, summary)
 
     for attempt in range(1, max_attempts + 1):
@@ -326,9 +424,15 @@ def main() -> int:
             if account_result["status"] == "completed":
                 continue
 
-            ok, attempt_result = run_account(account, original_index, attempt)
+            ok, attempt_result = run_account(
+                account,
+                original_index,
+                attempt,
+                mobile_offers,
+            )
             account_result["attempts"].append(attempt_result)
-            account_result["final_evidence"] = attempt_result["evidence"]
+            account_result["desktop_evidence"] = attempt_result["desktop_evidence"]
+            account_result["mobile_evidence"] = attempt_result["mobile_evidence"]
             if ok:
                 account_result["status"] = "completed"
             elif attempt < max_attempts:
@@ -355,10 +459,16 @@ def main() -> int:
                 f"- account {original_index} {masked}: completed "
                 f"after {attempt_count} attempt(s)\n"
             )
-            for title, item in account_result["final_evidence"].items():
+            for title, item in account_result["desktop_evidence"].items():
                 append_summary(
-                    f"  - {title}: {display_evidence_status(item['status'])}\n"
+                    f"  - Desktop / {title}: {display_evidence_status(item['status'])}\n"
                 )
+            for platform, platform_evidence in account_result["mobile_evidence"].items():
+                for title, item in platform_evidence.items():
+                    append_summary(
+                        f"  - {platform} / {title}: "
+                        f"{display_evidence_status(item['status'])}\n"
+                    )
 
         for attempt_result in account_result["attempts"]:
             if not attempt_result.get("failed"):

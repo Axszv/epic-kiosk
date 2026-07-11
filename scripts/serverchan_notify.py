@@ -10,6 +10,15 @@ from pathlib import Path
 SERVERCHAN_ENDPOINT = "https://sctapi.ftqq.com/{sendkey}.send"
 
 
+def evidence_status_text(status: str) -> str:
+    return {
+        "already_owned": "已在库",
+        "verified_owned": "已入库",
+        "region_unavailable": "锁区跳过（未领取）",
+        "checkout_submitted_unverified": "已提交但未确认入库",
+    }.get(status, status)
+
+
 def load_summary(path: Path) -> dict:
     if not path.exists():
         return {"accounts": [], "missing_summary": True}
@@ -36,19 +45,33 @@ def account_sections(summary: dict) -> tuple[int, int, list[str]]:
             "",
         ]
 
-        evidence = account.get("final_evidence") or {}
-        if evidence:
-            for title, item in evidence.items():
-                evidence_status = item.get("status", "unknown")
-                if evidence_status == "already_owned":
-                    evidence_status = "已在库"
-                elif evidence_status == "verified_owned":
-                    evidence_status = "已入库"
-                elif evidence_status == "region_unavailable":
-                    evidence_status = "锁区跳过（未领取）"
-                block.append(f"- {title}：{evidence_status}")
+        desktop_evidence = (
+            account.get("desktop_evidence")
+            or account.get("final_evidence")
+            or {}
+        )
+        mobile_evidence = account.get("mobile_evidence") or {}
+        if desktop_evidence:
+            block.append("电脑端：")
+            for title, item in desktop_evidence.items():
+                block.append(
+                    f"- {title}：{evidence_status_text(item.get('status', 'unknown'))}"
+                )
         else:
-            block.append("- 没有领取证据")
+            block.append("电脑端：没有领取证据")
+
+        if summary.get("mobile_discovery") or mobile_evidence:
+            for platform in ("Android", "iOS"):
+                platform_evidence = mobile_evidence.get(platform) or {}
+                block.append(f"{platform}：")
+                if platform_evidence:
+                    for title, item in platform_evidence.items():
+                        block.append(
+                            f"- {title}："
+                            f"{evidence_status_text(item.get('status', 'unknown'))}"
+                        )
+                else:
+                    block.append("- 没有领取证据")
 
         failed_attempts = [attempt for attempt in attempts if attempt.get("failed")]
         for attempt in failed_attempts:
@@ -80,6 +103,14 @@ def build_message(summary: dict) -> tuple[str, str]:
 
     if summary.get("missing_summary"):
         body.extend(["", "未找到 github_actions_summary.json。"])
+
+    mobile_discovery = summary.get("mobile_discovery") or {}
+    if mobile_discovery.get("status") == "failed":
+        body.extend(["", f"移动端发现失败：{mobile_discovery.get('error', 'unknown')}"])
+    elif mobile_discovery.get("offers"):
+        body.extend(["", "## 本周移动端免费游戏", ""])
+        for offer in mobile_discovery["offers"]:
+            body.append(f"- {offer.get('platform')}：{offer.get('title')}")
 
     if sections:
         body.extend(["", "## 账号明细", ""])
