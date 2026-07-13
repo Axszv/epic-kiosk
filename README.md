@@ -5,7 +5,7 @@
 ![Status](https://img.shields.io/badge/Status-Stable-green)
 ![License](https://img.shields.io/badge/License-GPL--3.0-blue)
 
-基于 Docker 和浏览器自动化的 Epic Games 免费游戏自动领取工具。当前 fork 在保留原版 Web / Docker 部署能力的基础上，重点增强了 GitHub Actions 自动领取、领取结果校验和运行结束通知。
+基于 Docker 和浏览器自动化的 Epic Games 免费游戏自动领取工具。当前 fork 在保留原版 Web / Docker 部署能力的基础上，重点增强了 GitHub Actions 多账号自动领取、电脑端与移动端周免发现、领取结果校验和运行结束通知。
 
 > 原公益站点：[https://epic.910501.xyz/](https://epic.910501.xyz/)
 
@@ -19,11 +19,12 @@
 
 | 功能 | 说明 |
 |------|------|
-| 自动领取 | 自动完成 Epic 登录、hCaptcha 处理、免费游戏领取与入库校验 |
+| 电脑端周免 | 自动发现并领取 Epic Games Store 电脑端每周免费游戏 |
+| 移动端周免 | GitHub Actions 通过 Epic 官方接口发现并领取 Android、iOS 每周免费游戏 |
 | 多账号 | 支持 Web 后台添加账号，也支持 GitHub Actions 通过 Secret 批量运行 |
 | Cookie 复用 | 首次登录后保存浏览器 profile，后续尽量复用会话状态 |
 | AI 验证码 | 使用 OpenAI-compatible 视觉模型识别 hCaptcha |
-| 严格校验 | 只有确认每个游戏已入库或已拥有时，才把账号标记为完成 |
+| 严格校验 | 游戏必须确认已入库、已拥有或因账号地区锁区跳过，账号才算完成 |
 | 运行通知 | GitHub Actions 运行结束后可通过 Server酱推送中文结果 |
 | 排查证据 | Actions artifact 会保留日志、截图、页面快照和 `github_actions_summary.json` |
 
@@ -42,16 +43,32 @@
 - `EPIC_ACCOUNTS_JSON`：Epic 账号列表。
 - `SERVERCHAN_SENDKEY`：可选，配置后运行结束会通过 Server酱推送中文结果。
 
-`EPIC_ACCOUNTS_JSON` 示例：
+点击 `New repository secret`，名称填写 `EPIC_ACCOUNTS_JSON`，Secret value 填写完整的 JSON 数组。多账号示例：
 
 ```json
 [
   {
-    "email": "account@example.com",
-    "password": "your-password"
+    "email": "account1@example.com",
+    "password": "account-1-password"
+  },
+  {
+    "email": "account2@example.com",
+    "password": "account-2-password"
+  },
+  {
+    "email": "account3@example.com",
+    "password": "account-3-password"
   }
 ]
 ```
+
+填写要求：
+
+- 所有账号放在同一个 `EPIC_ACCOUNTS_JSON` Secret 中，不要为每个账号分别创建 Secret。
+- `email` 和 `password` 必须使用英文双引号包围。
+- 最后一项后面不能有多余逗号，JSON 中不能添加注释。
+- 账号按数组顺序编号；第一个是账号 1，第二个是账号 2，以此类推。
+- 密码中可以包含常见特殊字符，直接作为 JSON 字符串填写；如果密码本身包含 `"` 或 `\`，需要分别写成 `\"` 或 `\\`。
 
 当前 workflow 使用：
 
@@ -65,9 +82,12 @@ CAPTCHA_MODEL_FALLBACK=agnes-2.0-flash
 
 运行说明：
 
+- 每次 workflow 开始时只发现一次 Android 和 iOS 本周免费游戏，并把同一份结果传给所有账号。
+- 每个账号复用同一个浏览器会话，依次领取电脑端、Android 和 iOS 周免。
 - 每个账号最多重试 `EPIC_ACCOUNT_MAX_ATTEMPTS` 次，默认 3 次。
 - 每次账号重试都会启动新的浏览器进程。
-- 只有检测到所有免费游戏都已拥有或已入库，账号才会被标记为完成。
+- 只有检测到电脑端和移动端所有免费游戏都已拥有、已入库或因锁区跳过，账号才会被标记为完成。
+- 移动端锁区会在通知中标记为“锁区跳过（未领取）”，不会导致整个账号失败。
 - `app/volumes` 会通过 GitHub cache 保存，减少重复登录。
 - 日志、截图、页面快照和 `github_actions_summary.json` 会作为 artifact 保留 14 天。
 
@@ -168,11 +188,12 @@ API 额度和价格以所选服务商当前账号页面为准。不同账号、�
 epic-kiosk/
 ├── app/                         # 核心代码
 │   ├── deploy.py                # 浏览器自动化入口
-│   ├── services/                # Epic 登录和领取逻辑
+│   ├── services/                # Epic 登录、电脑端和移动端领取逻辑
 │   └── settings.py              # 模型/API 配置与 OpenAI-compatible 补丁
 ├── .github/workflows/           # GitHub Actions 自动领取和网络诊断
 ├── scripts/
 │   ├── github_actions_claim_once.py
+│   ├── mobile_offer_discovery.py
 │   └── serverchan_notify.py
 ├── templates/                   # Web 前端
 ├── docker-compose.yml

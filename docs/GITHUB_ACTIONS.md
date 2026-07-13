@@ -10,16 +10,26 @@
 
 - `API_BASE_URL`：OpenAI-compatible API 地址。
 - `API_KEY`：模型服务商 API Key。
-- `EPIC_ACCOUNTS_JSON`：Epic 账号列表，例如：
+- `EPIC_ACCOUNTS_JSON`：Epic 账号列表。所有账号放在同一个 Secret 的 JSON 数组中，例如：
 
 ```json
 [
   {
-    "email": "account@example.com",
-    "password": "your-password"
+    "email": "account1@example.com",
+    "password": "account-1-password"
+  },
+  {
+    "email": "account2@example.com",
+    "password": "account-2-password"
+  },
+  {
+    "email": "account3@example.com",
+    "password": "account-3-password"
   }
 ]
 ```
+
+账号按数组顺序编号。JSON 必须使用英文双引号，不能包含注释或尾随逗号；不要为每个账号分别创建 Secret。
 
 可选：
 
