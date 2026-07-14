@@ -1,49 +1,62 @@
-# Epic Kiosk - 自动领取系统
+# Epic Kiosk - GitHub Actions 自动领取
 
-![Docker](https://img.shields.io/badge/Docker-Enabled-blue?logo=docker)
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-Enabled-2088FF?logo=githubactions&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12-yellow?logo=python)
 ![Status](https://img.shields.io/badge/Status-Stable-green)
 ![License](https://img.shields.io/badge/License-GPL--3.0-blue)
 
-基于 Docker 和浏览器自动化的 Epic Games 免费游戏自动领取工具。当前 fork 在保留原版 Web / Docker 部署能力的基础上，重点增强了 GitHub Actions 多账号自动领取、电脑端与移动端周免发现、领取结果校验和运行结束通知。
+通过 GitHub Actions 为多个 Epic 账号自动领取电脑端、Android 和 iOS 每周免费游戏。workflow 会复用浏览器登录状态、处理 hCaptcha、严格验证入库结果，并在运行结束后发送中文通知。
 
-> 原公益站点：[https://epic.910501.xyz/](https://epic.910501.xyz/)
+建议使用私有仓库。Actions Cache 中保存了 Epic 登录 Cookie 和浏览器会话，应视为敏感账号数据。
 
-<p align="center">
-  <img src="assets/image_2.png" alt="Epic Kiosk Dashboard" width="100%" style="max-width: 800px;">
-</p>
-
----
-
-## 核心功能
+## 功能
 
 | 功能 | 说明 |
 |------|------|
 | 电脑端周免 | 自动发现并领取 Epic Games Store 电脑端每周免费游戏 |
-| 移动端周免 | GitHub Actions 通过 Epic 官方接口发现并领取 Android、iOS 每周免费游戏 |
-| 多账号 | 支持 Web 后台添加账号，也支持 GitHub Actions 通过 Secret 批量运行 |
-| Cookie 复用 | 首次登录后保存浏览器 profile，后续尽量复用会话状态 |
-| AI 验证码 | 使用 OpenAI-compatible 视觉模型识别 hCaptcha |
-| 严格校验 | 游戏必须确认已入库、已拥有或因账号地区锁区跳过，账号才算完成 |
-| 运行通知 | GitHub Actions 运行结束后可通过 Server酱推送中文结果 |
-| 排查证据 | Actions artifact 会保留日志、截图、页面快照和 `github_actions_summary.json` |
+| 移动端周免 | 通过 Epic 官方接口发现并领取 Android、iOS 每周免费游戏 |
+| 多账号 | 使用一个 `EPIC_ACCOUNTS_JSON` Secret 按顺序运行多个账号 |
+| 会话复用 | 按账号保存浏览器 profile，后续运行尽量复用 Cookie 和 Session |
+| 验证码处理 | 使用 OpenAI-compatible 视觉模型处理登录和结账 hCaptcha |
+| 失败重试 | 每个账号默认最多尝试 3 次，只重试尚未完成的账号 |
+| 严格校验 | 必须确认已拥有、已入库或因账号地区锁区跳过，账号才算完成 |
+| 中文通知 | 可通过 Server酱发送电脑端、Android、iOS 分组结果 |
+| 排查证据 | 保存运行日志、页面截图、HTML 快照和结构化结果 artifact |
 
----
+## 自动领取流程
 
-## GitHub Actions 自动领取
+每次 workflow 按以下顺序执行：
 
-这是当前 fork 推荐的自动运行方式，不需要常驻 Web 后台。
+1. 通过 Epic 官方移动端接口分别发现 Android 和 iOS 本周免费游戏，发现结果只请求一次并传给所有账号。
+2. 从 Actions Cache 恢复每个账号的浏览器 profile 和登录状态。
+3. 账号 1 使用同一个浏览器会话依次领取电脑端、Android、iOS 周免。
+4. 按相同顺序处理后续账号。
+5. 对失败账号启动新的浏览器进程重试；已经完成的账号不会重跑。
+6. 保存最新浏览器状态，上传排查 artifact，并发送 Server酱通知。
 
-定时任务由 `Epic Kiosk Claim` 直接触发：每周三、周五北京时间 08:23 和 20:23 自动运行。也可以在 `Actions -> Epic Kiosk Claim -> Run workflow` 手动触发领取流程。
+## 配置 Secrets
 
-需要在仓库 `Settings -> Secrets and variables -> Actions` 配置：
+打开仓库：
 
-- `API_BASE_URL`：OpenAI-compatible API 地址。
-- `API_KEY`：API Key。
-- `EPIC_ACCOUNTS_JSON`：Epic 账号列表。
-- `SERVERCHAN_SENDKEY`：可选，配置后运行结束会通过 Server酱推送中文结果。
+`Settings -> Secrets and variables -> Actions -> Repository secrets`
 
-点击 `New repository secret`，名称填写 `EPIC_ACCOUNTS_JSON`，Secret value 填写完整的 JSON 数组。多账号示例：
+添加以下 Secrets：
+
+| Secret | 必需 | 说明 |
+|--------|------|------|
+| `API_BASE_URL` | 是 | OpenAI-compatible API 地址，例如 `https://api.example.com/v1` |
+| `API_KEY` | 是 | API Key，所用服务必须支持视觉输入 |
+| `EPIC_ACCOUNTS_JSON` | 是 | Epic 多账号 JSON 数组 |
+| `SERVERCHAN_SENDKEY` | 否 | Server酱 SendKey，用于接收中文运行结果 |
+
+当前 workflow 使用 `agnes-2.0-flash` 处理页面判断和 hCaptcha。`API_BASE_URL` 对应的服务必须提供该模型。
+
+### 多账号格式
+
+点击 `New repository secret`：
+
+- Name：`EPIC_ACCOUNTS_JSON`
+- Secret：填写完整的 JSON 数组
 
 ```json
 [
@@ -64,201 +77,119 @@
 
 填写要求：
 
-- 所有账号放在同一个 `EPIC_ACCOUNTS_JSON` Secret 中，不要为每个账号分别创建 Secret。
-- `email` 和 `password` 必须使用英文双引号包围。
-- 最后一项后面不能有多余逗号，JSON 中不能添加注释。
-- 账号按数组顺序编号；第一个是账号 1，第二个是账号 2，以此类推。
-- 密码中可以包含常见特殊字符，直接作为 JSON 字符串填写；如果密码本身包含 `"` 或 `\`，需要分别写成 `\"` 或 `\\`。
+- 所有账号放在同一个 Secret 中，不要为每个账号分别创建 Secret。
+- `email` 和 `password` 必须使用英文双引号。
+- 最后一项后面不能有逗号，JSON 中不能添加注释。
+- 账号按数组顺序编号：第一项是账号 1，第二项是账号 2，以此类推。
+- 如果密码包含 `"` 或 `\`，在 JSON 中分别写成 `\"` 或 `\\`。
 
-当前 workflow 使用：
+## 运行方式
 
-```env
-API_PROVIDER=openai_compatible
-PRIMARY_MODEL=agnes-2.0-flash
-PRIMARY_MODEL_FALLBACK=agnes-2.0-flash
-CAPTCHA_MODEL=agnes-2.0-flash
-CAPTCHA_MODEL_FALLBACK=agnes-2.0-flash
-```
+### 定时运行
 
-运行说明：
+`Epic Kiosk Claim` 当前在以下时间自动运行：
 
-- 每次 workflow 开始时只发现一次 Android 和 iOS 本周免费游戏，并把同一份结果传给所有账号。
-- 每个账号复用同一个浏览器会话，依次领取电脑端、Android 和 iOS 周免。
-- 每个账号最多重试 `EPIC_ACCOUNT_MAX_ATTEMPTS` 次，默认 3 次。
-- 每次账号重试都会启动新的浏览器进程。
-- 只有检测到电脑端和移动端所有免费游戏都已拥有、已入库或因锁区跳过，账号才会被标记为完成。
-- 移动端锁区会在通知中标记为“锁区跳过（未领取）”，不会导致整个账号失败。
-- `app/volumes` 会通过 GitHub cache 保存，减少重复登录。
-- 日志、截图、页面快照和 `github_actions_summary.json` 会作为 artifact 保留 14 天。
+- 每周三北京时间 08:23、20:23
+- 每周五北京时间 08:23、20:23
 
----
+GitHub Actions 的 schedule 可能延迟投递，实际开始时间不保证精确到分钟。
 
-## Docker 部署
+### 手动运行
 
-### Linux 一键部署
+打开：
 
-适用于 VPS、云服务器或 Linux 主机：
+`Actions -> Epic Kiosk Claim -> Run workflow`
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/10000ge10000/epic-kiosk/main/install.sh | bash
-```
+可选参数：
 
-脚本会安装 Docker / Docker Compose，拉取项目并引导配置 API Key。
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `account_index` | 空 | 只运行指定的账号编号，优先级高于 `account_limit` |
+| `account_limit` | 空 | 只运行数组中的前 N 个账号 |
+| `execution_timeout` | `120` | hCaptcha 单次等待秒数 |
+| `login_result_timeout` | `180` | Epic 登录结果等待秒数 |
+| `account_max_attempts` | `3` | 每个账号最多尝试次数 |
 
-### 手动部署
+## 结果判定
 
-```bash
-git clone https://github.com/10000ge10000/epic-kiosk.git
-cd epic-kiosk
-cp .env.example .env
-nano .env
-docker compose up -d --build
-```
+以下状态算作成功证据：
 
-`.env` 示例：
+- `already_owned`：商品已经在账号库中。
+- `verified_owned`：本次领取后已确认入库。
+- `region_unavailable`：账号所在地区锁区，记录为“锁区跳过（未领取）”。
 
-```env
-API_PROVIDER=openai_compatible
-API_BASE_URL=https://api.example.com/v1
-API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-PRIMARY_MODEL=agnes-2.0-flash
-PRIMARY_MODEL_FALLBACK=agnes-2.0-flash
-CAPTCHA_MODEL=agnes-2.0-flash
-CAPTCHA_MODEL_FALLBACK=agnes-2.0-flash
-```
+以下情况不会算成功：
 
-部署注意：
+- 只点击了领取或提交了结账，但没有确认 `In Library` / `Owned`。
+- 登录、浏览器或验证码流程异常。
+- 没有找到购买按钮或无法确认游戏免费。
 
-- 默认 Web 端口是 `18000`。
-- `.env` 已被 `.gitignore` 忽略，不要把真实 key 写进 Git 跟踪文件。
-- 验证码模型必须支持图片输入。
-- WARP 容器仍保留在 Docker 部署中；如果 Epic 风控严重，可能需要更稳定的代理出口。
+电脑端或移动端任意游戏缺少严格证据时，本次账号尝试失败并进入下一轮。最终通知会分别显示电脑端、Android、iOS 和重试记录。
 
----
+## 缓存与安全
 
-## Web 后台使用
+workflow 使用 `app/volumes/user_data/<账号邮箱>` 保存每个账号的浏览器 profile，并通过 Actions Cache 在不同运行之间恢复。
 
-### 添加账号
+- profile 中包含有效 Cookie、Session 和本地存储数据，不要用于公开仓库或不可信 PR workflow。
+- GitHub 默认每个仓库提供 10 GB Actions Cache。超出默认上限时会按最近最少使用顺序删除旧缓存。
+- 每次运行会恢复上一份最新快照，并用新的 run ID 保存更新后的浏览器状态。
+- 缓存失效、被清理或 Epic 主动注销会话后，workflow 会使用 Secret 中的账号密码重新登录。
 
-1. 输入 Epic 邮箱和密码。
-2. 点击启动引擎。
-3. 系统会自动处理登录、验证码和免费游戏领取。
+## 日志与 artifact
 
-### 查看资产
+每次运行结束后会上传 `epic-kiosk-logs` artifact，默认保留 14 天，主要包括：
 
-- 在资产清单中查看已领取游戏。
-- 点击游戏封面可跳转 Epic 商店。
-
-### 删除账号
-
-- 输入密码后点击删除。
-- 系统会清理数据库记录和本地 Cookie 数据。
-
----
-
-## 配置说明
-
-### AI 模型
-
-| 类型 | 主模型 | 备用模型 | 用途 |
-|------|--------|----------|------|
-| 文本 | `agnes-2.0-flash` | `agnes-2.0-flash` | 页面判断、流程决策、结构化文本输出 |
-| 视觉 | `agnes-2.0-flash` | `agnes-2.0-flash` | hCaptcha 图像识别 |
-
-相关环境变量：
-
-```env
-API_PROVIDER=openai_compatible
-API_BASE_URL=https://api.example.com/v1
-API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-PRIMARY_MODEL=agnes-2.0-flash
-PRIMARY_MODEL_FALLBACK=agnes-2.0-flash
-CAPTCHA_MODEL=agnes-2.0-flash
-CAPTCHA_MODEL_FALLBACK=agnes-2.0-flash
-RESPONSE_TIMEOUT=120
-```
-
-API 额度和价格以所选服务商当前账号页面为准。不同账号、地区、模型和活动政策可能不同，部署前应确认可用额度。
-
----
-
-## 项目结构
-
-```text
-epic-kiosk/
-├── app/                         # 核心代码
-│   ├── deploy.py                # 浏览器自动化入口
-│   ├── services/                # Epic 登录、电脑端和移动端领取逻辑
-│   └── settings.py              # 模型/API 配置与 OpenAI-compatible 补丁
-├── .github/workflows/           # GitHub Actions 自动领取和网络诊断
-├── scripts/
-│   ├── github_actions_claim_once.py
-│   ├── mobile_offer_discovery.py
-│   └── serverchan_notify.py
-├── templates/                   # Web 前端
-├── docker-compose.yml
-├── Dockerfile
-└── Dockerfile.worker
-```
-
----
+- `logs/runtime-*.log`：完整运行日志。
+- `logs/error-*.log`：错误日志。
+- `runtime/github_actions_summary.json`：每个账号、每次尝试及各平台证据。
+- `runtime/mobile_discovery_summary.json`：Android/iOS 周免发现结果。
+- `runtime/*.html`、`*.png`、`*.json`：失败页面快照和调试信息。
 
 ## 故障排查
 
-**Q: 日志提示 `未配置 API_KEY`？**
+### workflow 没有按计划时间运行
 
-A: 检查 `.env` 或 GitHub Secret 是否存在 `API_KEY`。
+确认 workflow 文件位于默认分支且 Actions 已启用。GitHub schedule 可能延迟数分钟甚至更久；应根据最终是否出现 `Scheduled` 运行记录判断，不以设定分钟是否准时开始作为唯一依据。
 
-**Q: OpenAI-compatible API 返回 401 / 403？**
+### `EPIC_ACCOUNTS_JSON` 解析失败
 
-A: key 无效、过期、权限不足或账号额度不可用。登录对应 API 服务商控制台检查 Key、额度和模型权限。
+检查 Secret 是否为合法 JSON 数组，重点检查英文双引号、尾随逗号以及密码中的 `"`、`\` 转义。
 
-**Q: OpenAI-compatible API 返回 404？**
+### `ERROR_TYPE:unknown` 或 `FINAL_ERROR:unknown`
 
-A: 通常是模型 ID 不存在、接口路径不兼容，或该账号无权使用该模型。先确认 `API_BASE_URL` 和模型名。
+通常表示 Epic/Cloudflare 登录页面状态不明确、浏览器连接异常或登录表单超时。账号会在下一轮使用新的浏览器进程重试。
 
-**Q: 验证码一直失败？**
+### `Wait for captcha response timeout`
 
-A: 先检查日志里是否有 API 错误；如果没有，重点排查 Epic 风控、代理出口和验证码类型变化。
+表示 hCaptcha 在设置的等待时间内没有完成。检查模型 API、额度、网络出口和 Epic 风控情况。
 
-**Q: GitHub Actions 显示完成但账号漏领？**
+### `missing_desktop_ownership_evidence`
 
-A: 当前 workflow 会基于入库证据严格判断。请下载 artifact，查看 `github_actions_summary.json`、截图和页面快照。
+电脑端游戏没有找到严格入库证据。下载 artifact，检查商品页截图、HTML 和完整运行日志。
 
----
+### `missing_mobile_ownership_evidence`
 
-## 版本升级
+Android 或 iOS 游戏没有找到严格入库证据。查看通知中的具体平台，并检查 `MOBILE_RESULT` 与移动端页面快照。
 
-```bash
-git pull
-docker compose up -d --build
+### `This content is currently unavailable in your platform or region.`
+
+该游戏对账号地区锁区。workflow 会记录“锁区跳过（未领取）”，继续处理其他游戏，不会因此让账号整体失败。
+
+## 相关文件
+
+```text
+.github/workflows/epic-claim.yml       # schedule、Secrets 和 Actions 执行步骤
+app/deploy.py                          # 单账号浏览器入口
+app/services/epic_authorization_service.py  # Epic 登录和会话验证
+app/services/epic_games_service.py     # 电脑端发现、领取和入库验证
+app/services/epic_mobile_service.py    # Android/iOS 页面领取和结果标记
+scripts/mobile_offer_discovery.py      # 官方移动端周免接口发现
+scripts/github_actions_claim_once.py   # 多账号调度、重试和严格证据汇总
+scripts/serverchan_notify.py           # Server酱中文通知
 ```
 
-仅升级 Worker：
-
-```bash
-docker compose build worker && docker compose up -d worker
-```
-
----
-
-## 相关文档
-
-- [GitHub Actions 自动领取](docs/GITHUB_ACTIONS.md)
-- [快速开始指南](docs/QUICKSTART.md)
-- [模型配置说明](docs/MODEL_CONFIG.md)
-
-> 注意：部分旧文档可能仍保留历史 SiliconFlow 配置说明，当前 README、`.env.example` 和 GitHub Actions workflow 以 OpenAI-compatible 配置为准。
-
----
-
-## 致谢
-
-- 原项目：[QIN2DIM/epic-awesome-gamer](https://github.com/QIN2DIM/epic-awesome-gamer)
-- 当前 fork 基于 [10000ge10000/epic-kiosk](https://github.com/10000ge10000/epic-kiosk) 调整
-
----
+更多细节参见 [GitHub Actions 自动领取文档](docs/GITHUB_ACTIONS.md)。
 
 ## 免责声明
 
-本项目仅供学习和技术研究使用。请合理使用，遵守 Epic Games 服务条款。开发者不对因使用本项目导致的任何损失承担责任。
+本项目仅供学习和技术研究使用。请合理使用并遵守 Epic Games 服务条款。使用者应自行承担账号、网络、API 费用和自动化操作相关风险。
