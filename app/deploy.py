@@ -85,6 +85,8 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
         humanize=0.2,
         headless=headless,
         proxy=proxy_config,
+        # Avoid Camoufox/Juggler response-body failures on compressed hCaptcha scripts.
+        extra_http_headers={"Accept-Encoding": "identity"},
     ) as browser:
         # Initialize or reuse existing browser page
         page = browser.pages[0] if browser.pages else await browser.new_page()
