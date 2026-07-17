@@ -98,6 +98,13 @@ jobs:
             tenacity \
             pyyaml
 
+      - name: Install Camoufox browser
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python -m camoufox fetch
+          python -m camoufox version
+
       - name: Restore browser state
         uses: actions/cache/restore@v4
         with:

@@ -186,7 +186,9 @@ async def deploy():
     result = await execute_browser_tasks(headless=headless)
 
     # 如果任务失败，输出最终错误类型（便于 worker.py 解析）
-    if result != ErrorType.SUCCESS:
+    if result is None:
+        logger.error("❌ FINAL_ERROR:unhandled_exception")
+    elif result != ErrorType.SUCCESS:
         logger.error(f"❌ FINAL_ERROR:{result.value}")
 
     # Skip scheduler setup if disabled in configuration
