@@ -4,6 +4,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,6 +127,43 @@ class OrderHistorySessionTests(unittest.TestCase):
             epic_games_service.URL_ACCOUNT_TRANSACTIONS,
         )
         self.assertTrue(page.context.account_page.closed)
+
+    def test_emits_evidence_for_promotions_matched_in_order_history(self):
+        agent = epic_games_service.EpicAgent.__new__(
+            epic_games_service.EpicAgent
+        )
+        agent._orders = [
+            types.SimpleNamespace(
+                namespace="owned-namespace",
+                offerId="owned-offer",
+            )
+        ]
+        agent._namespaces = []
+        agent._reported_owned_promotions = set()
+        owned = types.SimpleNamespace(
+            title="Owned Weekly",
+            namespace="owned-namespace",
+            id="different-offer",
+        )
+        pending = types.SimpleNamespace(
+            title="Pending Weekly",
+            namespace="pending-namespace",
+            id="pending-offer",
+        )
+
+        with (
+            patch.object(
+                epic_games_service,
+                "get_promotions",
+                return_value=[owned, pending],
+            ),
+            patch.object(epic_games_service, "emit_desktop_result") as emit,
+        ):
+            asyncio.run(agent._check_orders())
+            asyncio.run(agent._check_orders())
+
+        self.assertEqual(agent._promotions, [pending])
+        emit.assert_called_once_with("Owned Weekly", "already_owned")
 
 
 if __name__ == "__main__":

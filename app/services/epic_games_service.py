@@ -145,6 +145,7 @@ class EpicAgent:
         self._ctx_cookies_is_available: bool = False
         self._orders: List[OrderItem] = []
         self._namespaces: List[str] = []
+        self._reported_owned_promotions: set[tuple[str, str]] = set()
         self._cookies = None
 
     async def _save_page_debug(self, label: str):
@@ -290,7 +291,20 @@ class EpicAgent:
     async def _check_orders(self):
         await self._sync_order_history()
         self._namespaces = self._namespaces or [order.namespace for order in self._orders]
-        self._promotions = [p for p in get_promotions() if p.namespace not in self._namespaces]
+        owned_offer_ids = {order.offerId for order in self._orders}
+        pending_promotions = []
+        for promotion in get_promotions():
+            if (
+                promotion.namespace in self._namespaces
+                or promotion.id in owned_offer_ids
+            ):
+                promotion_key = (promotion.namespace, promotion.id)
+                if promotion_key not in self._reported_owned_promotions:
+                    emit_desktop_result(promotion.title, "already_owned")
+                    self._reported_owned_promotions.add(promotion_key)
+                continue
+            pending_promotions.append(promotion)
+        self._promotions = pending_promotions
 
     async def _should_ignore_task(self) -> tuple[bool, GameCollectResult]:
         """
