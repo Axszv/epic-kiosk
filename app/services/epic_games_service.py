@@ -32,6 +32,9 @@ URL_CART_SUCCESS = "https://store.epicgames.com/en-US/cart/success"
 URL_PROMOTIONS = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
 URL_PRODUCT_PAGE = "https://store.epicgames.com/en-US/p/"
 URL_PRODUCT_BUNDLES = "https://store.epicgames.com/en-US/bundles/"
+URL_ACCOUNT_ORIGIN = "https://accounts.epicgames.com/"
+URL_ACCOUNT_TRANSACTIONS = f"{URL_ACCOUNT_ORIGIN}account/transactions?lang=en-US"
+URL_ORDER_HISTORY = f"{URL_ACCOUNT_ORIGIN}account/v2/payment/ajaxGetOrderHistory"
 
 REGION_UNAVAILABLE_MARKERS = (
     "currently unavailable in your platform or region",
@@ -442,10 +445,10 @@ class EpicGames:
     @staticmethod
     async def fetch_order_history(page: Page) -> dict:
         """Fetch Epic order history with the browser session."""
-        endpoint = "https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory"
+        endpoint = URL_ORDER_HISTORY
         request_headers = {
             "accept": "application/json, text/plain, */*",
-            "referer": "https://www.epicgames.com/account/transactions?lang=en-US",
+            "referer": URL_ACCOUNT_TRANSACTIONS,
             "x-requested-with": "XMLHttpRequest",
         }
 
@@ -455,13 +458,19 @@ class EpicGames:
                 headers=request_headers,
                 timeout=30000,
             )
-            if 200 <= int(resp.status) < 300:
+            print(
+                f"ORDER_HISTORY_RESPONSE:playwright:{resp.status}:{resp.url}",
+                flush=True,
+            )
+            if 200 <= int(resp.status) < 300 and resp.url.startswith(endpoint):
                 return await resp.json()
-            logger.warning(f"Playwright order API returned HTTP {resp.status}")
+            logger.warning(
+                f"Playwright order API returned HTTP {resp.status}: {resp.url}"
+            )
         except Exception as err:
             logger.warning(f"Playwright order API failed: {err}")
 
-        if not page.url.startswith("https://www.epicgames.com/"):
+        if not page.url.startswith(URL_ACCOUNT_ORIGIN):
             logger.warning(f"Skip in-page order fetch from non-account origin: {page.url}")
         else:
             try:
@@ -474,13 +483,28 @@ class EpicGames:
                                 "x-requested-with": "XMLHttpRequest"
                             }
                         });
-                        return { status: resp.status, text: await resp.text() };
+                        return {
+                            status: resp.status,
+                            url: resp.url,
+                            text: await resp.text()
+                        };
                     }""",
                     endpoint,
                 )
-                if 200 <= int(result["status"]) < 300:
+                print(
+                    "ORDER_HISTORY_RESPONSE:in-page:"
+                    f"{result['status']}:{result['url']}",
+                    flush=True,
+                )
+                if (
+                    200 <= int(result["status"]) < 300
+                    and result["url"].startswith(endpoint)
+                ):
                     return json.loads(result["text"])
-                logger.warning(f"In-page order API returned HTTP {result['status']}")
+                logger.warning(
+                    "In-page order API returned HTTP "
+                    f"{result['status']}: {result['url']}"
+                )
             except Exception as err:
                 logger.warning(f"In-page order API failed: {err}")
 
@@ -496,7 +520,13 @@ class EpicGames:
             timeout=30,
         ) as client:
             resp = await client.get(endpoint)
+            print(
+                f"ORDER_HISTORY_RESPONSE:httpx:{resp.status_code}:{resp.url}",
+                flush=True,
+            )
             resp.raise_for_status()
+            if not str(resp.url).startswith(endpoint):
+                raise RuntimeError(f"Order API redirected to {resp.url}")
             return resp.json()
 
     @staticmethod
