@@ -443,6 +443,42 @@ class EpicGames:
             )
 
     @staticmethod
+    async def _fetch_order_history_in_page(page: Page) -> dict | None:
+        """Fetch order history from an authenticated account-origin page."""
+        result = await page.evaluate(
+            """async (endpoint) => {
+                const resp = await fetch(endpoint, {
+                    credentials: "include",
+                    headers: {
+                        "accept": "application/json, text/plain, */*",
+                        "x-requested-with": "XMLHttpRequest"
+                    }
+                });
+                return {
+                    status: resp.status,
+                    url: resp.url,
+                    text: await resp.text()
+                };
+            }""",
+            URL_ORDER_HISTORY,
+        )
+        print(
+            "ORDER_HISTORY_RESPONSE:in-page:"
+            f"{result['status']}:{result['url']}",
+            flush=True,
+        )
+        if (
+            200 <= int(result["status"]) < 300
+            and result["url"].startswith(URL_ORDER_HISTORY)
+        ):
+            return json.loads(result["text"])
+        logger.warning(
+            "In-page order API returned HTTP "
+            f"{result['status']}: {result['url']}"
+        )
+        return None
+
+    @staticmethod
     async def fetch_order_history(page: Page) -> dict:
         """Fetch Epic order history with the browser session."""
         endpoint = URL_ORDER_HISTORY
@@ -470,43 +506,31 @@ class EpicGames:
         except Exception as err:
             logger.warning(f"Playwright order API failed: {err}")
 
-        if not page.url.startswith(URL_ACCOUNT_ORIGIN):
-            logger.warning(f"Skip in-page order fetch from non-account origin: {page.url}")
-        else:
-            try:
-                result = await page.evaluate(
-                    """async (endpoint) => {
-                        const resp = await fetch(endpoint, {
-                            credentials: "include",
-                            headers: {
-                                "accept": "application/json, text/plain, */*",
-                                "x-requested-with": "XMLHttpRequest"
-                            }
-                        });
-                        return {
-                            status: resp.status,
-                            url: resp.url,
-                            text: await resp.text()
-                        };
-                    }""",
-                    endpoint,
-                )
-                print(
-                    "ORDER_HISTORY_RESPONSE:in-page:"
-                    f"{result['status']}:{result['url']}",
-                    flush=True,
-                )
-                if (
-                    200 <= int(result["status"]) < 300
-                    and result["url"].startswith(endpoint)
-                ):
-                    return json.loads(result["text"])
+        account_page = None
+        try:
+            account_page = await page.context.new_page()
+            await account_page.goto(
+                URL_ACCOUNT_TRANSACTIONS,
+                wait_until="domcontentloaded",
+                timeout=45000,
+            )
+            await account_page.wait_for_timeout(3000)
+            print(f"ORDER_HISTORY_SESSION:{account_page.url}", flush=True)
+            if account_page.url.startswith(URL_ACCOUNT_ORIGIN):
+                data = await EpicGames._fetch_order_history_in_page(account_page)
+                if data is not None:
+                    return data
+            else:
                 logger.warning(
-                    "In-page order API returned HTTP "
-                    f"{result['status']}: {result['url']}"
+                    "Epic account session was not established; "
+                    f"final URL: {account_page.url}"
                 )
-            except Exception as err:
-                logger.warning(f"In-page order API failed: {err}")
+        except Exception as err:
+            logger.warning(f"Epic account session bootstrap failed: {err}")
+        finally:
+            if account_page is not None:
+                with suppress(Exception):
+                    await account_page.close()
 
         cookies = await page.context.cookies()
         headers = dict(request_headers)
