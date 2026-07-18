@@ -83,6 +83,7 @@ def display_evidence_status(status: str) -> str:
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 PROMOTION_RE = re.compile(r'\{"title": "([^"]+)", "url": "([^"]+)"\}')
 OWNERSHIP_CTA_RE = re.compile(r"Ownership CTA for (.*?): '([^']+)'")
+DESKTOP_RESULT_RE = re.compile(r"DESKTOP_RESULT:(.*):([a-z_]+)\s*$")
 ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\-]+)")
 REGION_UNAVAILABLE_RE = re.compile(r"REGION_UNAVAILABLE:(.+)")
 MOBILE_RESULT_RE = re.compile(r"MOBILE_RESULT:([^:\r\n]+):(.*):([a-z_]+)\s*$")
@@ -118,6 +119,20 @@ def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
                     {
                         "status": "region_unavailable",
                         "evidence": line.strip(),
+                    }
+                )
+            continue
+
+        desktop_result_match = DESKTOP_RESULT_RE.search(line)
+        if desktop_result_match:
+            title, status = (part.strip() for part in desktop_result_match.groups())
+            if title:
+                if title not in promotions:
+                    promotions.append(title)
+                ensure(title).update(
+                    {
+                        "status": status,
+                        "evidence": f"DESKTOP_RESULT:{title}:{status}",
                     }
                 )
             continue

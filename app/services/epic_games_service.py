@@ -41,6 +41,12 @@ REGION_UNAVAILABLE_MARKERS = (
 )
 
 
+def emit_desktop_result(title: str, status: str) -> None:
+    marker = f"DESKTOP_RESULT:{title}:{status}"
+    print(marker, flush=True)
+    logger.info(marker)
+
+
 class GameCollectResult(Enum):
     """
     游戏收集结果枚举
@@ -705,9 +711,11 @@ class EpicGames:
         for attempt in range(1, 5):
             if await self._owned_from_order_history(page, promotion):
                 logger.success(f"🎉 订单历史确认已领取: {promotion.title}")
+                emit_desktop_result(promotion.title, "verified_owned")
                 return True
             if await self._owned_from_product_page(page, promotion):
                 logger.success(f"🎉 商品页确认已入库: {promotion.title}")
+                emit_desktop_result(promotion.title, "verified_owned")
                 return True
             logger.warning(f"⚠️ 未确认入库，等待后重试 [{attempt}/4]: {promotion.title}")
             await page.wait_for_timeout(5000)

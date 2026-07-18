@@ -142,6 +142,35 @@ class MobileEvidenceTests(unittest.TestCase):
         )
 
 
+class DesktopEvidenceTests(unittest.TestCase):
+    def test_parses_verified_result_for_title_with_colon(self):
+        output = "\n".join(
+            [
+                '发现: {"title": "Echo Generation: Midnight Edition", "url": "https://example.com"}',
+                "DESKTOP_RESULT:Echo Generation: Midnight Edition:verified_owned",
+            ]
+        )
+
+        evidence = claim_once.parse_claim_evidence(output)
+
+        self.assertEqual(
+            evidence["Echo Generation: Midnight Edition"]["status"],
+            "verified_owned",
+        )
+
+    def test_success_text_without_machine_marker_is_not_evidence(self):
+        output = "\n".join(
+            [
+                '发现: {"title": "Weekly Game", "url": "https://example.com"}',
+                "商品页确认已入库: Weekly Game",
+            ]
+        )
+
+        evidence = claim_once.parse_claim_evidence(output)
+
+        self.assertEqual(evidence["Weekly Game"]["status"], "unknown")
+
+
 class NotificationTests(unittest.TestCase):
     def test_notification_separates_desktop_android_and_ios(self):
         summary = {
