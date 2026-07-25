@@ -4,7 +4,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +59,7 @@ sys.modules.setdefault(
 )
 
 epic_games_service = importlib.import_module("services.epic_games_service")
+epic_mobile_service = importlib.import_module("services.epic_mobile_service")
 
 
 class FakeApiResponse:
@@ -164,6 +165,80 @@ class OrderHistorySessionTests(unittest.TestCase):
 
         self.assertEqual(agent._promotions, [pending])
         emit.assert_called_once_with("Owned Weekly", "already_owned")
+
+    def test_mobile_order_match_requires_exact_offer_id(self):
+        history = {
+            "orders": [
+                {
+                    "orderType": "PURCHASE",
+                    "items": [
+                        {
+                            "namespace": "shared-sandbox",
+                            "offerId": "desktop-offer",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        self.assertFalse(
+            epic_mobile_service.order_history_has_offer_id(
+                history,
+                "mobile-offer",
+            )
+        )
+        self.assertTrue(
+            epic_mobile_service.order_history_has_offer_id(
+                history,
+                "desktop-offer",
+            )
+        )
+
+    def test_mobile_precheck_skips_offer_found_in_order_history(self):
+        offer = {
+            "platform": "Android",
+            "title": "Mobile Weekly",
+            "url": "https://store.epicgames.com/p/mobile-weekly",
+            "offerId": "mobile-offer",
+            "sandboxId": "shared-sandbox",
+        }
+        history = {
+            "orders": [
+                {
+                    "orderType": "PURCHASE",
+                    "items": [
+                        {
+                            "namespace": "shared-sandbox",
+                            "offerId": "mobile-offer",
+                        }
+                    ],
+                }
+            ]
+        }
+        fetch = AsyncMock(return_value=history)
+        collect = AsyncMock()
+
+        with (
+            patch.object(
+                epic_mobile_service.EpicGames,
+                "fetch_order_history",
+                new=fetch,
+            ),
+            patch.object(
+                epic_mobile_service,
+                "collect_mobile_offer",
+                new=collect,
+            ),
+            patch.object(epic_mobile_service, "emit_result") as emit,
+        ):
+            results = asyncio.run(
+                epic_mobile_service.collect_mobile_offers(object(), [offer])
+            )
+
+        self.assertEqual(results[0]["status"], "already_owned")
+        self.assertIn("verified_by_order_history", results[0]["notes"])
+        collect.assert_not_awaited()
+        emit.assert_called_once()
 
 
 if __name__ == "__main__":

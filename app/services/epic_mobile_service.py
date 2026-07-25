@@ -117,6 +117,28 @@ def emit_result(result: dict) -> None:
     logger.info(marker)
 
 
+def order_history_has_offer_id(data: dict, offer_id: str) -> bool:
+    """Match a mobile purchase by offer ID, not the shared sandbox ID."""
+    if not offer_id:
+        return False
+    for order in data.get("orders", []):
+        if order.get("orderType") != "PURCHASE":
+            continue
+        for item in order.get("items") or []:
+            if str(item.get("offerId") or "") == offer_id:
+                return True
+    return False
+
+
+def emit_order_check(phase: str, offer: dict, status: str) -> None:
+    marker = (
+        "MOBILE_ORDER_CHECK:"
+        f"{phase}:{offer.get('platform')}:{offer.get('title')}:{status}"
+    )
+    print(marker, flush=True)
+    logger.info(marker)
+
+
 async def collect_mobile_offer(page, offer: dict) -> dict:
     platform = str(offer.get("platform") or "Mobile")
     title = str(offer.get("title") or "Unknown mobile offer")
@@ -225,6 +247,23 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
             emit_result(result)
             return result
 
+    offer_id = str(offer.get("offerId") or "").strip()
+    if offer_id:
+        try:
+            order_history = await EpicGames.fetch_order_history(page)
+            if order_history_has_offer_id(order_history, offer_id):
+                emit_order_check("post", offer, "owned")
+                result["status"] = "verified_owned"
+                result["notes"].append("verified_by_order_history")
+                emit_result(result)
+                return result
+            emit_order_check("post", offer, "missing")
+        except Exception as err:
+            emit_order_check("post", offer, "unavailable")
+            result["notes"].append(
+                f"order_history_error:{type(err).__name__}"
+            )
+
     parsed_final = urlparse(page.url)
     if "epicgames.com" in parsed_final.netloc and parsed_final.path.startswith("/id/login"):
         result["status"] = "login_required"
@@ -243,6 +282,14 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
 async def collect_mobile_offers(page, offers: list[dict]) -> list[dict]:
     results = []
     completed_by_identity: dict[str, dict] = {}
+    initial_order_history = None
+    try:
+        initial_order_history = await EpicGames.fetch_order_history(page)
+    except Exception as err:
+        logger.warning(
+            f"Mobile order-history precheck failed: {type(err).__name__}: {err}"
+        )
+
     for offer in offers:
         identity = offer_identity(offer)
         if identity and identity in completed_by_identity:
@@ -256,6 +303,26 @@ async def collect_mobile_offers(page, offers: list[dict]) -> list[dict]:
             emit_result(result)
             results.append(result)
             continue
+
+        offer_id = str(offer.get("offerId") or "").strip()
+        if initial_order_history is not None and offer_id:
+            if order_history_has_offer_id(initial_order_history, offer_id):
+                emit_order_check("pre", offer, "owned")
+                result = {
+                    "platform": str(offer.get("platform") or "Mobile"),
+                    "title": str(offer.get("title") or "Unknown mobile offer"),
+                    "url": str(offer.get("url") or ""),
+                    "status": "already_owned",
+                    "attempted_claim": False,
+                    "checkout_submitted": False,
+                    "notes": ["verified_by_order_history"],
+                }
+                emit_result(result)
+                if identity:
+                    completed_by_identity[identity] = result
+                results.append(result)
+                continue
+            emit_order_check("pre", offer, "missing")
 
         try:
             result = await collect_mobile_offer(page, offer)
