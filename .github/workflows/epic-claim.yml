@@ -43,10 +43,10 @@ jobs:
       API_BASE_URL: ${{ secrets.API_BASE_URL }}
       API_KEY: ${{ secrets.API_KEY }}
       GEMINI_API_KEY: not_used
-      PRIMARY_MODEL: agnes-2.0-flash
-      PRIMARY_MODEL_FALLBACK: agnes-2.0-flash
-      CAPTCHA_MODEL: agnes-2.0-flash
-      CAPTCHA_MODEL_FALLBACK: agnes-2.0-flash
+      PRIMARY_MODEL: agnes-2.5-flash
+      PRIMARY_MODEL_FALLBACK: agnes-2.5-flash
+      CAPTCHA_MODEL: agnes-2.5-flash
+      CAPTCHA_MODEL_FALLBACK: agnes-2.5-flash
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
       RESPONSE_TIMEOUT: "120"

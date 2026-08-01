@@ -49,7 +49,7 @@
 | `EPIC_ACCOUNTS_JSON` | 是 | Epic 多账号 JSON 数组 |
 | `SERVERCHAN_SENDKEY` | 否 | Server酱 SendKey，用于接收中文运行结果 |
 
-当前 workflow 使用 `agnes-2.0-flash` 处理页面判断和 hCaptcha。`API_BASE_URL` 对应的服务必须提供该模型。
+当前 workflow 使用 `agnes-2.5-flash` 处理页面判断和 hCaptcha。`API_BASE_URL` 对应的服务必须提供该模型。
 
 ### 多账号格式
 
