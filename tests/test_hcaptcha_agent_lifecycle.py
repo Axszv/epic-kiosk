@@ -45,7 +45,9 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("_AGENTS.get(page)", source)
         self.assertIn("class EpicAgentV(AgentV)", source)
         self.assertIn("load_hsw_script", source)
-        self.assertIn('headers={"Accept-Encoding": "identity"}', source)
+        self.assertIn('"Accept-Encoding": "identity"', source)
+        self.assertIn("self._hsw_lock = asyncio.Lock()", source)
+        self.assertIn("if document_key == self._hsw_document_key:", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
 
     def test_authorization_module_imports_with_runtime_annotations(self):
