@@ -43,6 +43,10 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         )
         self.assertIn("WeakKeyDictionary", source)
         self.assertIn("_AGENTS.get(page)", source)
+        self.assertIn("class EpicAgentV(AgentV)", source)
+        self.assertIn("load_hsw_script", source)
+        self.assertIn('headers={"Accept-Encoding": "identity"}', source)
+        self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
 
     def test_authorization_module_imports_with_runtime_annotations(self):
         source = (ROOT / "app/services/epic_authorization_service.py").read_text(
