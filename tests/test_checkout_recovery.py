@@ -43,6 +43,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn('CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "375"', workflow)
         self.assertIn("Collect hCaptcha debug artifacts", workflow)
         self.assertIn("cp -a /tmp/hcaptcha/.cache/.", workflow)
+        self.assertIn("cp -a /tmp/hcaptcha/.challenge/.", workflow)
 
 
 if __name__ == "__main__":

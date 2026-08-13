@@ -137,6 +137,9 @@ jobs:
           if [ -d /tmp/hcaptcha/.cache ]; then
             cp -a /tmp/hcaptcha/.cache/. app/volumes/runtime/hcaptcha/
           fi
+          if [ -d /tmp/hcaptcha/.challenge ]; then
+            cp -a /tmp/hcaptcha/.challenge/. app/volumes/runtime/hcaptcha/
+          fi
 
       - name: Upload logs
         if: always()
