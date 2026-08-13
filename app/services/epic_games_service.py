@@ -615,11 +615,21 @@ class EpicGames:
             "button[type='submit']",
         ]
 
-        containers: list[tuple[str, Any]] = [("page", page)]
+        purchase_frames: list[tuple[str, Any]] = []
+        other_frames: list[tuple[str, Any]] = []
         for idx, frame in enumerate(page.frames):
             if frame == page.main_frame:
                 continue
-            containers.append((f"frame[{idx}] {frame.url[:180]}", frame))
+            item = (f"frame[{idx}] {frame.url[:180]}", frame)
+            if "/purchase" in frame.url:
+                purchase_frames.append(item)
+            else:
+                other_frames.append(item)
+        containers: list[tuple[str, Any]] = [
+            *purchase_frames,
+            ("page", page),
+            *other_frames,
+        ]
 
         logger.info(f"🔎 扫描结账容器: {len(containers)} 个候选")
 
@@ -797,10 +807,13 @@ class EpicGames:
             "iframe[src*='hcaptcha.com/captcha/']:visible",
             ".h_captcha_challenge:visible iframe",
         )
-        for selector in selectors:
-            with suppress(Exception):
-                if await page.locator(selector).count() > 0:
-                    return True
+        containers = [page, *[frame for frame in page.frames if frame != page.main_frame]]
+        for container in containers:
+            for selector in selectors:
+                with suppress(Exception):
+                    locator = container.locator(selector)
+                    if await locator.count() > 0 and await locator.first.is_visible():
+                        return True
         return False
 
     async def _handle_instant_checkout(self, page: Page) -> bool:

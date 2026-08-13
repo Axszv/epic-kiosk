@@ -10,9 +10,21 @@ WORKFLOW_SOURCE = ROOT / ".github" / "workflows" / "epic-claim.yml"
 
 class CheckoutRecoveryTests(unittest.TestCase):
     def test_checkout_only_waits_for_visible_hcaptcha(self):
-        source = ast.unparse(ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8")))
+        raw_source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        source = ast.unparse(ast.parse(raw_source))
         self.assertIn("_has_visible_hcaptcha", source)
         self.assertIn("CHECKOUT_CAPTCHA_TIMEOUT_SECONDS", source)
+        self.assertIn("page.frames", source)
+
+    def test_purchase_frames_are_scanned_before_the_main_page(self):
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def _active_purchase_container")
+        end = source.index("async def _handle_device_not_supported_modal", start)
+        branch = source[start:end]
+
+        self.assertIn('if "/purchase" in frame.url:', branch)
+        self.assertIn("*purchase_frames", branch)
+        self.assertLess(branch.index("*purchase_frames"), branch.index('(\"page\", page)'))
 
     def test_uncertain_checkout_checks_strict_ownership_evidence(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
