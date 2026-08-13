@@ -1,6 +1,8 @@
 """Page-scoped hCaptcha agent lifecycle."""
 
 import asyncio
+import time
+from contextlib import suppress
 from weakref import WeakKeyDictionary
 
 from hcaptcha_challenger.agent import AgentV
@@ -32,8 +34,45 @@ class EpicAgentV(AgentV):
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
         super().__init__(*args, **kwargs)
+        # Upstream requires an exact visible `.challenge-view`, which misses
+        # Epic's hCaptcha when it is nested inside the purchase iframe.
+        self.robotic_arm.get_challenge_frame_locator = (
+            self._get_nested_challenge_frame_locator
+        )
+
+    async def _get_nested_challenge_frame_locator(self):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            candidates = [
+                frame
+                for frame in self.page.frames
+                if "hcaptcha.com/captcha/" in frame.url
+                and "frame=challenge" in frame.url
+            ]
+            for frame in candidates:
+                with suppress(Exception):
+                    if await frame.locator("body").is_visible(timeout=500):
+                        return frame
+            if candidates:
+                return candidates[0]
+            await self.page.wait_for_timeout(250)
+        logger.error("Cannot find a nested hCaptcha challenge frame")
+        return None
 
     async def _task_handler(self, response):
+        if (
+            "/getcaptcha/" in response.url
+            and response.headers.get("content-type", "") != "application/json"
+        ):
+            queue_size = self._captcha_payload_queue.qsize()
+            await super()._task_handler(response)
+            if self._captcha_payload_queue.qsize() == queue_size:
+                logger.warning(
+                    "HSW payload was not decoded; falling back to visual challenge detection"
+                )
+                self._captcha_payload_queue.put_nowait(None)
+            return
+
         if not response.url.endswith("/hsw.js"):
             return await super()._task_handler(response)
 

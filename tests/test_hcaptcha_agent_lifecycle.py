@@ -48,6 +48,9 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn('"Accept-Encoding": "identity"', source)
         self.assertIn("self._hsw_lock = asyncio.Lock()", source)
         self.assertIn("if document_key == self._hsw_document_key:", source)
+        self.assertIn("_get_nested_challenge_frame_locator", source)
+        self.assertIn('"frame=challenge" in frame.url', source)
+        self.assertIn("HSW payload was not decoded", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
 
     def test_authorization_module_imports_with_runtime_annotations(self):
