@@ -88,7 +88,13 @@ ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\
 REGION_UNAVAILABLE_RE = re.compile(r"REGION_UNAVAILABLE:(.+)")
 MOBILE_RESULT_RE = re.compile(r"MOBILE_RESULT:([^:\r\n]+):(.*):([a-z_]+)\s*$")
 SUCCESS_EVIDENCE_STATUSES = {"already_owned", "verified_owned", "region_unavailable"}
-PROFILE_REFRESH_ERROR_TYPES = {"cloudflare_blocked", "cookie_invalid"}
+PROFILE_REFRESH_ERROR_TYPES = {"cookie_invalid"}
+RETRY_BACKOFF_SECONDS = {
+    "cloudflare_blocked": 45,
+    "captcha_failed": 20,
+    "login_timeout": 15,
+    "network_timeout": 15,
+}
 
 
 def should_refresh_account_profile(attempt_result: dict) -> bool:
@@ -98,6 +104,16 @@ def should_refresh_account_profile(attempt_result: dict) -> bool:
         and marker.get("value") in PROFILE_REFRESH_ERROR_TYPES
         for marker in attempt_result.get("error_markers", [])
     )
+
+
+def account_retry_delay(attempt_result: dict) -> int:
+    """Return a short backoff for transient login failures."""
+    values = {
+        marker.get("value")
+        for marker in attempt_result.get("error_markers", [])
+        if marker.get("kind") == "ERROR_TYPE"
+    }
+    return max((RETRY_BACKOFF_SECONDS.get(value, 0) for value in values), default=0)
 
 
 def refresh_account_profile(email: str, user_data_root: Path | None = None) -> bool:
@@ -538,6 +554,7 @@ def main() -> int:
                         flush=True,
                     )
                 if attempt < max_attempts:
+                    retry_delay = account_retry_delay(attempt_result)
                     print(
                         f"Account {original_index} failed attempt {attempt}; "
                         + (
@@ -546,6 +563,13 @@ def main() -> int:
                             else "retrying in the next round with a fresh browser process."
                         )
                     )
+                    if retry_delay:
+                        print(
+                            f"Waiting {retry_delay}s before continuing after a transient "
+                            "login failure.",
+                            flush=True,
+                        )
+                        time.sleep(retry_delay)
 
             write_run_summary(summary_path, summary)
 

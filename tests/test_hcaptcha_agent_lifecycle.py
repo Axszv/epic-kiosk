@@ -63,6 +63,12 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("AgentV", imported_names)
         self.assertIn("AgentV", annotation_names)
 
+    def test_deploy_normalizes_empty_authentication_result(self):
+        source = (ROOT / "app/deploy.py").read_text(encoding="utf-8")
+
+        self.assertIn("if auth_result is None:", source)
+        self.assertIn("auth_result = ErrorType.UNKNOWN", source)
+
 
 if __name__ == "__main__":
     unittest.main()

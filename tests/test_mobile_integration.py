@@ -173,14 +173,35 @@ class DesktopEvidenceTests(unittest.TestCase):
 
 
 class ProfileRefreshTests(unittest.TestCase):
-    def test_refreshes_profile_for_cloudflare_block(self):
+    def test_preserves_profile_for_cloudflare_block(self):
         result = {
             "error_markers": [
                 {"kind": "ERROR_TYPE", "value": "cloudflare_blocked"}
             ]
         }
 
+        self.assertFalse(claim_once.should_refresh_account_profile(result))
+
+    def test_refreshes_profile_for_invalid_cookie(self):
+        result = {
+            "error_markers": [{"kind": "ERROR_TYPE", "value": "cookie_invalid"}]
+        }
+
         self.assertTrue(claim_once.should_refresh_account_profile(result))
+
+    def test_backs_off_after_transient_login_failures(self):
+        cloudflare = {
+            "error_markers": [
+                {"kind": "ERROR_TYPE", "value": "cloudflare_blocked"}
+            ]
+        }
+        captcha = {
+            "error_markers": [{"kind": "ERROR_TYPE", "value": "captcha_failed"}]
+        }
+
+        self.assertEqual(claim_once.account_retry_delay(cloudflare), 45)
+        self.assertEqual(claim_once.account_retry_delay(captcha), 20)
+        self.assertEqual(claim_once.account_retry_delay({"error_markers": []}), 0)
 
     def test_does_not_refresh_profile_for_claim_or_captcha_failure(self):
         for value in ("captcha_failed", "login_timeout", "unknown"):

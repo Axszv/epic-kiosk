@@ -96,7 +96,10 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
         logger.debug("Initiating Epic Games authentication")
         auth_agent = EpicAuthorization(page)
         auth_result = await auth_agent.invoke()
-        logger.debug(f"Authentication result: {auth_result.value if auth_result else 'None'}")
+        if auth_result is None:
+            logger.error("Authentication returned no result; treating it as unknown")
+            auth_result = ErrorType.UNKNOWN
+        logger.debug(f"Authentication result: {auth_result.value}")
 
         # ============================================================
         # 🔥 错误类型处理

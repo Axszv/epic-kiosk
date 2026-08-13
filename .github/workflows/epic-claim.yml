@@ -20,7 +20,7 @@ on:
         required: false
         default: "180"
       account_max_attempts:
-        description: "Maximum attempts per account. Blocked login sessions also use a clean profile."
+        description: "Maximum attempts per account. Only an explicitly invalid cookie clears its profile."
         required: false
         default: "3"
   schedule:

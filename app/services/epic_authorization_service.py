@@ -94,8 +94,9 @@ class ErrorType(Enum):
     # Cookie 无效 - 需要重新登录
     COOKIE_INVALID = "cookie_invalid"
 
-    # Cloudflare interstitial blocks the Epic login form. A new browser profile
-    # is more useful than repeatedly clicking controls that are not present.
+    # Cloudflare interstitial blocks the Epic login form. Preserve the browser
+    # profile because its cookies can help the managed challenge trust the next
+    # navigation.
     CLOUDFLARE_BLOCKED = "cloudflare_blocked"
 
     # 未知错误 - 需要用户查看日志
@@ -145,16 +146,57 @@ class EpicAuthorization:
             title, body_text, self.page.url
         )
 
-    async def _wait_for_cloudflare_auto_pass(self, timeout_seconds: int = 15) -> bool:
+    async def _click_cloudflare_widget(self) -> bool:
+        """Best-effort click of a visible Cloudflare managed-challenge widget."""
+        selectors = (
+            "iframe[src*='challenges.cloudflare.com']:visible",
+            "iframe[title*='Cloudflare']:visible",
+            ".cf-turnstile:visible iframe",
+        )
+        for selector in selectors:
+            widget = self.page.locator(selector).first
+            with suppress(Exception):
+                if await widget.count() == 0 or not await widget.is_visible():
+                    continue
+
+                # Prefer the actual checkbox when the challenge frame exposes it.
+                with suppress(Exception):
+                    checkbox = self.page.frame_locator(selector).locator(
+                        "input[type='checkbox']"
+                    ).first
+                    await checkbox.click(timeout=3000)
+                    logger.info("Clicked the Cloudflare verification checkbox")
+                    return True
+
+                # Some Turnstile versions hide the checkbox behind a closed
+                # component tree. The left side of the visible widget is still
+                # the checkbox/label hit target.
+                box = await widget.bounding_box(timeout=3000)
+                if box:
+                    x = box["x"] + min(28, box["width"] / 4)
+                    y = box["y"] + box["height"] / 2
+                    await self.page.mouse.move(x, y, steps=12)
+                    await self.page.wait_for_timeout(300)
+                    await self.page.mouse.click(x, y)
+                    logger.info("Clicked the visible Cloudflare verification widget")
+                    return True
+        return False
+
+    async def _wait_for_cloudflare_auto_pass(self, timeout_seconds: int = 45) -> bool:
         if not await self._has_cloudflare_security_check():
             return True
 
-        logger.warning("Cloudflare security check is visible, waiting for auto pass")
+        logger.warning("Cloudflare security check is visible, waiting for verification")
         deadline = time.monotonic() + timeout_seconds
+        next_click_at = 0.0
         while time.monotonic() < deadline:
+            now = time.monotonic()
+            if now >= next_click_at:
+                await self._click_cloudflare_widget()
+                next_click_at = now + 12
             await self.page.wait_for_timeout(3000)
             if not await self._has_cloudflare_security_check():
-                logger.success("Cloudflare security check passed automatically")
+                logger.success("Cloudflare security check passed")
                 return True
 
         await self._save_page_debug("auth_cloudflare_check")
@@ -951,6 +993,14 @@ class EpicAuthorization:
             # 检查登录状态（增加超时处理）
             try:
                 if not await self._wait_for_cloudflare_auto_pass():
+                    if attempt < 2:
+                        delay_seconds = 10 * (attempt + 1)
+                        logger.warning(
+                            "Cloudflare check is still active; retrying navigation "
+                            f"in {delay_seconds}s without clearing the browser profile"
+                        )
+                        await self.page.wait_for_timeout(delay_seconds * 1000)
+                        continue
                     return ErrorType.CLOUDFLARE_BLOCKED
                 status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
             except Exception as e:
@@ -974,6 +1024,14 @@ class EpicAuthorization:
                 success, error_type = login_result
                 if success:
                     return ErrorType.SUCCESS
+                if error_type == ErrorType.CLOUDFLARE_BLOCKED and attempt < 2:
+                    delay_seconds = 10 * (attempt + 1)
+                    logger.warning(
+                        "Cloudflare blocked the login form; retrying navigation "
+                        f"in {delay_seconds}s without clearing the browser profile"
+                    )
+                    await self.page.wait_for_timeout(delay_seconds * 1000)
+                    continue
                 # 登录失败，返回具体错误类型
                 return error_type
 
