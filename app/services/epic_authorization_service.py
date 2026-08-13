@@ -61,6 +61,12 @@ def is_epic_email_transaction_failure(status: int, body_text: str = "") -> bool:
     )
 
 
+def is_recoverable_epic_captcha_error(error_code: str) -> bool:
+    """Return whether Epic asks the browser to restart its captcha transaction."""
+    normalized = (error_code or "").casefold()
+    return "captcha_invalid" in normalized or "csrf_token_invalid" in normalized
+
+
 class ErrorType(Enum):
     """
     错误类型枚举，用于精细化区分不同错误，便于前端展示不同提示
@@ -333,8 +339,18 @@ class EpicAuthorization:
                     # 记录错误码并通知登录失败
                     self._login_error_code = result.get("errorCode")
                     error_msg = result.get("errorMessage", "未知错误")
-                    if "csrf_token_invalid" in self._login_error_code:
-                        logger.warning("登录 API 返回 csrf_token_invalid，继续等待 refresh-csrf 会话信号")
+                    if is_recoverable_epic_captcha_error(self._login_error_code):
+                        logger.warning(
+                            "登录 API 拒绝 captcha/CSRF 事务，准备刷新并继续本次登录: "
+                            f"{self._login_error_code}"
+                        )
+                        self._email_transaction_failure_signal.put_nowait(
+                            {
+                                "status": r.status,
+                                "body": json.dumps(result, ensure_ascii=False)[:1000],
+                                "source": "login",
+                            }
+                        )
                         return
                     # 记录完整的错误信息
                     logger.error(f"❌ 登录失败: errorCode={self._login_error_code}, message={error_msg}")
@@ -693,6 +709,9 @@ class EpicAuthorization:
                         elif "account_locked" in error_code:
                             logger.error("❌ 账号已被锁定")
                             return (False, ErrorType.ACCOUNT_LOCKED)
+                        elif "captcha" in error_code or "csrf_token_invalid" in error_code:
+                            logger.error(f"❌ 登录验证码事务失败: {error_code}")
+                            return (False, ErrorType.CAPTCHA_FAILED)
                         else:
                             logger.error(f"❌ 登录失败: {error_code}")
                             return (False, ErrorType.UNKNOWN)
@@ -726,6 +745,9 @@ class EpicAuthorization:
                     elif "account_locked" in error_code:
                         logger.error("❌ 账号已被锁定")
                         return (False, ErrorType.ACCOUNT_LOCKED)
+                    elif "captcha" in error_code or "csrf_token_invalid" in error_code:
+                        logger.error(f"❌ 登录验证码事务失败: {error_code}")
+                        return (False, ErrorType.CAPTCHA_FAILED)
                     else:
                         logger.error(f"❌ 登录失败: {error_code}")
                         return (False, ErrorType.UNKNOWN)

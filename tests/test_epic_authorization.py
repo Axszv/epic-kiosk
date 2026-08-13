@@ -18,6 +18,7 @@ def load_detectors():
         "is_cloudflare_security_check",
         "is_epic_hcaptcha_challenge",
         "is_epic_email_transaction_failure",
+        "is_recoverable_epic_captcha_error",
     }
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -33,6 +34,7 @@ def load_detectors():
         namespace["is_cloudflare_security_check"],
         namespace["is_epic_hcaptcha_challenge"],
         namespace["is_epic_email_transaction_failure"],
+        namespace["is_recoverable_epic_captcha_error"],
     )
 
 
@@ -40,6 +42,7 @@ def load_detectors():
     is_cloudflare_security_check,
     is_epic_hcaptcha_challenge,
     is_epic_email_transaction_failure,
+    is_recoverable_epic_captcha_error,
 ) = load_detectors()
 
 
@@ -102,6 +105,23 @@ class EpicEmailTransactionTests(unittest.TestCase):
 
     def test_does_not_match_successful_email_response(self):
         self.assertFalse(is_epic_email_transaction_failure(200, '{"exists":true}'))
+
+    def test_recovers_login_captcha_and_csrf_rejections(self):
+        self.assertTrue(
+            is_recoverable_epic_captcha_error(
+                "errors.com.epicgames.accountportal.captcha_invalid"
+            )
+        )
+        self.assertTrue(
+            is_recoverable_epic_captcha_error(
+                "errors.com.epicgames.accountportal.csrf_token_invalid"
+            )
+        )
+        self.assertFalse(
+            is_recoverable_epic_captcha_error(
+                "errors.com.epicgames.account.invalid_account_credentials"
+            )
+        )
 
 
 if __name__ == "__main__":
