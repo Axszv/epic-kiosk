@@ -826,6 +826,7 @@ class EpicGames:
             if await self._handle_device_not_supported_modal(page):
                 wpc, payment_btn = await self._active_purchase_container(page)
 
+            agent.prepare_for_new_challenge()
             logger.debug(f"点击支付按钮: {await payment_btn.text_content()}")
             await payment_btn.click(force=True)
             await page.wait_for_timeout(3000)

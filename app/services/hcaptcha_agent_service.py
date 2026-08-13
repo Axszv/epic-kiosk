@@ -6,6 +6,7 @@ from contextlib import suppress
 from weakref import WeakKeyDictionary
 
 from hcaptcha_challenger.agent import AgentV
+from hcaptcha_challenger.models import ChallengeSignal
 from loguru import logger
 from playwright.async_api import Page
 
@@ -40,6 +41,26 @@ class EpicAgentV(AgentV):
             self._get_nested_challenge_frame_locator
         )
 
+    @staticmethod
+    def _drain_queue(queue) -> int:
+        drained = 0
+        while not queue.empty():
+            queue.get_nowait()
+            drained += 1
+        return drained
+
+    def prepare_for_new_challenge(self) -> None:
+        """Discard signals belonging to a previous login or checkout challenge."""
+        payloads = self._drain_queue(self._captcha_payload_queue)
+        responses = self._drain_queue(self._captcha_response_queue)
+        self._captcha_payload = None
+        self.robotic_arm.captcha_payload = None
+        self.robotic_arm.signal_crumb_count = None
+        logger.debug(
+            "Prepared hCaptcha agent for a new challenge: "
+            f"discarded_payloads={payloads}, discarded_responses={responses}"
+        )
+
     async def _get_nested_challenge_frame_locator(self):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -58,6 +79,74 @@ class EpicAgentV(AgentV):
             await self.page.wait_for_timeout(250)
         logger.error("Cannot find a nested hCaptcha challenge frame")
         return None
+
+    async def _has_visible_challenge_frame(self) -> bool:
+        for frame in self.page.frames:
+            if (
+                "hcaptcha.com/captcha/" not in frame.url
+                or "frame=challenge" not in frame.url
+            ):
+                continue
+            with suppress(Exception):
+                challenge_view = frame.locator(".challenge-view")
+                if await challenge_view.is_visible(timeout=250):
+                    return True
+        return False
+
+    async def wait_for_challenge(self) -> ChallengeSignal:
+        """Solve every round emitted by one Epic checkout hCaptcha transaction."""
+        deadline = time.monotonic() + self.config.EXECUTION_TIMEOUT
+        round_number = 0
+
+        while time.monotonic() < deadline:
+            while not self._captcha_response_queue.empty():
+                response = self._captcha_response_queue.get_nowait()
+                if response and response.is_pass:
+                    logger.success("Challenge success")
+                    self._cache_validated_captcha_response(response)
+                    return ChallengeSignal.SUCCESS
+                logger.warning("hCaptcha rejected the submitted round; checking for the next round")
+
+            round_number += 1
+            logger.debug(
+                "Solving hCaptcha round "
+                f"{round_number}: payloads={self._captcha_payload_queue.qsize()}, "
+                f"responses={self._captcha_response_queue.qsize()}"
+            )
+            remaining = deadline - time.monotonic()
+            try:
+                await asyncio.wait_for(
+                    self._solve_captcha(),
+                    timeout=min(self.config.EXECUTION_TIMEOUT, remaining),
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"Challenge execution timed out after {self.config.EXECUTION_TIMEOUT}s"
+                )
+                return ChallengeSignal.EXECUTION_TIMEOUT
+
+            response_deadline = min(
+                deadline,
+                time.monotonic() + self.config.RESPONSE_TIMEOUT,
+            )
+            while time.monotonic() < response_deadline:
+                if not self._captcha_response_queue.empty():
+                    break
+                if not self._captcha_payload_queue.empty():
+                    logger.info("hCaptcha issued another round after submission; continuing")
+                    break
+                if not await self._has_visible_challenge_frame():
+                    logger.debug("hCaptcha challenge frame closed after submission")
+                    return ChallengeSignal.SUCCESS
+                await self.page.wait_for_timeout(250)
+            else:
+                logger.error(
+                    f"Wait for captcha response timeout {self.config.RESPONSE_TIMEOUT}s"
+                )
+                return ChallengeSignal.RESPONSE_TIMEOUT
+
+        logger.error(f"Challenge execution timed out after {self.config.EXECUTION_TIMEOUT}s")
+        return ChallengeSignal.EXECUTION_TIMEOUT
 
     async def _task_handler(self, response):
         if (

@@ -177,7 +177,10 @@ class EpicSettings(AgentConfig):
 
     EPIC_EMAIL: str = Field(default_factory=lambda: os.getenv("EPIC_EMAIL"))
     EPIC_PASSWORD: SecretStr = Field(default_factory=lambda: os.getenv("EPIC_PASSWORD"))
-    DISABLE_BEZIER_TRAJECTORY: bool = Field(default=True)
+    DISABLE_BEZIER_TRAJECTORY: bool = Field(
+        default_factory=lambda: os.getenv("DISABLE_BEZIER_TRAJECTORY", "false").lower()
+        in {"1", "true", "yes", "on"}
+    )
 
     # === hcaptcha-challenger 超时配置 ===
     # 验证码响应超时（秒）

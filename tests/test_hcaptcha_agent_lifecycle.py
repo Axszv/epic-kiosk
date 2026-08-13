@@ -1,9 +1,12 @@
 import ast
+import asyncio
 import importlib
 import sys
+import types
 import unittest
+from enum import Enum
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +20,16 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
             sys.path.insert(0, app_path)
         sys.modules.setdefault("hcaptcha_challenger", MagicMock())
         sys.modules.setdefault("hcaptcha_challenger.agent", MagicMock())
+        if "hcaptcha_challenger.models" not in sys.modules:
+            class ChallengeSignal(str, Enum):
+                SUCCESS = "success"
+                FAILURE = "failure"
+                EXECUTION_TIMEOUT = "challenge_execution_timeout"
+                RESPONSE_TIMEOUT = "challenge_response_timeout"
+
+            sys.modules["hcaptcha_challenger.models"] = types.SimpleNamespace(
+                ChallengeSignal=ChallengeSignal
+            )
         sys.modules.setdefault("playwright", MagicMock())
         sys.modules.setdefault("playwright.async_api", MagicMock())
 
@@ -51,7 +64,55 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("_get_nested_challenge_frame_locator", source)
         self.assertIn('"frame=challenge" in frame.url', source)
         self.assertIn("HSW payload was not decoded", source)
+        self.assertIn("prepare_for_new_challenge", source)
+        self.assertIn("hCaptcha issued another round after submission", source)
+        self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
+
+    def test_checkout_resets_agent_before_submitting_order(self):
+        source = (ROOT / "app/services/epic_games_service.py").read_text(
+            encoding="utf-8"
+        )
+        prepare_index = source.index("agent.prepare_for_new_challenge()")
+        click_index = source.index("await payment_btn.click(force=True)", prepare_index)
+
+        self.assertLess(prepare_index, click_index)
+
+    def test_drag_uses_humanized_trajectory_by_default(self):
+        source = (ROOT / "app/settings.py").read_text(encoding="utf-8")
+
+        self.assertIn('os.getenv("DISABLE_BEZIER_TRAJECTORY", "false")', source)
+
+    def test_agent_continues_when_hcaptcha_issues_another_round(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent.config = types.SimpleNamespace(EXECUTION_TIMEOUT=2, RESPONSE_TIMEOUT=0.2)
+        agent._captcha_payload_queue = asyncio.Queue()
+        agent._captcha_response_queue = asyncio.Queue()
+        agent._captcha_payload_queue.put_nowait(object())
+        agent._has_visible_challenge_frame = AsyncMock(return_value=True)
+        agent._cache_validated_captcha_response = MagicMock()
+        agent.page = types.SimpleNamespace(wait_for_timeout=AsyncMock())
+
+        response = types.SimpleNamespace(is_pass=True)
+        calls = 0
+
+        async def solve_round():
+            nonlocal calls
+            calls += 1
+            agent._captcha_payload_queue.get_nowait()
+            if calls == 1:
+                agent._captcha_payload_queue.put_nowait(object())
+            else:
+                agent._captcha_response_queue.put_nowait(response)
+
+        agent._solve_captcha = AsyncMock(side_effect=solve_round)
+
+        result = asyncio.run(agent.wait_for_challenge())
+
+        self.assertEqual(result.value, "success")
+        self.assertEqual(calls, 2)
+        agent._cache_validated_captcha_response.assert_called_once_with(response)
 
     def test_authorization_module_imports_with_runtime_annotations(self):
         source = (ROOT / "app/services/epic_authorization_service.py").read_text(

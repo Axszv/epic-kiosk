@@ -3,6 +3,7 @@ import importlib
 import sys
 import types
 import unittest
+from enum import Enum
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +30,19 @@ sys.modules.setdefault(
 sys.modules.setdefault(
     "hcaptcha_challenger.agent",
     types.SimpleNamespace(AgentV=object),
+)
+
+
+class ChallengeSignal(str, Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    EXECUTION_TIMEOUT = "challenge_execution_timeout"
+    RESPONSE_TIMEOUT = "challenge_response_timeout"
+
+
+sys.modules.setdefault(
+    "hcaptcha_challenger.models",
+    types.SimpleNamespace(ChallengeSignal=ChallengeSignal),
 )
 sys.modules.setdefault("loguru", types.SimpleNamespace(logger=NullLogger()))
 sys.modules.setdefault("playwright", types.SimpleNamespace())
