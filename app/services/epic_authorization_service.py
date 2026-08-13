@@ -11,6 +11,7 @@ import time
 from contextlib import suppress
 from enum import Enum
 
+from hcaptcha_challenger.agent import AgentV
 from loguru import logger
 from playwright.async_api import expect, Page, Response
 
