@@ -19,6 +19,25 @@ from settings import RUNTIME_DIR, settings
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 
+CLOUDFLARE_TITLE_MARKERS = ("just a moment",)
+CLOUDFLARE_BODY_MARKERS = (
+    "one more step",
+    "performing security verification",
+    "checking your browser before accessing",
+)
+
+
+def is_cloudflare_security_check(title: str, body_text: str, url: str = "") -> bool:
+    """Return whether the current page is a blocking Cloudflare interstitial."""
+    normalized_title = (title or "").casefold()
+    normalized_body = (body_text or "").casefold()
+    normalized_url = (url or "").casefold()
+    return (
+        any(marker in normalized_title for marker in CLOUDFLARE_TITLE_MARKERS)
+        or any(marker in normalized_body for marker in CLOUDFLARE_BODY_MARKERS)
+        or "/cdn-cgi/challenge-platform/" in normalized_url
+    )
+
 
 class ErrorType(Enum):
     """
@@ -53,6 +72,10 @@ class ErrorType(Enum):
     # Cookie 无效 - 需要重新登录
     COOKIE_INVALID = "cookie_invalid"
 
+    # Cloudflare interstitial blocks the Epic login form. A new browser profile
+    # is more useful than repeatedly clicking controls that are not present.
+    CLOUDFLARE_BLOCKED = "cloudflare_blocked"
+
     # 未知错误 - 需要用户查看日志
     UNKNOWN = "unknown"
 
@@ -81,6 +104,39 @@ class EpicAuthorization:
 
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
+
+    async def _has_cloudflare_security_check(self) -> bool:
+        title = ""
+        body_text = ""
+        has_cloudflare_widget = False
+        with suppress(Exception):
+            title = await self.page.title()
+        with suppress(Exception):
+            body_text = await self.page.locator("body").inner_text(timeout=3000)
+        with suppress(Exception):
+            has_cloudflare_widget = await self.page.locator(
+                "iframe[src*='challenges.cloudflare.com'], "
+                "[class*='cf-turnstile'], input[name='cf-turnstile-response']"
+            ).count() > 0
+        return has_cloudflare_widget or is_cloudflare_security_check(
+            title, body_text, self.page.url
+        )
+
+    async def _wait_for_cloudflare_auto_pass(self, timeout_seconds: int = 15) -> bool:
+        if not await self._has_cloudflare_security_check():
+            return True
+
+        logger.warning("Cloudflare security check is visible, waiting for auto pass")
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            await self.page.wait_for_timeout(3000)
+            if not await self._has_cloudflare_security_check():
+                logger.success("Cloudflare security check passed automatically")
+                return True
+
+        await self._save_page_debug("auth_cloudflare_check")
+        logger.error("Cloudflare security check is still blocking the login page")
+        return False
 
     async def _save_page_debug(self, label: str):
         """Save the current page state for GitHub Actions artifacts."""
@@ -238,12 +294,17 @@ class EpicAuthorization:
             if self._has_refresh_csrf_session():
                 logger.success("✅ 检测到已有 refresh-csrf 会话，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
+            if not await self._wait_for_cloudflare_auto_pass():
+                return (False, ErrorType.CLOUDFLARE_BLOCKED)
 
             # 1. 使用电子邮件地址登录
             email_input = self.page.locator("#email")
             try:
                 await email_input.wait_for(state="visible", timeout=60000)
             except Exception:
+                if await self._has_cloudflare_security_check():
+                    await self._save_page_debug("login_cloudflare_check")
+                    return (False, ErrorType.CLOUDFLARE_BLOCKED)
                 await self._save_page_debug("login_email_wait_timeout")
                 raise
             for _ in range(30):
@@ -430,9 +491,16 @@ class EpicAuthorization:
 
         except asyncio.TimeoutError:
             await self._save_page_debug("login_outer_timeout")
+            if await self._has_cloudflare_security_check():
+                logger.error("❌ 登录被 Cloudflare 安全检查阻塞")
+                return (False, ErrorType.CLOUDFLARE_BLOCKED)
             logger.error("❌ 登录超时，请检查账号密码")
             return (False, ErrorType.LOGIN_TIMEOUT)
         except Exception as err:
+            if await self._has_cloudflare_security_check():
+                await self._save_page_debug("login_cloudflare_check")
+                logger.error(f"❌ 登录被 Cloudflare 安全检查阻塞: {err}")
+                return (False, ErrorType.CLOUDFLARE_BLOCKED)
             logger.warning(f"登录异常: {err}")
             return (False, ErrorType.UNKNOWN)
         finally:
@@ -658,15 +726,8 @@ class EpicAuthorization:
 
             # 检查登录状态（增加超时处理）
             try:
-                if "Just a moment" in await self.page.title():
-                    logger.debug("Cloudflare security check is visible, waiting for auto pass")
-                    for _ in range(5):
-                        await self.page.wait_for_timeout(5000)
-                        if "Just a moment" not in await self.page.title():
-                            break
-                    if "Just a moment" in await self.page.title():
-                        await self._save_page_debug("auth_cloudflare_check")
-                        raise RuntimeError("Cloudflare security check is visible")
+                if not await self._wait_for_cloudflare_auto_pass():
+                    return ErrorType.CLOUDFLARE_BLOCKED
                 status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
             except Exception as e:
                 # 超时时检查是否在修正页面

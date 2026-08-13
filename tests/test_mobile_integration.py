@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
 from datetime import datetime, timezone
@@ -169,6 +170,120 @@ class DesktopEvidenceTests(unittest.TestCase):
         evidence = claim_once.parse_claim_evidence(output)
 
         self.assertEqual(evidence["Weekly Game"]["status"], "unknown")
+
+
+class ProfileRefreshTests(unittest.TestCase):
+    def test_refreshes_profile_for_cloudflare_block(self):
+        result = {
+            "error_markers": [
+                {"kind": "ERROR_TYPE", "value": "cloudflare_blocked"}
+            ]
+        }
+
+        self.assertTrue(claim_once.should_refresh_account_profile(result))
+
+    def test_does_not_refresh_profile_for_claim_or_captcha_failure(self):
+        for value in ("captcha_failed", "login_timeout", "unknown"):
+            result = {"error_markers": [{"kind": "ERROR_TYPE", "value": value}]}
+            self.assertFalse(claim_once.should_refresh_account_profile(result))
+
+    def test_refresh_removes_only_the_selected_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            selected = root / "account1@example.com"
+            other = root / "account2@example.com"
+            selected.mkdir()
+            other.mkdir()
+            (selected / "cookies.sqlite").write_text("stale", encoding="utf-8")
+            (other / "cookies.sqlite").write_text("valid", encoding="utf-8")
+
+            refreshed = claim_once.refresh_account_profile(
+                "account1@example.com", user_data_root=root
+            )
+
+            self.assertTrue(refreshed)
+            self.assertFalse(selected.exists())
+            self.assertTrue(other.exists())
+
+
+class CumulativeEvidenceTests(unittest.TestCase):
+    def test_keeps_strict_desktop_evidence_when_later_attempt_is_unknown(self):
+        current = {
+            "Desktop Weekly": {
+                "status": "verified_owned",
+                "evidence": "strict proof",
+            }
+        }
+        incoming = {
+            "Desktop Weekly": {"status": "unknown", "evidence": ""}
+        }
+
+        merged = claim_once.merge_desktop_evidence(current, incoming)
+
+        self.assertEqual(merged["Desktop Weekly"]["status"], "verified_owned")
+
+    def test_completes_when_mobile_proof_is_split_across_attempts(self):
+        offers = [
+            {"platform": "Android", "title": "Mobile Weekly"},
+            {"platform": "iOS", "title": "Mobile Weekly"},
+        ]
+        first = {
+            "Android": {
+                "Mobile Weekly": {"status": "verified_owned", "evidence": "first"}
+            }
+        }
+        second = {
+            "iOS": {
+                "Mobile Weekly": {"status": "already_owned", "evidence": "second"}
+            }
+        }
+        merged = claim_once.merge_mobile_evidence(first, second)
+
+        self.assertTrue(
+            claim_once.has_complete_account_evidence(
+                {"Desktop Weekly": {"status": "already_owned"}},
+                merged,
+                offers,
+            )
+        )
+
+    def test_unverified_checkout_never_completes_account(self):
+        offers = [{"platform": "Android", "title": "Mobile Weekly"}]
+
+        self.assertFalse(
+            claim_once.has_complete_account_evidence(
+                {"Desktop Weekly": {"status": "verified_owned"}},
+                {
+                    "Android": {
+                        "Mobile Weekly": {
+                            "status": "checkout_submitted_unverified"
+                        }
+                    }
+                },
+                offers,
+            )
+        )
+
+    def test_previous_desktop_proof_does_not_hide_empty_current_attempt(self):
+        offers = [{"platform": "Android", "title": "Mobile Weekly"}]
+        accumulated_desktop = {
+            "Desktop Weekly": {"status": "verified_owned"}
+        }
+        current_desktop = {}
+        mobile = {
+            "Android": {
+                "Mobile Weekly": {"status": "already_owned"}
+            }
+        }
+
+        self.assertTrue(accumulated_desktop)
+        self.assertFalse(
+            claim_once.has_complete_account_evidence(
+                current_desktop,
+                mobile,
+                offers,
+            )
+        )
 
 
 class NotificationTests(unittest.TestCase):

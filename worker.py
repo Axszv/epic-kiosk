@@ -492,6 +492,11 @@ ERROR_TYPE_MESSAGES = {
         "hint": "系统会自动用存储的密码重新登录",
         "nuke": False,  # 不删除账号，下次执行会自动重新登录
     },
+    "cloudflare_blocked": {
+        "status": "⚠️ Cloudflare 安全检查阻塞登录",
+        "hint": "系统会刷新该账号的浏览器会话后重试",
+        "nuke": False,
+    },
     # 未知错误
     "unknown": {
         "status": "❌ 未知错误",

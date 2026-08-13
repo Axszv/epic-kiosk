@@ -88,6 +88,65 @@ ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\
 REGION_UNAVAILABLE_RE = re.compile(r"REGION_UNAVAILABLE:(.+)")
 MOBILE_RESULT_RE = re.compile(r"MOBILE_RESULT:([^:\r\n]+):(.*):([a-z_]+)\s*$")
 SUCCESS_EVIDENCE_STATUSES = {"already_owned", "verified_owned", "region_unavailable"}
+PROFILE_REFRESH_ERROR_TYPES = {"cloudflare_blocked", "cookie_invalid"}
+
+
+def should_refresh_account_profile(attempt_result: dict) -> bool:
+    """Refresh only profiles proven to contain a blocked or invalid session."""
+    return any(
+        marker.get("kind") == "ERROR_TYPE"
+        and marker.get("value") in PROFILE_REFRESH_ERROR_TYPES
+        for marker in attempt_result.get("error_markers", [])
+    )
+
+
+def refresh_account_profile(email: str, user_data_root: Path | None = None) -> bool:
+    """Remove one failed account profile so the next attempt starts clean."""
+    root = (user_data_root or Path("app/volumes/user_data")).resolve()
+    profile = root.joinpath(email).resolve()
+    if profile.parent != root:
+        raise ValueError("Account profile path escaped the user data directory")
+    if not profile.exists():
+        return False
+    shutil.rmtree(profile)
+    return True
+
+
+def merge_desktop_evidence(current: dict, incoming: dict) -> dict:
+    """Keep strict ownership evidence across retries without promoting unknowns."""
+    merged = dict(current)
+    for title, item in incoming.items():
+        existing = merged.get(title)
+        if existing and existing.get("status") in SUCCESS_EVIDENCE_STATUSES:
+            continue
+        merged[title] = item
+    return merged
+
+
+def merge_mobile_evidence(current: dict, incoming: dict) -> dict:
+    merged = {platform: dict(items) for platform, items in current.items()}
+    for platform, items in incoming.items():
+        platform_evidence = merged.setdefault(platform, {})
+        for title, item in items.items():
+            existing = platform_evidence.get(title)
+            if existing and existing.get("status") in SUCCESS_EVIDENCE_STATUSES:
+                continue
+            platform_evidence[title] = item
+    return merged
+
+
+def has_complete_account_evidence(
+    desktop_evidence: dict,
+    mobile_evidence: dict,
+    mobile_offers: list[dict],
+) -> bool:
+    desktop_complete = bool(desktop_evidence) and all(
+        item.get("status") in SUCCESS_EVIDENCE_STATUSES
+        for item in desktop_evidence.values()
+    )
+    return desktop_complete and not missing_mobile_evidence(
+        mobile_offers, mobile_evidence
+    )
 
 
 def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
@@ -446,15 +505,47 @@ def main() -> int:
                 mobile_offers,
             )
             account_result["attempts"].append(attempt_result)
-            account_result["desktop_evidence"] = attempt_result["desktop_evidence"]
-            account_result["mobile_evidence"] = attempt_result["mobile_evidence"]
-            if ok:
+            account_result["desktop_evidence"] = merge_desktop_evidence(
+                account_result["desktop_evidence"],
+                attempt_result["desktop_evidence"],
+            )
+            account_result["mobile_evidence"] = merge_mobile_evidence(
+                account_result["mobile_evidence"],
+                attempt_result["mobile_evidence"],
+            )
+            cumulative_complete = has_complete_account_evidence(
+                attempt_result["desktop_evidence"],
+                account_result["mobile_evidence"],
+                mobile_offers,
+            )
+            if ok or cumulative_complete:
                 account_result["status"] = "completed"
-            elif attempt < max_attempts:
-                print(
-                    f"Account {original_index} failed attempt {attempt}; "
-                    "retrying in the next round with a fresh browser process."
-                )
+                if not ok:
+                    attempt_result["completed_from_cumulative_evidence"] = True
+                    print(
+                        f"Account {original_index} has strict ownership evidence for all "
+                        "desktop and mobile offers across its attempts.",
+                        flush=True,
+                    )
+            else:
+                profile_refreshed = False
+                if should_refresh_account_profile(attempt_result):
+                    profile_refreshed = refresh_account_profile(account["email"])
+                    attempt_result["profile_refreshed"] = profile_refreshed
+                    print(
+                        f"Account {original_index} browser profile was refreshed after "
+                        "a blocked or invalid login session.",
+                        flush=True,
+                    )
+                if attempt < max_attempts:
+                    print(
+                        f"Account {original_index} failed attempt {attempt}; "
+                        + (
+                            "retrying in the next round with a clean browser profile."
+                            if profile_refreshed
+                            else "retrying in the next round with a fresh browser process."
+                        )
+                    )
 
             write_run_summary(summary_path, summary)
 
