@@ -21,9 +21,13 @@ URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 
 CLOUDFLARE_TITLE_MARKERS = ("just a moment",)
 CLOUDFLARE_BODY_MARKERS = (
-    "one more step",
     "performing security verification",
     "checking your browser before accessing",
+)
+EPIC_HCAPTCHA_HTML_MARKERS = (
+    "h_captcha_challenge_",
+    'title="hcaptcha challenge"',
+    "hcaptcha.com/captcha/",
 )
 
 
@@ -37,6 +41,11 @@ def is_cloudflare_security_check(title: str, body_text: str, url: str = "") -> b
         or any(marker in normalized_body for marker in CLOUDFLARE_BODY_MARKERS)
         or "/cdn-cgi/challenge-platform/" in normalized_url
     )
+
+
+def is_epic_hcaptcha_challenge(html: str) -> bool:
+    normalized_html = (html or "").casefold()
+    return any(marker in normalized_html for marker in EPIC_HCAPTCHA_HTML_MARKERS)
 
 
 class ErrorType(Enum):
@@ -136,6 +145,50 @@ class EpicAuthorization:
 
         await self._save_page_debug("auth_cloudflare_check")
         logger.error("Cloudflare security check is still blocking the login page")
+        return False
+
+    async def _has_hcaptcha_challenge(self) -> bool:
+        selectors = (
+            "iframe[title='hCaptcha challenge']:visible",
+            "iframe[src*='hcaptcha.com/captcha/']:visible",
+            ".h_captcha_challenge:visible iframe",
+        )
+        for selector in selectors:
+            with suppress(Exception):
+                if await self.page.locator(selector).count() > 0:
+                    return True
+        return False
+
+    async def _solve_pre_password_hcaptcha(self, agent: AgentV) -> bool:
+        # Epic can insert an email_exists_prod hCaptcha between the email and
+        # password steps. Wait briefly for either state before proceeding.
+        for _ in range(20):
+            if await self._has_hcaptcha_challenge():
+                break
+            with suppress(Exception):
+                if await self.page.locator("#password").is_visible(timeout=250):
+                    return True
+            await self.page.wait_for_timeout(500)
+        else:
+            return True
+
+        for attempt in range(1, 4):
+            logger.info(f"处理邮箱步骤 hCaptcha [{attempt}/3]")
+            try:
+                await asyncio.wait_for(
+                    agent.wait_for_challenge(),
+                    timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
+                )
+            except Exception as err:
+                logger.warning(f"邮箱步骤 hCaptcha 处理异常 [{attempt}/3]: {err}")
+
+            await self.page.wait_for_timeout(2000)
+            if not await self._has_hcaptcha_challenge():
+                logger.success("✅ 邮箱步骤 hCaptcha 已通过")
+                return True
+
+        await self._save_page_debug("login_email_hcaptcha_failed")
+        logger.error("❌ 邮箱步骤 hCaptcha 未通过")
         return False
 
     async def _save_page_debug(self, label: str):
@@ -337,6 +390,9 @@ class EpicAuthorization:
             # 2. 点击继续按钮
             await self.page.click("#continue")
 
+            if not await self._solve_pre_password_hcaptcha(agent):
+                return (False, ErrorType.CAPTCHA_FAILED)
+
             # 3. 输入密码
             password_input = self.page.locator("#password")
             await password_input.wait_for(state="visible", timeout=60000)
@@ -494,6 +550,9 @@ class EpicAuthorization:
             if await self._has_cloudflare_security_check():
                 logger.error("❌ 登录被 Cloudflare 安全检查阻塞")
                 return (False, ErrorType.CLOUDFLARE_BLOCKED)
+            if await self._has_hcaptcha_challenge():
+                logger.error("❌ 登录被 hCaptcha 安全检查阻塞")
+                return (False, ErrorType.CAPTCHA_FAILED)
             logger.error("❌ 登录超时，请检查账号密码")
             return (False, ErrorType.LOGIN_TIMEOUT)
         except Exception as err:
@@ -501,6 +560,10 @@ class EpicAuthorization:
                 await self._save_page_debug("login_cloudflare_check")
                 logger.error(f"❌ 登录被 Cloudflare 安全检查阻塞: {err}")
                 return (False, ErrorType.CLOUDFLARE_BLOCKED)
+            if await self._has_hcaptcha_challenge():
+                await self._save_page_debug("login_hcaptcha_check")
+                logger.error(f"❌ 登录被 hCaptcha 安全检查阻塞: {err}")
+                return (False, ErrorType.CAPTCHA_FAILED)
             logger.warning(f"登录异常: {err}")
             return (False, ErrorType.UNKNOWN)
         finally:

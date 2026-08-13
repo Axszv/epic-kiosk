@@ -7,13 +7,15 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTHORIZATION_SOURCE = ROOT / "app" / "services" / "epic_authorization_service.py"
 
 
-def load_cloudflare_detector():
+def load_detectors():
     tree = ast.parse(AUTHORIZATION_SOURCE.read_text(encoding="utf-8"))
     selected = []
     wanted = {
         "CLOUDFLARE_TITLE_MARKERS",
         "CLOUDFLARE_BODY_MARKERS",
+        "EPIC_HCAPTCHA_HTML_MARKERS",
         "is_cloudflare_security_check",
+        "is_epic_hcaptcha_challenge",
     }
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -25,18 +27,21 @@ def load_cloudflare_detector():
     module = ast.Module(body=selected, type_ignores=[])
     namespace = {}
     exec(compile(module, str(AUTHORIZATION_SOURCE), "exec"), namespace)
-    return namespace["is_cloudflare_security_check"]
+    return (
+        namespace["is_cloudflare_security_check"],
+        namespace["is_epic_hcaptcha_challenge"],
+    )
 
 
-is_cloudflare_security_check = load_cloudflare_detector()
+is_cloudflare_security_check, is_epic_hcaptcha_challenge = load_detectors()
 
 
 class CloudflareDetectionTests(unittest.TestCase):
     def test_detects_title_interstitial(self):
         self.assertTrue(is_cloudflare_security_check("Just a moment...", ""))
 
-    def test_detects_epic_one_more_step_page(self):
-        self.assertTrue(
+    def test_epic_one_more_step_text_alone_is_not_cloudflare(self):
+        self.assertFalse(
             is_cloudflare_security_check(
                 "Epic Games",
                 "One more step. Please complete a security check to continue. Verify you are human",
@@ -51,6 +56,28 @@ class CloudflareDetectionTests(unittest.TestCase):
     def test_does_not_treat_generic_verify_text_as_cloudflare(self):
         self.assertFalse(
             is_cloudflare_security_check("Epic Games", "Verify you are human")
+        )
+
+
+class EpicHcaptchaDetectionTests(unittest.TestCase):
+    def test_detects_email_exists_hcaptcha_container(self):
+        self.assertTrue(
+            is_epic_hcaptcha_challenge(
+                '<div id="h_captcha_challenge_email_exists_prod" '
+                'class="h_captcha_challenge"><iframe title="hCaptcha challenge"></iframe></div>'
+            )
+        )
+
+    def test_detects_hcaptcha_iframe_url(self):
+        self.assertTrue(
+            is_epic_hcaptcha_challenge(
+                '<iframe src="https://newassets.hcaptcha.com/captcha/v1/hash/static/hcaptcha.html">'
+            )
+        )
+
+    def test_does_not_match_normal_login_form(self):
+        self.assertFalse(
+            is_epic_hcaptcha_challenge('<input id="email"><input id="password">')
         )
 
 
