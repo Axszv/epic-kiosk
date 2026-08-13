@@ -4,6 +4,7 @@
 # GitHub     : https://github.com/QIN2DIM
 # Description: 游戏商城控制句柄
 
+import asyncio
 import json
 from contextlib import suppress
 from enum import Enum
@@ -11,7 +12,6 @@ from json import JSONDecodeError
 from typing import Any, List
 
 import httpx
-from hcaptcha_challenger.agent import AgentV
 from loguru import logger
 from playwright.async_api import Page
 from playwright.async_api import expect, TimeoutError, FrameLocator
@@ -20,6 +20,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt
 from models import OrderItem, Order
 from models import PromotionGame
 from settings import settings, RUNTIME_DIR
+from services.hcaptcha_agent_service import get_hcaptcha_agent
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 URL_LOGIN = (
@@ -789,9 +790,22 @@ class EpicGames:
             await page.wait_for_timeout(5000)
         return False
 
+    @staticmethod
+    async def _has_visible_hcaptcha(page: Page) -> bool:
+        selectors = (
+            "iframe[title='hCaptcha challenge']:visible",
+            "iframe[src*='hcaptcha.com/captcha/']:visible",
+            ".h_captcha_challenge:visible iframe",
+        )
+        for selector in selectors:
+            with suppress(Exception):
+                if await page.locator(selector).count() > 0:
+                    return True
+        return False
+
     async def _handle_instant_checkout(self, page: Page) -> bool:
         logger.info("🚀 开始即时结账流程...")
-        agent = AgentV(page=page, agent_config=settings)
+        agent = get_hcaptcha_agent(page)
 
         try:
             await self._handle_device_not_supported_modal(page)
@@ -803,11 +817,17 @@ class EpicGames:
             await payment_btn.click(force=True)
             await page.wait_for_timeout(3000)
 
-            try:
-                logger.debug("检查验证码...")
-                await agent.wait_for_challenge()
-            except Exception as e:
-                logger.warning(f"结账验证码未确认通过: {e}")
+            if await self._has_visible_hcaptcha(page):
+                try:
+                    logger.debug("检查验证码...")
+                    await asyncio.wait_for(
+                        agent.wait_for_challenge(),
+                        timeout=settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+                    )
+                except Exception as e:
+                    logger.warning(f"结账验证码未确认通过: {e}")
+            else:
+                logger.debug("结账未出现可见 hCaptcha，直接检查提交结果")
 
             try:
                 if not await payment_btn.is_visible():
@@ -968,6 +988,20 @@ class EpicGames:
                         f"Checkout not submitted [{checkout_attempt}/{max_attempts}]: "
                         f"{promotion.title}"
                     )
+                    if await self._owned_from_order_history(page, promotion):
+                        logger.success(
+                            f"🎉 结账结果不明确，但订单历史确认已领取: {promotion.title}"
+                        )
+                        emit_desktop_result(promotion.title, "verified_owned")
+                        verified = True
+                        break
+                    if await self._owned_from_product_page(page, promotion):
+                        logger.success(
+                            f"🎉 结账结果不明确，但商品页确认已入库: {promotion.title}"
+                        )
+                        emit_desktop_result(promotion.title, "verified_owned")
+                        verified = True
+                        break
                     continue
 
                 if await self._wait_until_owned(page, promotion):
@@ -1013,7 +1047,7 @@ class EpicGames:
         logger.debug("Move ALL paid games from the shopping cart out")
         await self._empty_cart(self.page)
 
-        agent = AgentV(page=self.page, agent_config=settings)
+        agent = get_hcaptcha_agent(self.page)
         await self.page.click("//button//span[text()='Check Out']")
         await self._agree_license(self.page)
 

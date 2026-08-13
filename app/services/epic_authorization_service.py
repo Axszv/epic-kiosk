@@ -11,11 +11,11 @@ import time
 from contextlib import suppress
 from enum import Enum
 
-from hcaptcha_challenger.agent import AgentV
 from loguru import logger
 from playwright.async_api import expect, Page, Response
 
 from settings import RUNTIME_DIR, settings
+from services.hcaptcha_agent_service import get_hcaptcha_agent
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 
@@ -373,7 +373,7 @@ class EpicAuthorization:
         self._login_error_code = None
 
         # 尽可能早地初始化机器人
-        agent = AgentV(page=self.page, agent_config=settings)
+        agent = get_hcaptcha_agent(self.page)
 
         # {{< SIGN IN PAGE >}}
         logger.debug("Login with Email")

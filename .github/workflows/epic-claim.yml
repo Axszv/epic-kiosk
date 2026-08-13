@@ -56,7 +56,8 @@ jobs:
       EXECUTION_TIMEOUT: ${{ github.event.inputs.execution_timeout || '120' }}
       LOGIN_RESULT_TIMEOUT_SECONDS: ${{ github.event.inputs.login_result_timeout || '180' }}
       CAPTCHA_FAILURE_MAX_RETRIES: "0"
-      CHECKOUT_MAX_ATTEMPTS: "3"
+      CHECKOUT_MAX_ATTEMPTS: "2"
+      CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "75"
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
       PYTHONUNBUFFERED: "1"
 
