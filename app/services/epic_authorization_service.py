@@ -338,7 +338,6 @@ class EpicAuthorization:
         captcha_success = False
         captcha_in_progress = False
         captcha_task = None
-        sign_in_captcha_task = None
         keepalive_task = None
 
         try:
@@ -389,7 +388,12 @@ class EpicAuthorization:
             await email_input.type(settings.EPIC_EMAIL)
 
             # 2. 点击继续按钮
-            await self.page.click("#continue")
+            try:
+                await self.page.click("#continue", timeout=10000)
+            except Exception:
+                if not await self._has_hcaptcha_challenge():
+                    raise
+                logger.info("邮箱继续按钮触发 hCaptcha，等待解题器完成")
 
             if not await self._solve_pre_password_hcaptcha(agent):
                 return (False, ErrorType.CAPTCHA_FAILED)
@@ -399,39 +403,6 @@ class EpicAuthorization:
             await password_input.wait_for(state="visible", timeout=60000)
             await password_input.clear()
             await password_input.type(settings.EPIC_PASSWORD.get_secret_value())
-
-            # 4. 点击登录按钮
-            # Start listening before the click. Epic can open Talon's hCaptcha
-            # during the click action, while Playwright is still waiting for the
-            # click to settle; starting later leaves the challenge unattended.
-            sign_in_captcha_task = asyncio.create_task(agent.wait_for_challenge())
-            try:
-                await self.page.click("#sign-in", timeout=15000)
-            except Exception:
-                if not await self._has_hcaptcha_challenge():
-                    sign_in_captcha_task.cancel()
-                    raise
-                logger.info("登录按钮触发 hCaptcha，等待解题器完成")
-                try:
-                    await asyncio.wait_for(
-                        sign_in_captcha_task,
-                        timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
-                    )
-                    captcha_success = True
-                except Exception as err:
-                    logger.warning(f"登录按钮 hCaptcha 处理异常: {err}")
-                    await self._save_page_debug("login_sign_in_hcaptcha_failed")
-                    return (False, ErrorType.CAPTCHA_FAILED)
-                await self.page.wait_for_timeout(2000)
-                if await self._has_hcaptcha_challenge():
-                    await self._save_page_debug("login_sign_in_hcaptcha_still_visible")
-                    return (False, ErrorType.CAPTCHA_FAILED)
-                with suppress(Exception):
-                    await self.page.click("#sign-in", timeout=10000)
-            else:
-                # The normal post-submit handler below owns any later challenge.
-                sign_in_captcha_task.cancel()
-                sign_in_captcha_task = None
 
             # 并行启动：验证码处理 + 登录结果等待
             # 关键改进：使用 wait_for 快速检测密码错误
@@ -477,29 +448,49 @@ class EpicAuthorization:
                             await sign_in_button.click(timeout=3000)
 
             async def handle_captcha():
-                """处理验证码（如果需要）"""
+                """Handle every hCaptcha round until Epic accepts the login."""
                 nonlocal captcha_success, captcha_in_progress
-                for captcha_attempt in range(1, 4):
+                for captcha_attempt in range(1, 9):
                     if result_task.done():
                         return
-                    if captcha_attempt > 1:
-                        await retrigger_security_check()
+
+                    challenge_seen = False
+                    for _ in range(20):
+                        if result_task.done():
+                            return
+                        if await self._has_hcaptcha_challenge():
+                            challenge_seen = True
+                            break
+                        await self.page.wait_for_timeout(500)
+                    if not challenge_seen:
+                        return
+
                     try:
-                        logger.debug(f"处理验证码尝试 [{captcha_attempt}/3]")
+                        logger.info(f"处理登录 hCaptcha [{captcha_attempt}/8]")
                         captcha_in_progress = True
-                        await agent.wait_for_challenge()
-                        captcha_success = True
+                        await asyncio.wait_for(
+                            agent.wait_for_challenge(),
+                            timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
+                        )
                     except Exception as e:
-                        logger.warning(f"验证码处理异常 [{captcha_attempt}/3]: {e}")
-                        await retrigger_security_check()
+                        logger.warning(f"登录 hCaptcha 处理异常 [{captcha_attempt}/8]: {e}")
                     finally:
                         captcha_in_progress = False
+
+                    await self.page.wait_for_timeout(2000)
+                    if not await self._has_hcaptcha_challenge():
+                        captcha_success = True
+                    else:
+                        logger.warning("hCaptcha 仍在页面上，继续处理下一轮")
                     await self.page.wait_for_timeout(2000)
 
-            # 同时启动两个任务
+            # Start the result and challenge coordinators before the click. Epic
+            # may create hCaptcha while the sign-in click is still settling.
             result_task = asyncio.create_task(wait_for_login_result())
             captcha_task = asyncio.create_task(handle_captcha())
             keepalive_task = asyncio.create_task(keep_login_flow_alive())
+            with suppress(Exception):
+                await self.page.click("#sign-in", timeout=5000)
 
             # 第一阶段：15秒内快速检测密码错误
             try:
@@ -602,11 +593,6 @@ class EpicAuthorization:
             try:
                 if captcha_task:
                     captcha_task.cancel()
-            except:
-                pass
-            try:
-                if sign_in_captcha_task:
-                    sign_in_captcha_task.cancel()
             except:
                 pass
             try:
