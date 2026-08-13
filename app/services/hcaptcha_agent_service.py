@@ -169,8 +169,23 @@ class EpicAgentV(AgentV):
                     logger.info("hCaptcha issued another round after submission; continuing")
                     break
                 if not await self._has_visible_challenge_frame():
-                    logger.debug("hCaptcha challenge frame closed after submission")
-                    return ChallengeSignal.SUCCESS
+                    logger.debug(
+                        "hCaptcha challenge frame closed; waiting for the server result"
+                    )
+                    closed_deadline = min(
+                        response_deadline,
+                        time.monotonic() + 10,
+                    )
+                    while time.monotonic() < closed_deadline:
+                        if not self._captcha_response_queue.empty():
+                            break
+                        await self.page.wait_for_timeout(250)
+                    else:
+                        logger.warning(
+                            "hCaptcha frame closed without a validated server response"
+                        )
+                        return ChallengeSignal.FAILURE
+                    break
                 await self.page.wait_for_timeout(250)
             else:
                 logger.error(

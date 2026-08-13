@@ -41,8 +41,8 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn('default: "300"', workflow)
         self.assertIn("github.event.inputs.execution_timeout || '300'", workflow)
         self.assertIn('CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "375"', workflow)
-        self.assertIn("/tmp/hcaptcha/.cache", workflow)
-        self.assertIn("include-hidden-files: true", workflow)
+        self.assertIn("Collect hCaptcha debug artifacts", workflow)
+        self.assertIn("cp -a /tmp/hcaptcha/.cache/.", workflow)
 
 
 if __name__ == "__main__":

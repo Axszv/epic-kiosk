@@ -70,6 +70,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("wait_for_challenge_start", source)
         self.assertIn("hCaptcha issued another round after submission", source)
         self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
+        self.assertIn("frame closed without a validated server response", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
 
     def test_checkout_resets_agent_before_submitting_order(self):

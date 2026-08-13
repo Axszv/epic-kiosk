@@ -130,6 +130,14 @@ jobs:
           path: app/volumes
           key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
+      - name: Collect hCaptcha debug artifacts
+        if: always()
+        run: |
+          mkdir -p app/volumes/runtime/hcaptcha
+          if [ -d /tmp/hcaptcha/.cache ]; then
+            cp -a /tmp/hcaptcha/.cache/. app/volumes/runtime/hcaptcha/
+          fi
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -138,9 +146,7 @@ jobs:
           path: |
             app/volumes/logs
             app/volumes/runtime
-            /tmp/hcaptcha/.cache
           if-no-files-found: ignore
-          include-hidden-files: true
           retention-days: 14
 
       - name: Send ServerChan notification
