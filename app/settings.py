@@ -26,6 +26,33 @@ USER_DATA_DIR = VOLUMES_DIR.joinpath("user_data")
 RUNTIME_DIR = VOLUMES_DIR.joinpath("runtime")
 RECORD_DIR = VOLUMES_DIR.joinpath("record")
 
+
+def extract_chat_completion_text(result: dict) -> str:
+    """Extract text from an OpenAI-compatible chat completion response."""
+    choices = result.get("choices") or []
+    first_choice = choices[0] if choices else {}
+    message = first_choice.get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict)
+        )
+    return ""
+
+
+def captcha_output_budget(requested_max_tokens: int, minimum: int = 8192) -> int:
+    """Keep captcha reasoning from consuming the entire completion budget."""
+    return max(requested_max_tokens, minimum)
+
+
+def captcha_temperature(value: Any, maximum: float = 0.2) -> float:
+    """Use deterministic captcha output even when a provider omits temperature."""
+    return min(value, maximum) if isinstance(value, (int, float)) else maximum
+
 # ==========================================
 # API 提供商配置
 # ==========================================
@@ -333,6 +360,7 @@ def _apply_openai_compatible_patch():
             max_tokens: int = 4096,
             response_schema=None,
             system_instruction: str = None,
+            enable_thinking: bool | None = None,
         ) -> Any:
             """
             调用 OpenAI 兼容 API
@@ -383,6 +411,10 @@ JSON Schema:
 
             if settings.API_SERVICE_TIER:
                 payload["service_tier"] = settings.API_SERVICE_TIER
+            if enable_thinking is not None:
+                payload["chat_template_kwargs"] = {
+                    "enable_thinking": enable_thinking,
+                }
 
             retryable_statuses = {408, 409, 429, 500, 502, 503, 504}
             max_attempts = int(os.getenv("API_MAX_RETRIES", "3"))
@@ -392,7 +424,29 @@ JSON Schema:
                         response = await client.post(url, headers=headers, json=payload)
 
                     if response.status_code == 200:
-                        return response.json()
+                        result = response.json()
+                        choices = result.get("choices") or []
+                        first_choice = choices[0] if choices else {}
+                        content = extract_chat_completion_text(result)
+                        if content.strip():
+                            if choices:
+                                first_choice.setdefault("message", {})["content"] = content
+                            return result
+
+                        finish_reason = first_choice.get("finish_reason")
+                        usage = result.get("usage") or {}
+                        error_msg = (
+                            "API returned an empty completion: "
+                            f"finish_reason={finish_reason}, usage={usage}"
+                        )
+                        if attempt == max_attempts:
+                            logger.error(f"API_ERROR:{error_msg}")
+                            raise ValueError(error_msg)
+                        logger.warning(
+                            f"{error_msg}; retrying attempt {attempt}/{max_attempts}"
+                        )
+                        await asyncio.sleep(min(2 * attempt, 8))
+                        continue
 
                     body_preview = response.text[:500].replace("\n", " ")
                     error_msg = f"API call failed: {response.status_code} - {body_preview}"
@@ -544,6 +598,9 @@ JSON Schema:
                         selected_model = settings.CAPTCHA_MODEL
 
                     logger.debug(f"🎯 验证码调用 #{captcha_call_state['call_count']} | 模型: {selected_model}")
+                    temperature = captcha_temperature(
+                        getattr(kwargs.get('config', {}), 'temperature', 0.2)
+                    )
                 else:
                     selected_model = settings.PRIMARY_MODEL
 
@@ -551,8 +608,17 @@ JSON Schema:
 
                 # 提取配置参数
                 config = kwargs.get('config', {})
-                temperature = getattr(config, 'temperature', 0.7) if hasattr(config, 'temperature') else 0.7
+                if not is_captcha_task:
+                    temperature = getattr(config, 'temperature', 0.7) if hasattr(config, 'temperature') else 0.7
                 max_tokens = getattr(config, 'max_output_tokens', 4096) if hasattr(config, 'max_output_tokens') else 4096
+                if is_captcha_task:
+                    minimum_captcha_tokens = int(
+                        os.getenv("CAPTCHA_MAX_OUTPUT_TOKENS", "8192")
+                    )
+                    max_tokens = captcha_output_budget(
+                        max_tokens if isinstance(max_tokens, int) else 4096,
+                        minimum_captcha_tokens,
+                    )
 
                 # 提取 response_schema（结构化输出）
                 response_schema = None
@@ -577,6 +643,7 @@ JSON Schema:
                     max_tokens=max_tokens if isinstance(max_tokens, int) else 4096,
                     response_schema=response_schema,
                     system_instruction=system_instruction,
+                    enable_thinking=False if is_captcha_task else None,
                 )
 
                 # 提取响应文本
@@ -632,6 +699,7 @@ JSON Schema:
                         max_tokens=max_tokens if isinstance(max_tokens, int) else 4096,
                         response_schema=response_schema,
                         system_instruction=system_instruction,
+                        enable_thinking=False if is_captcha_task else None,
                     )
 
                     response_text = result.get('choices', [{}])[0].get('message', {}).get('content', '')

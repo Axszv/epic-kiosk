@@ -596,12 +596,14 @@ class EpicAuthorization:
                             return
                         logger.info(f"处理登录 hCaptcha [{captcha_attempt}/12]")
                         captcha_in_progress = True
+                        captcha_round_failed = False
                         await asyncio.wait_for(
                             agent.wait_for_challenge(),
                             timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
                         )
                     except Exception as e:
-                        logger.warning(f"登录 hCaptcha 处理异常 [{captcha_attempt}/8]: {e}")
+                        captcha_round_failed = True
+                        logger.warning(f"登录 hCaptcha 处理异常 [{captcha_attempt}/12]: {e}")
                     finally:
                         captcha_in_progress = False
 
@@ -611,10 +613,13 @@ class EpicAuthorization:
                         if not await recover_email_transaction(rejection):
                             return
                         continue
-                    if not await self._has_hcaptcha_challenge():
+                    if captcha_round_failed:
+                        await retrigger_security_check()
+                    elif not await self._has_hcaptcha_challenge():
                         captcha_success = True
                     else:
                         logger.warning("hCaptcha 仍在页面上，继续处理下一轮")
+                        await retrigger_security_check()
                     await self.page.wait_for_timeout(2000)
 
             # Start the result and challenge coordinators before the click. Epic
