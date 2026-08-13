@@ -18,7 +18,7 @@ on:
       login_result_timeout:
         description: "Epic login result timeout in seconds."
         required: false
-        default: "180"
+        default: "600"
       account_max_attempts:
         description: "Maximum attempts per account. Only an explicitly invalid cookie clears its profile."
         required: false
@@ -54,7 +54,7 @@ jobs:
       CAPTCHA_MAX_OUTPUT_TOKENS: "8192"
       TASK_TIMEOUT_SECONDS: "1200"
       EXECUTION_TIMEOUT: ${{ github.event.inputs.execution_timeout || '120' }}
-      LOGIN_RESULT_TIMEOUT_SECONDS: ${{ github.event.inputs.login_result_timeout || '180' }}
+      LOGIN_RESULT_TIMEOUT_SECONDS: ${{ github.event.inputs.login_result_timeout || '600' }}
       CAPTCHA_FAILURE_MAX_RETRIES: "0"
       CHECKOUT_MAX_ATTEMPTS: "2"
       CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "75"

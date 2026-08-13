@@ -53,6 +53,42 @@ def captcha_temperature(value: Any, maximum: float = 0.2) -> float:
     """Use deterministic captcha output even when a provider omits temperature."""
     return min(value, maximum) if isinstance(value, (int, float)) else maximum
 
+
+def captcha_drag_response_is_valid(parsed_response: Any, minimum_distance: float = 8) -> bool:
+    """Reject drag answers that do not move the object to a distinct target."""
+    if hasattr(parsed_response, "model_dump"):
+        parsed_response = parsed_response.model_dump()
+    if not isinstance(parsed_response, dict):
+        return False
+
+    paths = parsed_response.get("paths")
+    if not isinstance(paths, list) or not paths:
+        return False
+
+    for path in paths:
+        if hasattr(path, "model_dump"):
+            path = path.model_dump()
+        if not isinstance(path, dict):
+            continue
+        start = path.get("start_point") or path.get("from")
+        end = path.get("end_point") or path.get("to")
+        if hasattr(start, "model_dump"):
+            start = start.model_dump()
+        if hasattr(end, "model_dump"):
+            end = end.model_dump()
+        if not isinstance(start, dict) or not isinstance(end, dict):
+            continue
+        try:
+            distance_squared = (
+                (float(end["x"]) - float(start["x"])) ** 2
+                + (float(end["y"]) - float(start["y"])) ** 2
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if distance_squared >= minimum_distance ** 2:
+            return True
+    return False
+
 # ==========================================
 # API 提供商配置
 # ==========================================
@@ -397,6 +433,11 @@ JSON Schema:
 ```
 
 重要：请确保返回有效的 JSON 格式，包含在代码块中。"""
+                if getattr(response_schema, "__name__", "") == "ImageDragDropChallenge":
+                    schema_instruction += (
+                        "\n拖动任务的 start_point 和 end_point 必须是不同位置，"
+                        "不要返回零位移路径。"
+                    )
                 if final_messages and final_messages[0].get("role") == "system":
                     final_messages[0]["content"] += "\n\n" + schema_instruction
                 else:
@@ -658,6 +699,14 @@ JSON Schema:
                 if response_schema and response_text:
                     parsed_response = _extract_json_from_response(response_text, response_schema)
                     if parsed_response:
+                        if (
+                            getattr(response_schema, "__name__", "")
+                            == "ImageDragDropChallenge"
+                            and not captcha_drag_response_is_valid(parsed_response)
+                        ):
+                            raise ValueError(
+                                "captcha model returned a zero-distance drag path"
+                            )
                         logger.debug(f"✅ JSON 解析成功")
                     else:
                         logger.debug(f"⚠️ JSON 解析失败，返回原始文本")
@@ -713,6 +762,14 @@ JSON Schema:
                     if response_schema and response_text:
                         parsed_response = _extract_json_from_response(response_text, response_schema)
                         if parsed_response:
+                            if (
+                                getattr(response_schema, "__name__", "")
+                                == "ImageDragDropChallenge"
+                                and not captcha_drag_response_is_valid(parsed_response)
+                            ):
+                                raise ValueError(
+                                    "fallback captcha model returned a zero-distance drag path"
+                                )
                             logger.debug(f"✅ 备用模型 JSON 解析成功")
 
                     response = types.GenerateContentResponse(

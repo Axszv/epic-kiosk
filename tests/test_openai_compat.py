@@ -15,6 +15,7 @@ def load_helpers():
         "extract_chat_completion_text",
         "captcha_output_budget",
         "captcha_temperature",
+        "captcha_drag_response_is_valid",
     }
     nodes = [
         item
@@ -30,6 +31,7 @@ def load_helpers():
         namespace["extract_chat_completion_text"],
         namespace["captcha_output_budget"],
         namespace["captcha_temperature"],
+        namespace["captcha_drag_response_is_valid"],
     )
 
 
@@ -37,6 +39,7 @@ def load_helpers():
     extract_chat_completion_text,
     captcha_output_budget,
     captcha_temperature,
+    captcha_drag_response_is_valid,
 ) = load_helpers()
 
 
@@ -68,6 +71,30 @@ class OpenAICompatibilityTests(unittest.TestCase):
     def test_captcha_temperature_is_deterministic(self):
         self.assertEqual(captcha_temperature(0.7), 0.2)
         self.assertEqual(captcha_temperature(None), 0.2)
+
+    def test_rejects_zero_distance_drag_path(self):
+        response = {
+            "paths": [
+                {
+                    "start_point": {"x": 880, "y": 539},
+                    "end_point": {"x": 880, "y": 539},
+                }
+            ]
+        }
+
+        self.assertFalse(captcha_drag_response_is_valid(response))
+
+    def test_accepts_distinct_drag_path(self):
+        response = {
+            "paths": [
+                {
+                    "start_point": {"x": 759, "y": 494},
+                    "end_point": {"x": 1067, "y": 589},
+                }
+            ]
+        }
+
+        self.assertTrue(captcha_drag_response_is_valid(response))
 
 
 if __name__ == "__main__":
