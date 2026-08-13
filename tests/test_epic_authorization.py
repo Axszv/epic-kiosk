@@ -14,8 +14,10 @@ def load_detectors():
         "CLOUDFLARE_TITLE_MARKERS",
         "CLOUDFLARE_BODY_MARKERS",
         "EPIC_HCAPTCHA_HTML_MARKERS",
+        "EPIC_EMAIL_TRANSACTION_ERROR_MARKERS",
         "is_cloudflare_security_check",
         "is_epic_hcaptcha_challenge",
+        "is_epic_email_transaction_failure",
     }
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -30,10 +32,15 @@ def load_detectors():
     return (
         namespace["is_cloudflare_security_check"],
         namespace["is_epic_hcaptcha_challenge"],
+        namespace["is_epic_email_transaction_failure"],
     )
 
 
-is_cloudflare_security_check, is_epic_hcaptcha_challenge = load_detectors()
+(
+    is_cloudflare_security_check,
+    is_epic_hcaptcha_challenge,
+    is_epic_email_transaction_failure,
+) = load_detectors()
 
 
 class CloudflareDetectionTests(unittest.TestCase):
@@ -79,6 +86,22 @@ class EpicHcaptchaDetectionTests(unittest.TestCase):
         self.assertFalse(
             is_epic_hcaptcha_challenge('<input id="email"><input id="password">')
         )
+
+
+class EpicEmailTransactionTests(unittest.TestCase):
+    def test_detects_epic_rejection_statuses(self):
+        self.assertTrue(is_epic_email_transaction_failure(409, ""))
+        self.assertTrue(is_epic_email_transaction_failure(400, ""))
+
+    def test_detects_rendered_incorrect_response_message(self):
+        self.assertTrue(
+            is_epic_email_transaction_failure(
+                200, "Incorrect response. Please refresh the page."
+            )
+        )
+
+    def test_does_not_match_successful_email_response(self):
+        self.assertFalse(is_epic_email_transaction_failure(200, '{"exists":true}'))
 
 
 if __name__ == "__main__":

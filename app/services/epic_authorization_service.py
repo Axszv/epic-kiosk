@@ -29,6 +29,10 @@ EPIC_HCAPTCHA_HTML_MARKERS = (
     'title="hcaptcha challenge"',
     "hcaptcha.com/captcha/",
 )
+EPIC_EMAIL_TRANSACTION_ERROR_MARKERS = (
+    "incorrect response",
+    "please refresh the page",
+)
 
 
 def is_cloudflare_security_check(title: str, body_text: str, url: str = "") -> bool:
@@ -46,6 +50,14 @@ def is_cloudflare_security_check(title: str, body_text: str, url: str = "") -> b
 def is_epic_hcaptcha_challenge(html: str) -> bool:
     normalized_html = (html or "").casefold()
     return any(marker in normalized_html for marker in EPIC_HCAPTCHA_HTML_MARKERS)
+
+
+def is_epic_email_transaction_failure(status: int, body_text: str = "") -> bool:
+    """Return whether Epic rejected the email/hCaptcha transaction."""
+    normalized_body = (body_text or "").casefold()
+    return status in {400, 409} or any(
+        marker in normalized_body for marker in EPIC_EMAIL_TRANSACTION_ERROR_MARKERS
+    )
 
 
 class ErrorType(Enum):
@@ -108,6 +120,7 @@ class EpicAuthorization:
 
         self._is_login_success_signal = asyncio.Queue()
         self._is_refresh_csrf_signal = asyncio.Queue()
+        self._email_transaction_failure_signal = asyncio.Queue()
         self._refresh_csrf_seen = False
         self._login_error_code = None  # 存储登录错误码
 
@@ -158,6 +171,20 @@ class EpicAuthorization:
                 if await self.page.locator(selector).count() > 0:
                     return True
         return False
+
+    async def _take_email_transaction_failure(self):
+        rejection = None
+        while not self._email_transaction_failure_signal.empty():
+            rejection = self._email_transaction_failure_signal.get_nowait()
+        if rejection:
+            return rejection
+
+        body_text = ""
+        with suppress(Exception):
+            body_text = await self.page.locator("body").inner_text(timeout=1000)
+        if is_epic_email_transaction_failure(200, body_text):
+            return {"status": 200, "body": body_text[:1000]}
+        return None
 
     async def _solve_pre_password_hcaptcha(self, agent: AgentV) -> bool:
         # Epic can insert an email_exists_prod hCaptcha between the email and
@@ -231,6 +258,23 @@ class EpicAuthorization:
 
     async def _on_response_anything(self, r: Response):
         if r.request.method != "POST" or "talon" in r.url:
+            return
+
+        if "/id/api/email/exists" in r.url:
+            body_text = ""
+            with suppress(Exception):
+                body_text = await r.text()
+            logger.debug(
+                f"📡 邮箱校验 API 响应: {r.url} | 状态码: {r.status} | "
+                f"响应: {body_text[:500]}"
+            )
+            if is_epic_email_transaction_failure(r.status, body_text):
+                logger.warning(
+                    f"Epic 拒绝邮箱/hCaptcha 事务，准备在当前浏览器中恢复: HTTP {r.status}"
+                )
+                self._email_transaction_failure_signal.put_nowait(
+                    {"status": r.status, "body": body_text[:1000]}
+                )
             return
 
         with suppress(Exception):
@@ -384,19 +428,40 @@ class EpicAuthorization:
                 logger.success("✅ 会话已建立，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
 
-            await email_input.clear()
-            await email_input.type(settings.EPIC_EMAIL)
+            for email_attempt in range(1, 5):
+                await email_input.clear()
+                await email_input.type(settings.EPIC_EMAIL)
 
-            # 2. 点击继续按钮
-            try:
-                await self.page.click("#continue", timeout=10000)
-            except Exception:
-                if not await self._has_hcaptcha_challenge():
-                    raise
-                logger.info("邮箱继续按钮触发 hCaptcha，等待解题器完成")
+                # 2. 点击继续按钮
+                try:
+                    await self.page.click("#continue", timeout=10000)
+                except Exception:
+                    if not await self._has_hcaptcha_challenge():
+                        raise
+                    logger.info("邮箱继续按钮触发 hCaptcha，等待解题器完成")
 
-            if not await self._solve_pre_password_hcaptcha(agent):
-                return (False, ErrorType.CAPTCHA_FAILED)
+                if not await self._solve_pre_password_hcaptcha(agent):
+                    return (False, ErrorType.CAPTCHA_FAILED)
+
+                await self.page.wait_for_timeout(1500)
+                rejection = await self._take_email_transaction_failure()
+                if not rejection:
+                    break
+                if email_attempt == 4:
+                    await self._save_page_debug("email_transaction_rejected_final")
+                    logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务")
+                    return (False, ErrorType.CAPTCHA_FAILED)
+
+                logger.warning(
+                    f"邮箱/hCaptcha 事务已失效，刷新后重试 [{email_attempt}/3]"
+                )
+                await self._save_page_debug(
+                    f"email_transaction_rejected_pre_password_{email_attempt}"
+                )
+                await self.page.goto(point_url, wait_until="domcontentloaded")
+                await self.page.wait_for_timeout(1500)
+                email_input = self.page.locator("#email")
+                await email_input.wait_for(state="visible", timeout=60000)
 
             # 3. 输入密码
             password_input = self.page.locator("#password")
@@ -450,7 +515,59 @@ class EpicAuthorization:
             async def handle_captcha():
                 """Handle every hCaptcha round until Epic accepts the login."""
                 nonlocal captcha_success, captcha_in_progress
-                for captcha_attempt in range(1, 9):
+                email_transaction_retries = 0
+                captcha_attempt = 0
+
+                async def recover_email_transaction(rejection) -> bool:
+                    nonlocal email_transaction_retries, captcha_success
+                    email_transaction_retries += 1
+                    if email_transaction_retries > 3:
+                        logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务，停止本次登录")
+                        if not result_task.done():
+                            self._is_login_success_signal.put_nowait(
+                                {
+                                    "error": True,
+                                    "code": "epic_email_captcha_transaction_rejected",
+                                    "full_response": rejection,
+                                }
+                            )
+                        return False
+
+                    captcha_success = False
+                    logger.warning(
+                        "刷新登录页并重试邮箱/hCaptcha 事务 "
+                        f"[{email_transaction_retries}/3]"
+                    )
+                    await self._save_page_debug(
+                        f"email_transaction_rejected_{email_transaction_retries}"
+                    )
+                    await self.page.goto(point_url, wait_until="domcontentloaded")
+                    await self.page.wait_for_timeout(1500)
+                    if self._has_refresh_csrf_session():
+                        self._is_login_success_signal.put_nowait({"csrf": True})
+                        return True
+                    if not await self._wait_for_cloudflare_auto_pass():
+                        self._is_login_success_signal.put_nowait(
+                            {"error": True, "code": "cloudflare_blocked"}
+                        )
+                        return False
+
+                    email_box = self.page.locator("#email")
+                    await email_box.wait_for(state="visible", timeout=60000)
+                    await email_box.clear()
+                    await email_box.type(settings.EPIC_EMAIL)
+                    await self.page.click("#continue", timeout=10000)
+                    return True
+
+                # Keep this coordinator alive for the full login wait. Epic can
+                # reject a solved token after the challenge iframe disappears.
+                while not result_task.done():
+                    rejection = await self._take_email_transaction_failure()
+                    if rejection:
+                        if not await recover_email_transaction(rejection):
+                            return
+                        continue
+
                     if result_task.done():
                         return
 
@@ -458,15 +575,26 @@ class EpicAuthorization:
                     for _ in range(20):
                         if result_task.done():
                             return
+                        rejection = await self._take_email_transaction_failure()
+                        if rejection:
+                            break
                         if await self._has_hcaptcha_challenge():
                             challenge_seen = True
                             break
                         await self.page.wait_for_timeout(500)
+                    if rejection:
+                        if not await recover_email_transaction(rejection):
+                            return
+                        continue
                     if not challenge_seen:
-                        return
+                        continue
 
                     try:
-                        logger.info(f"处理登录 hCaptcha [{captcha_attempt}/8]")
+                        captcha_attempt += 1
+                        if captcha_attempt > 12:
+                            logger.error("❌ 登录 hCaptcha 处理轮次已达上限")
+                            return
+                        logger.info(f"处理登录 hCaptcha [{captcha_attempt}/12]")
                         captcha_in_progress = True
                         await asyncio.wait_for(
                             agent.wait_for_challenge(),
@@ -478,6 +606,11 @@ class EpicAuthorization:
                         captcha_in_progress = False
 
                     await self.page.wait_for_timeout(2000)
+                    rejection = await self._take_email_transaction_failure()
+                    if rejection:
+                        if not await recover_email_transaction(rejection):
+                            return
+                        continue
                     if not await self._has_hcaptcha_challenge():
                         captcha_success = True
                     else:
