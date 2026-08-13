@@ -40,6 +40,13 @@ class EpicAgentV(AgentV):
         self.robotic_arm.get_challenge_frame_locator = (
             self._get_nested_challenge_frame_locator
         )
+        # hCaptcha can change task type between pages. Upstream processes every
+        # crumb with the first page's type, so return to AgentV after each page
+        # and classify the newly rendered challenge again.
+        self.robotic_arm.check_crumb_count = self._single_crumb_count
+
+    async def _single_crumb_count(self) -> int:
+        return 1
 
     @staticmethod
     def _drain_queue(queue) -> int:
@@ -60,6 +67,19 @@ class EpicAgentV(AgentV):
             "Prepared hCaptcha agent for a new challenge: "
             f"discarded_payloads={payloads}, discarded_responses={responses}"
         )
+
+    def _keep_latest_payload(self) -> None:
+        if self._captcha_payload_queue.qsize() <= 1:
+            return
+        latest = None
+        discarded = 0
+        while not self._captcha_payload_queue.empty():
+            item = self._captcha_payload_queue.get_nowait()
+            if latest is not None:
+                discarded += 1
+            latest = item
+        self._captcha_payload_queue.put_nowait(latest)
+        logger.debug(f"Discarded {discarded} stale hCaptcha payload(s)")
 
     async def _get_nested_challenge_frame_locator(self):
         deadline = time.monotonic() + 10
@@ -173,10 +193,14 @@ class EpicAgentV(AgentV):
                     "HSW payload was not decoded; falling back to visual challenge detection"
                 )
                 self._captcha_payload_queue.put_nowait(None)
+            self._keep_latest_payload()
             return
 
         if not response.url.endswith("/hsw.js"):
-            return await super()._task_handler(response)
+            result = await super()._task_handler(response)
+            if "/getcaptcha/" in response.url:
+                self._keep_latest_payload()
+            return result
 
         document_key = self.page.url
         async with self._hsw_lock:

@@ -65,6 +65,8 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn('"frame=challenge" in frame.url', source)
         self.assertIn("HSW payload was not decoded", source)
         self.assertIn("prepare_for_new_challenge", source)
+        self.assertIn("_single_crumb_count", source)
+        self.assertIn("_keep_latest_payload", source)
         self.assertIn("wait_for_challenge_start", source)
         self.assertIn("hCaptcha issued another round after submission", source)
         self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
@@ -114,6 +116,18 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertEqual(result.value, "success")
         self.assertEqual(calls, 2)
         agent._cache_validated_captcha_response.assert_called_once_with(response)
+
+    def test_agent_keeps_only_latest_pending_payload(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent._captcha_payload_queue = asyncio.Queue()
+        agent._captcha_payload_queue.put_nowait("old")
+        agent._captcha_payload_queue.put_nowait("new")
+
+        agent._keep_latest_payload()
+
+        self.assertEqual(agent._captcha_payload_queue.qsize(), 1)
+        self.assertEqual(agent._captcha_payload_queue.get_nowait(), "new")
 
     def test_authorization_module_imports_with_runtime_annotations(self):
         source = (ROOT / "app/services/epic_authorization_service.py").read_text(

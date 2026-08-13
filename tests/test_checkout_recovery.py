@@ -38,8 +38,11 @@ class CheckoutRecoveryTests(unittest.TestCase):
     def test_workflow_limits_internal_checkout_attempts(self):
         workflow = WORKFLOW_SOURCE.read_text(encoding="utf-8")
         self.assertIn('CHECKOUT_MAX_ATTEMPTS: "2"', workflow)
-        self.assertIn('CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "255"', workflow)
+        self.assertIn('default: "300"', workflow)
+        self.assertIn("github.event.inputs.execution_timeout || '300'", workflow)
+        self.assertIn('CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "375"', workflow)
         self.assertIn("/tmp/hcaptcha/.cache", workflow)
+        self.assertIn("include-hidden-files: true", workflow)
 
 
 if __name__ == "__main__":

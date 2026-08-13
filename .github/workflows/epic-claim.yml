@@ -14,7 +14,7 @@ on:
       execution_timeout:
         description: "hcaptcha challenge execution timeout in seconds."
         required: false
-        default: "120"
+        default: "300"
       login_result_timeout:
         description: "Epic login result timeout in seconds."
         required: false
@@ -53,11 +53,11 @@ jobs:
       API_MAX_RETRIES: "2"
       CAPTCHA_MAX_OUTPUT_TOKENS: "8192"
       TASK_TIMEOUT_SECONDS: "1200"
-      EXECUTION_TIMEOUT: ${{ github.event.inputs.execution_timeout || '120' }}
+      EXECUTION_TIMEOUT: ${{ github.event.inputs.execution_timeout || '300' }}
       LOGIN_RESULT_TIMEOUT_SECONDS: ${{ github.event.inputs.login_result_timeout || '600' }}
       CAPTCHA_FAILURE_MAX_RETRIES: "0"
       CHECKOUT_MAX_ATTEMPTS: "2"
-      CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "255"
+      CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "375"
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
       PYTHONUNBUFFERED: "1"
 
@@ -140,6 +140,7 @@ jobs:
             app/volumes/runtime
             /tmp/hcaptcha/.cache
           if-no-files-found: ignore
+          include-hidden-files: true
           retention-days: 14
 
       - name: Send ServerChan notification
