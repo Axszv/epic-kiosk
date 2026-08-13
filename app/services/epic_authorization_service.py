@@ -338,6 +338,7 @@ class EpicAuthorization:
         captcha_success = False
         captcha_in_progress = False
         captcha_task = None
+        sign_in_captcha_task = None
         keepalive_task = None
 
         try:
@@ -400,7 +401,37 @@ class EpicAuthorization:
             await password_input.type(settings.EPIC_PASSWORD.get_secret_value())
 
             # 4. 点击登录按钮
-            await self.page.click("#sign-in")
+            # Start listening before the click. Epic can open Talon's hCaptcha
+            # during the click action, while Playwright is still waiting for the
+            # click to settle; starting later leaves the challenge unattended.
+            sign_in_captcha_task = asyncio.create_task(agent.wait_for_challenge())
+            try:
+                await self.page.click("#sign-in", timeout=15000)
+            except Exception:
+                if not await self._has_hcaptcha_challenge():
+                    sign_in_captcha_task.cancel()
+                    raise
+                logger.info("登录按钮触发 hCaptcha，等待解题器完成")
+                try:
+                    await asyncio.wait_for(
+                        sign_in_captcha_task,
+                        timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
+                    )
+                    captcha_success = True
+                except Exception as err:
+                    logger.warning(f"登录按钮 hCaptcha 处理异常: {err}")
+                    await self._save_page_debug("login_sign_in_hcaptcha_failed")
+                    return (False, ErrorType.CAPTCHA_FAILED)
+                await self.page.wait_for_timeout(2000)
+                if await self._has_hcaptcha_challenge():
+                    await self._save_page_debug("login_sign_in_hcaptcha_still_visible")
+                    return (False, ErrorType.CAPTCHA_FAILED)
+                with suppress(Exception):
+                    await self.page.click("#sign-in", timeout=10000)
+            else:
+                # The normal post-submit handler below owns any later challenge.
+                sign_in_captcha_task.cancel()
+                sign_in_captcha_task = None
 
             # 并行启动：验证码处理 + 登录结果等待
             # 关键改进：使用 wait_for 快速检测密码错误
@@ -571,6 +602,11 @@ class EpicAuthorization:
             try:
                 if captcha_task:
                     captcha_task.cancel()
+            except:
+                pass
+            try:
+                if sign_in_captcha_task:
+                    sign_in_captcha_task.cancel()
             except:
                 pass
             try:
