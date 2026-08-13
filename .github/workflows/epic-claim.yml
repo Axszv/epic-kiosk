@@ -138,6 +138,7 @@ jobs:
           path: |
             app/volumes/logs
             app/volumes/runtime
+            /tmp/hcaptcha/.cache
           if-no-files-found: ignore
           retention-days: 14
 

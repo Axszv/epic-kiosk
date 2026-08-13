@@ -72,6 +72,14 @@ class OpenAICompatibilityTests(unittest.TestCase):
         self.assertEqual(captcha_temperature(0.7), 0.2)
         self.assertEqual(captcha_temperature(None), 0.2)
 
+    def test_captcha_model_does_not_downgrade_by_call_count(self):
+        source = (ROOT / "app/settings.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("CAPTCHA_FAILURE_THRESHOLD", source)
+        self.assertNotIn("captcha_call_state", source)
+        self.assertIn("selected_model = settings.CAPTCHA_MODEL", source)
+        self.assertIn("fallback_model = settings.CAPTCHA_MODEL_FALLBACK", source)
+
     def test_rejects_zero_distance_drag_path(self):
         response = {
             "paths": [

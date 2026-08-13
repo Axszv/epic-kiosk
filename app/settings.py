@@ -542,20 +542,6 @@ JSON Schema:
         # ==========================================
         file_cache = {}
 
-        # ==========================================
-        # 验证码模型切换机制
-        # ==========================================
-        # 跟踪验证码调用状态，实现智能模型切换
-        captcha_call_state = {
-            'call_count': 0,          # 当前会话验证码调用次数
-            'last_call_time': 0,      # 上次调用时间戳
-            'use_fallback': False,    # 是否应该使用备用模型
-            'success_count': 0,       # 成功次数
-            'failure_count': 0,       # 失败次数（通过调用频率推断）
-        }
-        CAPTCHA_FAILURE_THRESHOLD = 2  # 连续调用超过此次数后切换备用模型
-        CAPTCHA_TIME_WINDOW = 60       # 时间窗口（秒），超过此时间重置计数
-
         async def patched_upload(self_files, file, **kwargs):
             """将文件内容存储到内存缓存，返回伪造的文件 ID"""
             if hasattr(file, 'read'):
@@ -589,9 +575,6 @@ JSON Schema:
             从响应中提取 JSON 代码块
             支持模型自动切换（验证码任务 vs 普通任务）
             """
-            # 用于跟踪是否需要使用备用模型
-            use_fallback = False
-
             try:
                 # 标准化 contents
                 normalized = contents if isinstance(contents, list) else [contents]
@@ -620,31 +603,9 @@ JSON Schema:
                 # 判断任务类型并选择合适的模型
                 is_captcha_task = has_images or has_cached_files
 
-                # 获取当前时间戳
-                import time
-                current_time = time.time()
-
                 if is_captcha_task:
-                    # 检查是否需要重置计数器（超过时间窗口）
-                    if current_time - captcha_call_state['last_call_time'] > CAPTCHA_TIME_WINDOW:
-                        captcha_call_state['call_count'] = 0
-                        captcha_call_state['use_fallback'] = False
-                        logger.debug("🔄 验证码计数器已重置（超过时间窗口）")
-
-                    # 更新调用计数
-                    captcha_call_state['call_count'] += 1
-                    captcha_call_state['last_call_time'] = current_time
-
-                    # 判断是否应该使用备用模型
-                    # 当连续调用次数超过阈值时，切换到备用模型
-                    if captcha_call_state['call_count'] > CAPTCHA_FAILURE_THRESHOLD:
-                        captcha_call_state['use_fallback'] = True
-                        logger.info(f"🔄 验证码重试次数过多（{captcha_call_state['call_count']}次），切换到备用模型")
-                        selected_model = settings.CAPTCHA_MODEL_FALLBACK
-                    else:
-                        selected_model = settings.CAPTCHA_MODEL
-
-                    logger.debug(f"🎯 验证码调用 #{captcha_call_state['call_count']} | 模型: {selected_model}")
+                    selected_model = settings.CAPTCHA_MODEL
+                    logger.debug(f"🎯 验证码模型: {selected_model}")
                     temperature = captcha_temperature(
                         getattr(kwargs.get('config', {}), 'temperature', 0.2)
                     )

@@ -39,6 +39,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         workflow = WORKFLOW_SOURCE.read_text(encoding="utf-8")
         self.assertIn('CHECKOUT_MAX_ATTEMPTS: "2"', workflow)
         self.assertIn('CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "255"', workflow)
+        self.assertIn("/tmp/hcaptcha/.cache", workflow)
 
 
 if __name__ == "__main__":
