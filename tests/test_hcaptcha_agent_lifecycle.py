@@ -65,6 +65,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn('"frame=challenge" in frame.url', source)
         self.assertIn("HSW payload was not decoded", source)
         self.assertIn("prepare_for_new_challenge", source)
+        self.assertIn("wait_for_challenge_start", source)
         self.assertIn("hCaptcha issued another round after submission", source)
         self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)

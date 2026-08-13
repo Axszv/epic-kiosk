@@ -829,19 +829,23 @@ class EpicGames:
             agent.prepare_for_new_challenge()
             logger.debug(f"点击支付按钮: {await payment_btn.text_content()}")
             await payment_btn.click(force=True)
-            await page.wait_for_timeout(3000)
 
-            if await self._has_visible_hcaptcha(page):
+            if await agent.wait_for_challenge_start(timeout_seconds=15):
                 try:
                     logger.debug("检查验证码...")
-                    await asyncio.wait_for(
+                    challenge_result = await asyncio.wait_for(
                         agent.wait_for_challenge(),
-                        timeout=settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+                        timeout=max(
+                            settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+                            settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 15,
+                        ),
                     )
+                    if getattr(challenge_result, "value", challenge_result) != "success":
+                        logger.warning(f"结账验证码结果: {challenge_result}")
                 except Exception as e:
                     logger.warning(f"结账验证码未确认通过: {e}")
             else:
-                logger.debug("结账未出现可见 hCaptcha，直接检查提交结果")
+                logger.debug("结账等待 15 秒后未出现 hCaptcha，直接检查提交结果")
 
             try:
                 if not await payment_btn.is_visible():

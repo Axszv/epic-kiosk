@@ -9,12 +9,13 @@ WORKFLOW_SOURCE = ROOT / ".github" / "workflows" / "epic-claim.yml"
 
 
 class CheckoutRecoveryTests(unittest.TestCase):
-    def test_checkout_only_waits_for_visible_hcaptcha(self):
+    def test_checkout_waits_for_delayed_hcaptcha_signals(self):
         raw_source = SERVICE_SOURCE.read_text(encoding="utf-8")
         source = ast.unparse(ast.parse(raw_source))
-        self.assertIn("_has_visible_hcaptcha", source)
+        self.assertIn("wait_for_challenge_start", source)
+        self.assertIn("timeout_seconds=15", source)
         self.assertIn("CHECKOUT_CAPTCHA_TIMEOUT_SECONDS", source)
-        self.assertIn("page.frames", source)
+        self.assertIn("EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 15", source)
 
     def test_purchase_frames_are_scanned_before_the_main_page(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
@@ -37,7 +38,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
     def test_workflow_limits_internal_checkout_attempts(self):
         workflow = WORKFLOW_SOURCE.read_text(encoding="utf-8")
         self.assertIn('CHECKOUT_MAX_ATTEMPTS: "2"', workflow)
-        self.assertIn('CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "75"', workflow)
+        self.assertIn('CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "255"', workflow)
 
 
 if __name__ == "__main__":

@@ -93,6 +93,19 @@ class EpicAgentV(AgentV):
                     return True
         return False
 
+    async def wait_for_challenge_start(self, timeout_seconds: float = 15) -> bool:
+        """Wait for a fresh checkout challenge payload or visible challenge frame."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if (
+                not self._captcha_payload_queue.empty()
+                or not self._captcha_response_queue.empty()
+                or await self._has_visible_challenge_frame()
+            ):
+                return True
+            await self.page.wait_for_timeout(250)
+        return False
+
     async def wait_for_challenge(self) -> ChallengeSignal:
         """Solve every round emitted by one Epic checkout hCaptcha transaction."""
         deadline = time.monotonic() + self.config.EXECUTION_TIMEOUT
