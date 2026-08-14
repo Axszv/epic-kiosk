@@ -367,7 +367,30 @@ class EpicAuthorization:
             )
 
     async def _on_response_anything(self, r: Response):
-        if r.request.method != "POST" or "talon" in r.url:
+        if r.request.method != "POST":
+            return
+
+        if "talon-service-prod" in r.url and "/v1/init/execute" in r.url:
+            body_text = ""
+            response_payload = None
+            with suppress(Exception):
+                body_text = await r.text()
+            with suppress(Exception):
+                response_payload = json.loads(body_text)
+            if response_payload is None:
+                response_payload = {"responseToken": body_text}
+
+            request_payload = {}
+            with suppress(Exception):
+                request_payload = json.loads(r.request.post_data or "{}")
+
+            logger.info(
+                "Epic Talon execute response: "
+                f"HTTP {r.status} | requestSecrets="
+                f"{json.dumps(summarize_epic_request_secrets(request_payload), ensure_ascii=False)} | "
+                "responseSecrets="
+                f"{json.dumps(summarize_epic_request_secrets(response_payload), ensure_ascii=False)}"
+            )
             return
 
         if "/purchase/confirm-order" in r.url:

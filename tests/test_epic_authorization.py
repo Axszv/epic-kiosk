@@ -189,6 +189,15 @@ class EpicResponseDiagnosticTests(unittest.TestCase):
         self.assertNotIn("order.offerId", summary)
         self.assertNotIn("P1_secret-value", json.dumps(summary))
 
+    def test_talon_execute_is_included_in_sanitized_diagnostics(self):
+        source = (ROOT / "app/services/epic_authorization_service.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"talon-service-prod" in r.url', source)
+        self.assertIn('"/v1/init/execute" in r.url', source)
+        self.assertIn("Epic Talon execute response", source)
+        self.assertNotIn('or "talon" in r.url', source)
+
 
 if __name__ == "__main__":
     unittest.main()
