@@ -948,7 +948,6 @@ class EpicGames:
         checkout_request_counter = 0
         delay_first_confirm = settings.CHECKOUT_CONFIRM_DELAY_MS > 0
         captcha_failure_seen = asyncio.Event()
-        talon_refresh_started = asyncio.Event()
         talon_refresh_ready = asyncio.Event()
 
         async def delay_first_confirm_order(route) -> None:
@@ -992,18 +991,11 @@ class EpicGames:
             parsed_url = urlsplit(response.url)
             if (
                 captcha_failure_seen.is_set()
-                and parsed_url.path.endswith("/v1/init/execute")
-                and 200 <= response.status < 300
-            ):
-                talon_refresh_started.set()
-                logger.debug("Talon started refreshing the rejected captcha state")
-            elif (
-                talon_refresh_started.is_set()
                 and parsed_url.path.endswith("/v1/phaser/batch")
                 and 200 <= response.status < 300
             ):
                 talon_refresh_ready.set()
-                logger.debug("Talon refreshed the rejected captcha state")
+                logger.debug("Talon processed the rejected captcha state")
 
             if is_checkout_diagnostic_url(response.url):
                 trace_id = checkout_request_ids.get(id(response.request), 0)
@@ -1044,7 +1036,7 @@ class EpicGames:
                         last_captcha_failure = outcome
                         logger.info(
                             "Ignoring the stale automatic captcha submission while "
-                            "waiting for Talon to refresh the checkout token"
+                            "waiting for Talon to process the rejection"
                         )
                         if not recovery_submitted:
                             remaining = max(
@@ -1058,22 +1050,22 @@ class EpicGames:
                                 )
                             except asyncio.TimeoutError:
                                 logger.warning(
-                                    "Talon did not refresh the rejected captcha "
+                                    "Talon did not process the rejected captcha "
                                     "state before checkout recovery timed out"
                                 )
                             else:
                                 try:
                                     if await payment_btn.is_visible():
                                         logger.info(
-                                            "Submitting checkout with the refreshed "
-                                            "Talon captcha state"
+                                            "Submitting checkout after Talon processed "
+                                            "the captcha rejection"
                                         )
                                         await payment_btn.click(force=True)
                                         recovery_submitted = True
                                 except Exception:
                                     logger.debug(
-                                        "Checkout control closed before the refreshed "
-                                        "Talon submission"
+                                        "Checkout control closed before the post-Talon "
+                                        "recovery submission"
                                     )
                         continue
                     return outcome
