@@ -104,9 +104,9 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("fresh_profile:", workflow)
         self.assertIn("EPIC_FRESH_PROFILE:", workflow)
         self.assertIn("github.event.inputs.fresh_profile || 'false'", workflow)
-        self.assertIn("abort_stale_confirm:", workflow)
-        self.assertIn("CHECKOUT_ABORT_STALE_CONFIRM:", workflow)
-        self.assertIn("github.event.inputs.abort_stale_confirm || 'false'", workflow)
+        self.assertIn("confirm_delay_ms:", workflow)
+        self.assertIn("CHECKOUT_CONFIRM_DELAY_MS:", workflow)
+        self.assertIn("github.event.inputs.confirm_delay_ms || '0'", workflow)
 
     def test_fresh_profile_diagnostic_uses_an_uncached_override(self):
         settings_source = (ROOT / "app" / "settings.py").read_text(encoding="utf-8")
@@ -138,27 +138,24 @@ class CheckoutRecoveryTests(unittest.TestCase):
             branch.index("await payment_btn.click(force=True)"),
             branch.index("await page.wait_for_timeout(3000)"),
         )
-        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
-        self.assertIn(
-            "if settings.CHECKOUT_ABORT_STALE_CONFIRM:",
-            branch,
-        )
+        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 1)
         self.assertNotIn("for transaction_attempt", branch)
         self.assertNotIn("Submitting checkout after the rejected", branch)
 
-    def test_optional_talon_settling_retry_aborts_before_server_rejection(self):
+    def test_optional_talon_settling_delay_holds_the_original_request(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _handle_instant_checkout")
         end = source.index("async def add_promotion_to_cart", start)
         branch = source[start:end]
 
-        self.assertIn("CHECKOUT_ABORT_STALE_CONFIRM", branch)
-        self.assertIn('await route.abort("blockedbyclient")', branch)
-        self.assertIn("first_confirm_aborted.wait()", branch)
-        self.assertIn("callback settling window", branch)
+        self.assertIn("CHECKOUT_CONFIRM_DELAY_MS", branch)
+        self.assertIn("await route.continue_()", branch)
+        self.assertIn("Delaying the first automatic confirm-order request", branch)
+        self.assertNotIn('route.abort("blockedbyclient")', branch)
+        self.assertNotIn("Submitting confirm-order after", branch)
         self.assertLess(
-            branch.index('await route.abort("blockedbyclient")'),
-            branch.index("callback settling window"),
+            branch.index("await page.wait_for_timeout(settings.CHECKOUT_CONFIRM_DELAY_MS)"),
+            branch.index("await route.continue_()"),
         )
 
     def test_captcha_failure_detector_is_exact(self):
