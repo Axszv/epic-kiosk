@@ -32,6 +32,9 @@ async def load_hsw_script(page: Page, url: str) -> str:
 class EpicAgentV(AgentV):
     """AgentV with a Camoufox-safe hsw.js loader."""
 
+    HCAPTCHA_DRAG_CANVAS_WIDTH = 480
+    HCAPTCHA_DRAG_CANVAS_HEIGHT = 320
+
     def __init__(self, *args, **kwargs):
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
@@ -71,6 +74,52 @@ class EpicAgentV(AgentV):
                 -float(candidate.get("score", 0)),
             ),
         )
+
+    @staticmethod
+    def _project_payload_coordinate(
+        coords: list[int | float],
+        task_box: dict[str, float],
+        canvas_width: float = HCAPTCHA_DRAG_CANVAS_WIDTH,
+        canvas_height: float = HCAPTCHA_DRAG_CANVAS_HEIGHT,
+    ) -> dict[str, Any] | None:
+        if len(coords) < 2 or canvas_width <= 0 or canvas_height <= 0:
+            return None
+        try:
+            source_x = float(coords[0])
+            source_y = float(coords[1])
+            return {
+                "x": float(task_box["x"]) + source_x * float(task_box["width"]) / canvas_width,
+                "y": float(task_box["y"]) + source_y * float(task_box["height"]) / canvas_height,
+                "score": 1000,
+                "reason": "payload-entity-coords",
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    async def _payload_drag_source(self) -> dict[str, Any] | None:
+        payload = getattr(self.robotic_arm, "captcha_payload", None)
+        tasklist = getattr(payload, "tasklist", None) or []
+        if not tasklist:
+            return None
+        entities = getattr(tasklist[0], "entities", None) or []
+        if not entities:
+            return None
+        coords = getattr(entities[0], "coords", None) or []
+        if len(coords) < 2:
+            return None
+
+        frame = await self._get_nested_challenge_frame_locator()
+        if frame is None:
+            return None
+        try:
+            task_image = frame.locator(".task-image").first
+            task_box = await task_image.bounding_box()
+        except Exception as err:
+            logger.debug(f"Could not locate hCaptcha task image for payload coordinates: {err}")
+            return None
+        if not task_box:
+            return None
+        return self._project_payload_coordinate(coords, task_box)
 
     async def _drag_source_candidates(self) -> list[dict[str, Any]]:
         frame = await self._get_nested_challenge_frame_locator()
@@ -187,8 +236,10 @@ class EpicAgentV(AgentV):
     ):
         model_x = float(path.start_point.x)
         model_y = float(path.start_point.y)
-        candidates = await self._drag_source_candidates()
-        candidate = self._nearest_drag_source(model_x, model_y, candidates)
+        candidate = await self._payload_drag_source()
+        if candidate is None:
+            candidates = await self._drag_source_candidates()
+            candidate = self._nearest_drag_source(model_x, model_y, candidates)
         if candidate is not None:
             corrected_x = int(round(candidate["x"]))
             corrected_y = int(round(candidate["y"]))

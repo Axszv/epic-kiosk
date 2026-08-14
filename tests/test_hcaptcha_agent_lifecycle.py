@@ -72,6 +72,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
         self.assertIn("frame closed without a validated server response", source)
         self.assertIn("_perform_drag_drop_with_dom_source", source)
+        self.assertIn("_payload_drag_source", source)
         self.assertIn("Corrected hCaptcha drag source", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
 
@@ -155,9 +156,31 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
         self.assertEqual(selected["reason"], "move-container")
 
+    def test_agent_projects_payload_coordinate_to_page_space(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+
+        source = module.EpicAgentV._project_payload_coordinate(
+            [240, 66],
+            {"x": 720, "y": 360, "width": 480, "height": 320},
+        )
+
+        self.assertEqual(source["reason"], "payload-entity-coords")
+        self.assertEqual((source["x"], source["y"]), (960, 426))
+
+    def test_agent_scales_payload_coordinate_with_rendered_canvas(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+
+        source = module.EpicAgentV._project_payload_coordinate(
+            [240, 160],
+            {"x": 100, "y": 200, "width": 240, "height": 160},
+        )
+
+        self.assertEqual((source["x"], source["y"]), (220, 280))
+
     def test_agent_corrects_drag_path_before_upstream_execution(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
         agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent._payload_drag_source = AsyncMock(return_value=None)
         agent._drag_source_candidates = AsyncMock(
             return_value=[
                 {"x": 955.4, "y": 460.4, "score": 360, "reason": "move-container"}
