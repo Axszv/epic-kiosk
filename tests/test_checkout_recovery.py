@@ -54,7 +54,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         raw_source = SERVICE_SOURCE.read_text(encoding="utf-8")
         source = ast.unparse(ast.parse(raw_source))
         self.assertIn("wait_for_challenge_start", source)
-        self.assertIn("timeout_seconds=15", source)
+        self.assertIn("timeout_seconds=45", source)
         self.assertIn("CHECKOUT_CAPTCHA_TIMEOUT_SECONDS", source)
         self.assertIn("EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 15", source)
 

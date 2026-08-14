@@ -57,7 +57,7 @@ jobs:
       CAPTCHA_MODEL_FALLBACK: agnes-2.0-flash
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
-      RESPONSE_TIMEOUT: "60"
+      RESPONSE_TIMEOUT: "90"
       API_MAX_RETRIES: "2"
       CAPTCHA_MAX_OUTPUT_TOKENS: "8192"
       TASK_TIMEOUT_SECONDS: "1200"

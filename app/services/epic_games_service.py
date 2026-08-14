@@ -1046,7 +1046,7 @@ class EpicGames:
             # the challenge. Keep that transaction-scoped settling window.
             await page.wait_for_timeout(3000)
 
-            challenge_started = await agent.wait_for_challenge_start(timeout_seconds=15)
+            challenge_started = await agent.wait_for_challenge_start(timeout_seconds=45)
             if challenge_started:
                 try:
                     logger.debug("检查验证码...")
@@ -1084,7 +1084,7 @@ class EpicGames:
                 except Exception as e:
                     logger.warning(f"结账验证码未确认通过: {e}")
             else:
-                logger.debug("结账等待 15 秒后未出现 hCaptcha，检查提交结果")
+                logger.debug("结账等待 45 秒后未出现 hCaptcha，检查提交结果")
 
             outcome = await wait_for_checkout_outcome()
             if outcome.get("button_hidden"):
