@@ -74,6 +74,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("_perform_drag_drop_with_dom_source", source)
         self.assertIn("_payload_drag_source", source)
         self.assertIn("_challenge_drag_canvas_box", source)
+        self.assertIn("_derive_drag_canvas_box", source)
         self.assertIn("Corrected hCaptcha drag source", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
 
@@ -202,6 +203,30 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
         self.assertEqual((selected["width"], selected["height"]), (480, 320))
 
+    def test_agent_derives_canvas_from_challenge_view_crop(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+
+        canvas = module.EpicAgentV._derive_drag_canvas_box(
+            {"x": 710, "y": 224, "width": 500, "height": 470}
+        )
+
+        self.assertEqual(
+            (canvas["x"], canvas["y"], canvas["width"], canvas["height"]),
+            (720, 359, 480, 320),
+        )
+
+    def test_agent_scales_derived_canvas_with_challenge_view(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+
+        canvas = module.EpicAgentV._derive_drag_canvas_box(
+            {"x": 100, "y": 200, "width": 250, "height": 235}
+        )
+
+        self.assertEqual(
+            (canvas["x"], canvas["y"], canvas["width"], canvas["height"]),
+            (105, 267.5, 240, 160),
+        )
+
     def test_agent_corrects_drag_path_before_upstream_execution(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
         agent = module.EpicAgentV.__new__(module.EpicAgentV)
@@ -226,6 +251,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
             steps=25,
             delay_ms=15,
         )
+        agent._payload_drag_source.assert_awaited_once_with(900.0, 465.0)
 
     def test_authorization_module_imports_with_runtime_annotations(self):
         source = (ROOT / "app/services/epic_authorization_service.py").read_text(

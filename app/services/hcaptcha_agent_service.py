@@ -34,6 +34,10 @@ class EpicAgentV(AgentV):
 
     HCAPTCHA_DRAG_CANVAS_WIDTH = 480
     HCAPTCHA_DRAG_CANVAS_HEIGHT = 320
+    HCAPTCHA_CHALLENGE_VIEW_WIDTH = 500
+    HCAPTCHA_CHALLENGE_VIEW_HEIGHT = 470
+    HCAPTCHA_DRAG_CANVAS_LEFT = 10
+    HCAPTCHA_DRAG_CANVAS_TOP = 135
 
     def __init__(self, *args, **kwargs):
         self._hsw_lock = asyncio.Lock()
@@ -129,6 +133,33 @@ class EpicAgentV(AgentV):
             return None
         return min(viable, key=lambda item: item[:3])[3]
 
+    @staticmethod
+    def _derive_drag_canvas_box(
+        challenge_box: dict[str, float],
+    ) -> dict[str, float] | None:
+        try:
+            scale_x = (
+                float(challenge_box["width"])
+                / EpicAgentV.HCAPTCHA_CHALLENGE_VIEW_WIDTH
+            )
+            scale_y = (
+                float(challenge_box["height"])
+                / EpicAgentV.HCAPTCHA_CHALLENGE_VIEW_HEIGHT
+            )
+            if scale_x <= 0 or scale_y <= 0:
+                return None
+            return {
+                "tag": "challenge-view-crop",
+                "x": float(challenge_box["x"])
+                + EpicAgentV.HCAPTCHA_DRAG_CANVAS_LEFT * scale_x,
+                "y": float(challenge_box["y"])
+                + EpicAgentV.HCAPTCHA_DRAG_CANVAS_TOP * scale_y,
+                "width": EpicAgentV.HCAPTCHA_DRAG_CANVAS_WIDTH * scale_x,
+                "height": EpicAgentV.HCAPTCHA_DRAG_CANVAS_HEIGHT * scale_y,
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+
     async def _challenge_drag_canvas_box(self) -> dict[str, float] | None:
         frame = await self._get_nested_challenge_frame_locator()
         if frame is None:
@@ -153,9 +184,24 @@ class EpicAgentV(AgentV):
         except Exception as err:
             logger.debug(f"Could not inspect hCaptcha drag canvas: {err}")
             return None
-        return self._select_drag_canvas_box(candidates or [])
+        canvas_box = self._select_drag_canvas_box(candidates or [])
+        if canvas_box is not None:
+            return canvas_box
 
-    async def _payload_drag_source(self) -> dict[str, Any] | None:
+        try:
+            challenge_box = await frame.locator(".challenge-view").bounding_box(timeout=1000)
+        except Exception as err:
+            logger.debug(f"Could not locate hCaptcha challenge view: {err}")
+            return None
+        if not challenge_box:
+            return None
+        return self._derive_drag_canvas_box(challenge_box)
+
+    async def _payload_drag_source(
+        self,
+        model_x: float,
+        model_y: float,
+    ) -> dict[str, Any] | None:
         payload = getattr(self.robotic_arm, "captcha_payload", None)
         tasklist = getattr(payload, "tasklist", None) or []
         if not tasklist:
@@ -163,15 +209,19 @@ class EpicAgentV(AgentV):
         entities = getattr(tasklist[0], "entities", None) or []
         if not entities:
             return None
-        coords = getattr(entities[0], "coords", None) or []
-        if len(coords) < 2:
-            return None
 
         canvas_box = await self._challenge_drag_canvas_box()
         if not canvas_box:
             logger.debug("Could not locate hCaptcha drag canvas for payload coordinates")
             return None
-        return self._project_payload_coordinate(coords, canvas_box)
+
+        candidates = []
+        for entity in entities:
+            coords = getattr(entity, "coords", None) or []
+            candidate = self._project_payload_coordinate(coords, canvas_box)
+            if candidate is not None:
+                candidates.append(candidate)
+        return self._nearest_drag_source(model_x, model_y, candidates)
 
     async def _drag_source_candidates(self) -> list[dict[str, Any]]:
         frame = await self._get_nested_challenge_frame_locator()
@@ -288,7 +338,7 @@ class EpicAgentV(AgentV):
     ):
         model_x = float(path.start_point.x)
         model_y = float(path.start_point.y)
-        candidate = await self._payload_drag_source()
+        candidate = await self._payload_drag_source(model_x, model_y)
         if candidate is None:
             candidates = await self._drag_source_candidates()
             candidate = self._nearest_drag_source(model_x, model_y, candidates)
