@@ -130,17 +130,19 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("confirm_order_responses", branch)
         self.assertIn("agent.prepare_for_new_challenge()", branch)
         self.assertIn("await page.wait_for_timeout(3000)", branch)
-        self.assertLess(
-            branch.index("agent.prepare_for_new_challenge()"),
-            branch.index("await payment_btn.click(force=True)"),
+        prepare_index = branch.index("agent.prepare_for_new_challenge()")
+        initial_click_index = branch.index(
+            "await payment_btn.click(force=True)", prepare_index
         )
-        self.assertLess(
-            branch.index("await payment_btn.click(force=True)"),
-            branch.index("await page.wait_for_timeout(3000)"),
+        settle_index = branch.index(
+            "await page.wait_for_timeout(3000)", initial_click_index
         )
-        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
+        self.assertLess(prepare_index, initial_click_index)
+        self.assertLess(initial_click_index, settle_index)
+        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 3)
         self.assertIn("Submitting checkout again immediately after", branch)
-        self.assertIn("Ignoring the stale automatic captcha submission", branch)
+        self.assertIn("Submitting checkout with the refreshed", branch)
+        self.assertIn("talon_refresh_ready", branch)
         self.assertNotIn("post_captcha_talon_ready", branch)
         self.assertNotIn("for transaction_attempt", branch)
         self.assertNotIn("Submitting checkout after the rejected", branch)

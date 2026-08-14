@@ -947,6 +947,9 @@ class EpicGames:
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
         delay_first_confirm = settings.CHECKOUT_CONFIRM_DELAY_MS > 0
+        captcha_failure_seen = asyncio.Event()
+        talon_refresh_started = asyncio.Event()
+        talon_refresh_ready = asyncio.Event()
 
         async def delay_first_confirm_order(route) -> None:
             nonlocal delay_first_confirm
@@ -987,6 +990,21 @@ class EpicGames:
 
         async def capture_confirm_order_response(response) -> None:
             parsed_url = urlsplit(response.url)
+            if (
+                captcha_failure_seen.is_set()
+                and parsed_url.path.endswith("/v1/init/execute")
+                and 200 <= response.status < 300
+            ):
+                talon_refresh_started.set()
+                logger.debug("Talon started refreshing the rejected captcha state")
+            elif (
+                talon_refresh_started.is_set()
+                and parsed_url.path.endswith("/v1/phaser/batch")
+                and 200 <= response.status < 300
+            ):
+                talon_refresh_ready.set()
+                logger.debug("Talon refreshed the rejected captcha state")
+
             if is_checkout_diagnostic_url(response.url):
                 trace_id = checkout_request_ids.get(id(response.request), 0)
                 body_text = ""
@@ -1003,6 +1021,8 @@ class EpicGames:
             payload = {}
             with suppress(Exception):
                 payload = await response.json()
+            if is_retryable_confirm_order_failure(response.status, payload):
+                captcha_failure_seen.set()
             confirm_order_responses.put_nowait(
                 {
                     "status": response.status,
@@ -1013,6 +1033,7 @@ class EpicGames:
         async def wait_for_checkout_outcome(timeout_seconds: float = 15) -> dict[str, Any]:
             deadline = asyncio.get_running_loop().time() + timeout_seconds
             last_captcha_failure: dict[str, Any] = {}
+            recovery_submitted = False
             while asyncio.get_running_loop().time() < deadline:
                 while not confirm_order_responses.empty():
                     outcome = confirm_order_responses.get_nowait()
@@ -1023,8 +1044,37 @@ class EpicGames:
                         last_captcha_failure = outcome
                         logger.info(
                             "Ignoring the stale automatic captcha submission while "
-                            "waiting for the post-Talon checkout request"
+                            "waiting for Talon to refresh the checkout token"
                         )
+                        if not recovery_submitted:
+                            remaining = max(
+                                0.0,
+                                deadline - asyncio.get_running_loop().time(),
+                            )
+                            try:
+                                await asyncio.wait_for(
+                                    talon_refresh_ready.wait(),
+                                    timeout=min(12.0, remaining),
+                                )
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "Talon did not refresh the rejected captcha "
+                                    "state before checkout recovery timed out"
+                                )
+                            else:
+                                try:
+                                    if await payment_btn.is_visible():
+                                        logger.info(
+                                            "Submitting checkout with the refreshed "
+                                            "Talon captcha state"
+                                        )
+                                        await payment_btn.click(force=True)
+                                        recovery_submitted = True
+                                except Exception:
+                                    logger.debug(
+                                        "Checkout control closed before the refreshed "
+                                        "Talon submission"
+                                    )
                         continue
                     return outcome
                 try:
