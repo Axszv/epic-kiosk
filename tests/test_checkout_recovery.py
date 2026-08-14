@@ -120,7 +120,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("tempfile.gettempdir()", runner_source)
         self.assertNotIn("app/volumes/user_data", runner_source[runner_source.index("if fresh_profile:"):runner_source.index("timeout_seconds", runner_source.index("if fresh_profile:"))])
 
-    def test_checkout_regenerates_submission_after_talon_callback(self):
+    def test_checkout_resubmits_immediately_after_validated_captcha(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _handle_instant_checkout")
         end = source.index("async def add_promotion_to_cart", start)
@@ -139,9 +139,9 @@ class CheckoutRecoveryTests(unittest.TestCase):
             branch.index("await page.wait_for_timeout(3000)"),
         )
         self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
-        self.assertIn("post_captcha_talon_ready", branch)
-        self.assertIn("Submitting checkout again after the Talon", branch)
+        self.assertIn("Submitting checkout again immediately after", branch)
         self.assertIn("Ignoring the stale automatic captcha submission", branch)
+        self.assertNotIn("post_captcha_talon_ready", branch)
         self.assertNotIn("for transaction_attempt", branch)
         self.assertNotIn("Submitting checkout after the rejected", branch)
 

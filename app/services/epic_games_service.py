@@ -947,7 +947,6 @@ class EpicGames:
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
         delay_first_confirm = settings.CHECKOUT_CONFIRM_DELAY_MS > 0
-        post_captcha_talon_ready = asyncio.Event()
 
         async def delay_first_confirm_order(route) -> None:
             nonlocal delay_first_confirm
@@ -988,16 +987,6 @@ class EpicGames:
 
         async def capture_confirm_order_response(response) -> None:
             parsed_url = urlsplit(response.url)
-            if (
-                agent.latest_captcha_pass_time > 0
-                and parsed_url.path.endswith("/v1/phaser/batch")
-                and 200 <= response.status < 300
-                and asyncio.get_running_loop().time()
-                >= agent.latest_captcha_pass_time
-            ):
-                post_captcha_talon_ready.set()
-                logger.debug("Talon completed its post-hCaptcha phaser callback")
-
             if is_checkout_diagnostic_url(response.url):
                 trace_id = checkout_request_ids.get(id(response.request), 0)
                 body_text = ""
@@ -1096,24 +1085,14 @@ class EpicGames:
                         logger.warning(f"结账验证码结果: {challenge_result}")
                     else:
                         # Epic creates the first confirm-order body before Talon has
-                        # consumed hCaptcha's callback. The historical working flow
-                        # clicked again while that stale request was still in flight,
-                        # which regenerates captchaToken from the updated Talon state.
-                        try:
-                            await asyncio.wait_for(
-                                post_captcha_talon_ready.wait(), timeout=3
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning(
-                                "Talon post-hCaptcha callback was not observed within "
-                                "3 seconds; retrying checkout with the latest page state"
-                            )
-
+                        # returned its stale automatic request. The historical
+                        # working flow clicked again immediately after hCaptcha
+                        # success, before that 400 response resets the transaction.
                         try:
                             if await payment_btn.is_visible():
                                 logger.info(
-                                    "Submitting checkout again after the Talon "
-                                    "hCaptcha callback"
+                                    "Submitting checkout again immediately after "
+                                    "validated hCaptcha"
                                 )
                                 await payment_btn.click(force=True)
                         except Exception:
