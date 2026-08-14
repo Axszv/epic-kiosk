@@ -997,9 +997,20 @@ class EpicGames:
 
         async def wait_for_checkout_outcome(timeout_seconds: float = 10) -> dict[str, Any]:
             deadline = asyncio.get_running_loop().time() + timeout_seconds
+            retryable_failure = {}
             while asyncio.get_running_loop().time() < deadline:
                 if not confirm_order_responses.empty():
-                    return confirm_order_responses.get_nowait()
+                    response = confirm_order_responses.get_nowait()
+                    if is_retryable_confirm_order_failure(
+                        int(response.get("status") or 0),
+                        response.get("payload") or {},
+                    ):
+                        # The first automatic submission can race the hCaptcha
+                        # success callback. Keep observing the immediate second
+                        # submission before deciding that the transaction failed.
+                        retryable_failure = response
+                    else:
+                        return response
                 try:
                     if not await payment_btn.is_visible():
                         return {"button_hidden": True}
@@ -1008,7 +1019,7 @@ class EpicGames:
                 await page.wait_for_timeout(250)
             if not confirm_order_responses.empty():
                 return confirm_order_responses.get_nowait()
-            return {}
+            return retryable_failure
 
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
@@ -1057,6 +1068,19 @@ class EpicGames:
                 else:
                     logger.debug("结账等待 15 秒后未出现 hCaptcha，检查提交结果")
 
+                if challenge_succeeded:
+                    # Preserve the timing of the historically reliable flow:
+                    # hCaptcha closes first, then the same checkout control is
+                    # clicked immediately so Talon consumes the validated widget
+                    # state. Re-locating after the first 400 is too late because
+                    # Epic has already reset the transaction by then.
+                    with suppress(Exception):
+                        if await payment_btn.is_visible():
+                            logger.info(
+                                "Submitting checkout immediately after validated hCaptcha"
+                            )
+                            await payment_btn.click(force=True)
+
                 outcome = await wait_for_checkout_outcome()
                 if outcome.get("button_hidden"):
                     logger.success("🎉 结账按钮已消失，等待入库验证")
@@ -1074,56 +1098,6 @@ class EpicGames:
                     status, payload
                 )
                 no_submission_seen = not outcome
-
-                # Epic can auto-submit confirm-order before its Talon checkout
-                # token has incorporated the just-completed hCaptcha result.
-                # The original working flow clicked Place Order once more in
-                # the same checkout context after ChallengeSignal.SUCCESS.
-                # Only do that after an explicit rejection or no submission;
-                # an unknown successful request is never submitted twice.
-                if challenge_succeeded and (
-                    retryable_captcha_failure or no_submission_seen
-                ):
-                    reason = (
-                        EPIC_CAPTCHA_CHALLENGE_FAILED
-                        if retryable_captcha_failure
-                        else "confirm-order request was not observed"
-                    )
-                    logger.warning(
-                        "Retrying Epic confirm-order with the validated "
-                        f"hCaptcha transaction: {reason}"
-                    )
-                    while not confirm_order_responses.empty():
-                        confirm_order_responses.get_nowait()
-                    # Epic re-renders the checkout controls after the automatic
-                    # rejected submission. The old button locator can remain
-                    # attached but ignore clicks while the replacement control
-                    # is still disabled. The previously working flow naturally
-                    # waited about 2.5 seconds before its second submission.
-                    await page.wait_for_timeout(2500)
-                    wpc, payment_btn = await self._active_purchase_container(page)
-                    await payment_btn.click(force=True)
-                    outcome = await wait_for_checkout_outcome()
-
-                    if outcome.get("button_hidden"):
-                        logger.success(
-                            "🎉 同一验证码事务重试后结账按钮已消失，等待入库验证"
-                        )
-                        return True
-
-                    status = int(outcome.get("status") or 0)
-                    payload = outcome.get("payload") or {}
-                    if 200 <= status < 300:
-                        logger.success(
-                            "🎉 同一验证码事务重试后 Epic confirm-order "
-                            f"返回 HTTP {status}，等待入库验证"
-                        )
-                        return True
-
-                    retryable_captcha_failure = is_retryable_confirm_order_failure(
-                        status, payload
-                    )
-                    no_submission_seen = not outcome
 
                 if transaction_attempt == 1 and (
                     retryable_captcha_failure or no_submission_seen
