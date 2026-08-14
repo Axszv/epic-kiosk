@@ -370,7 +370,7 @@ class EpicAuthorization:
         if r.request.method != "POST":
             return
 
-        if "talon-service-prod" in r.url and "/v1/init/execute" in r.url:
+        if "talon-service-prod" in r.url and "/execute" in r.url:
             body_text = ""
             response_payload = None
             with suppress(Exception):

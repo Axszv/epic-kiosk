@@ -61,7 +61,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("cp -a /tmp/hcaptcha/.cache/.", workflow)
         self.assertIn("cp -a /tmp/hcaptcha/.challenge/.", workflow)
 
-    def test_checkout_retries_only_a_fresh_explicit_transaction(self):
+    def test_checkout_retries_the_validated_transaction_before_a_fresh_one(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _handle_instant_checkout")
         end = source.index("async def add_promotion_to_cart", start)
@@ -72,7 +72,12 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("is_retryable_confirm_order_failure", branch)
         self.assertIn("no_submission_seen = not outcome", branch)
         self.assertIn("agent.prepare_for_new_challenge()", branch)
-        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 1)
+        self.assertIn("challenge_succeeded", branch)
+        self.assertIn(
+            "Retrying Epic confirm-order with the validated ",
+            branch,
+        )
+        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
 
     def test_captcha_failure_detector_is_exact(self):
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))

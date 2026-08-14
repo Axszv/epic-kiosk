@@ -906,6 +906,7 @@ class EpicGames:
                 while not confirm_order_responses.empty():
                     confirm_order_responses.get_nowait()
                 agent.prepare_for_new_challenge()
+                challenge_succeeded = False
                 logger.debug(
                     "点击支付按钮 "
                     f"[{transaction_attempt}/2]: {await payment_btn.text_content()}"
@@ -927,7 +928,11 @@ class EpicGames:
                                 + 15,
                             ),
                         )
-                        if getattr(challenge_result, "value", challenge_result) != "success":
+                        challenge_succeeded = (
+                            getattr(challenge_result, "value", challenge_result)
+                            == "success"
+                        )
+                        if not challenge_succeeded:
                             logger.warning(f"结账验证码结果: {challenge_result}")
                     except Exception as e:
                         logger.warning(f"结账验证码未确认通过: {e}")
@@ -951,6 +956,51 @@ class EpicGames:
                     status, payload
                 )
                 no_submission_seen = not outcome
+
+                # Epic can auto-submit confirm-order before its Talon checkout
+                # token has incorporated the just-completed hCaptcha result.
+                # The original working flow clicked Place Order once more in
+                # the same checkout context after ChallengeSignal.SUCCESS.
+                # Only do that after an explicit rejection or no submission;
+                # an unknown successful request is never submitted twice.
+                if challenge_succeeded and (
+                    retryable_captcha_failure or no_submission_seen
+                ):
+                    reason = (
+                        EPIC_CAPTCHA_CHALLENGE_FAILED
+                        if retryable_captcha_failure
+                        else "confirm-order request was not observed"
+                    )
+                    logger.warning(
+                        "Retrying Epic confirm-order with the validated "
+                        f"hCaptcha transaction: {reason}"
+                    )
+                    while not confirm_order_responses.empty():
+                        confirm_order_responses.get_nowait()
+                    await page.wait_for_timeout(500)
+                    await payment_btn.click(force=True)
+                    outcome = await wait_for_checkout_outcome()
+
+                    if outcome.get("button_hidden"):
+                        logger.success(
+                            "🎉 同一验证码事务重试后结账按钮已消失，等待入库验证"
+                        )
+                        return True
+
+                    status = int(outcome.get("status") or 0)
+                    payload = outcome.get("payload") or {}
+                    if 200 <= status < 300:
+                        logger.success(
+                            "🎉 同一验证码事务重试后 Epic confirm-order "
+                            f"返回 HTTP {status}，等待入库验证"
+                        )
+                        return True
+
+                    retryable_captcha_failure = is_retryable_confirm_order_failure(
+                        status, payload
+                    )
+                    no_submission_seen = not outcome
+
                 if transaction_attempt == 1 and (
                     retryable_captcha_failure or no_submission_seen
                 ):

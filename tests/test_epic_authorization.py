@@ -194,7 +194,7 @@ class EpicResponseDiagnosticTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('"talon-service-prod" in r.url', source)
-        self.assertIn('"/v1/init/execute" in r.url', source)
+        self.assertIn('"/execute" in r.url', source)
         self.assertIn("Epic Talon execute response", source)
         self.assertNotIn('or "talon" in r.url', source)
 
