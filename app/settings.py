@@ -223,6 +223,11 @@ class EpicSettings(AgentConfig):
 
     @property
     def user_data_dir(self) -> Path:
+        override = os.getenv("EPIC_USER_DATA_DIR", "").strip()
+        if override:
+            target_ = Path(override).expanduser().resolve()
+            target_.mkdir(parents=True, exist_ok=True)
+            return target_
         target_ = USER_DATA_DIR.joinpath(self.EPIC_EMAIL)
         target_.mkdir(parents=True, exist_ok=True)
         return target_

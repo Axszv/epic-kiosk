@@ -6,6 +6,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -295,6 +296,26 @@ def run_account(
     env["MOBILE_OFFERS_JSON"] = json.dumps(mobile_offers, ensure_ascii=False)
     env["ENABLE_APSCHEDULER"] = "false"
     env.setdefault("GEMINI_API_KEY", "not_used")
+
+    fresh_profile = os.getenv("EPIC_FRESH_PROFILE", "false").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if fresh_profile:
+        run_id = os.getenv("GITHUB_RUN_ID", str(os.getpid()))
+        profile = Path(tempfile.gettempdir()).joinpath(
+            f"epic-kiosk-fresh-{run_id}-{display_index}-{attempt}"
+        )
+        if profile.exists():
+            shutil.rmtree(profile)
+        profile.mkdir(parents=True)
+        env["EPIC_USER_DATA_DIR"] = str(profile)
+        print(
+            f"BROWSER_PROFILE_MODE:fresh_temporary:account={display_index}",
+            flush=True,
+        )
 
     timeout_seconds = int(os.getenv("TASK_TIMEOUT_SECONDS", "1200"))
     popen_kwargs = {}

@@ -101,6 +101,21 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("Collect hCaptcha debug artifacts", workflow)
         self.assertIn("cp -a /tmp/hcaptcha/.cache/.", workflow)
         self.assertIn("cp -a /tmp/hcaptcha/.challenge/.", workflow)
+        self.assertIn("fresh_profile:", workflow)
+        self.assertIn("EPIC_FRESH_PROFILE:", workflow)
+        self.assertIn("github.event.inputs.fresh_profile || 'false'", workflow)
+
+    def test_fresh_profile_diagnostic_uses_an_uncached_override(self):
+        settings_source = (ROOT / "app" / "settings.py").read_text(encoding="utf-8")
+        runner_source = (
+            ROOT / "scripts" / "github_actions_claim_once.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('os.getenv("EPIC_USER_DATA_DIR", "")', settings_source)
+        self.assertIn('os.getenv("EPIC_FRESH_PROFILE", "false")', runner_source)
+        self.assertIn('env["EPIC_USER_DATA_DIR"] = str(profile)', runner_source)
+        self.assertIn("tempfile.gettempdir()", runner_source)
+        self.assertNotIn("app/volumes/user_data", runner_source[runner_source.index("if fresh_profile:"):runner_source.index("timeout_seconds", runner_source.index("if fresh_profile:"))])
 
     def test_checkout_uses_one_submission_per_fresh_agent_transaction(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")

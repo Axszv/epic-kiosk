@@ -23,6 +23,10 @@ on:
         description: "Maximum attempts per account. Only an explicitly invalid cookie clears its profile."
         required: false
         default: "3"
+      fresh_profile:
+        description: "Use a temporary uncached browser profile for a manual diagnostic run."
+        required: false
+        default: "false"
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -121,6 +125,7 @@ jobs:
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
+          EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
         run: python scripts/github_actions_claim_once.py
 
       - name: Save browser state
