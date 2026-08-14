@@ -43,12 +43,18 @@ REGION_UNAVAILABLE_MARKERS = (
     "not available in your region",
     "unavailable in your region",
 )
+EPIC_CAPTCHA_CHALLENGE_FAILED = "epic.error.captcha.challenge.failed"
 
 
 def emit_desktop_result(title: str, status: str) -> None:
     marker = f"DESKTOP_RESULT:{title}:{status}"
     print(marker, flush=True)
     logger.info(marker)
+
+
+def is_retryable_confirm_order_failure(status: int, payload: dict[str, Any]) -> bool:
+    error_code = str(payload.get("errorCode") or payload.get("message") or "")
+    return status == 400 and error_code == EPIC_CAPTCHA_CHALLENGE_FAILED
 
 
 class GameCollectResult(Enum):
@@ -819,6 +825,37 @@ class EpicGames:
     async def _handle_instant_checkout(self, page: Page) -> bool:
         logger.info("🚀 开始即时结账流程...")
         agent = get_hcaptcha_agent(page)
+        confirm_order_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def capture_confirm_order_response(response) -> None:
+            if "/purchase/confirm-order" not in response.url:
+                return
+            payload = {}
+            with suppress(Exception):
+                payload = await response.json()
+            confirm_order_responses.put_nowait(
+                {
+                    "status": response.status,
+                    "payload": payload if isinstance(payload, dict) else {},
+                }
+            )
+
+        async def wait_for_checkout_outcome(timeout_seconds: float = 10) -> dict[str, Any]:
+            deadline = asyncio.get_running_loop().time() + timeout_seconds
+            while asyncio.get_running_loop().time() < deadline:
+                if not confirm_order_responses.empty():
+                    return confirm_order_responses.get_nowait()
+                try:
+                    if not await payment_btn.is_visible():
+                        return {"button_hidden": True}
+                except Exception:
+                    return {"button_hidden": True}
+                await page.wait_for_timeout(250)
+            if not confirm_order_responses.empty():
+                return confirm_order_responses.get_nowait()
+            return {}
+
+        page.on("response", capture_confirm_order_response)
 
         try:
             await self._handle_device_not_supported_modal(page)
@@ -826,43 +863,76 @@ class EpicGames:
             if await self._handle_device_not_supported_modal(page):
                 wpc, payment_btn = await self._active_purchase_container(page)
 
-            agent.prepare_for_new_challenge()
-            logger.debug(f"点击支付按钮: {await payment_btn.text_content()}")
-            await payment_btn.click(force=True)
-
-            if await agent.wait_for_challenge_start(timeout_seconds=15):
-                try:
-                    logger.debug("检查验证码...")
-                    challenge_result = await asyncio.wait_for(
-                        agent.wait_for_challenge(),
-                        timeout=max(
-                            settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
-                            settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 15,
-                        ),
-                    )
-                    if getattr(challenge_result, "value", challenge_result) != "success":
-                        logger.warning(f"结账验证码结果: {challenge_result}")
-                except Exception as e:
-                    logger.warning(f"结账验证码未确认通过: {e}")
-            else:
-                logger.debug("结账等待 15 秒后未出现 hCaptcha，直接检查提交结果")
-
-            try:
-                if not await payment_btn.is_visible():
-                     logger.success("🎉 结账按钮已消失，等待入库验证")
-                     return True
-            except Exception:
-                logger.success("🎉 结账 iframe 已关闭，等待入库验证")
-                return True
-
-            with suppress(Exception):
+            for transaction_attempt in range(1, 3):
+                while not confirm_order_responses.empty():
+                    confirm_order_responses.get_nowait()
+                agent.prepare_for_new_challenge()
+                logger.debug(
+                    "点击支付按钮 "
+                    f"[{transaction_attempt}/2]: {await payment_btn.text_content()}"
+                )
                 await payment_btn.click(force=True)
-                await page.wait_for_timeout(2000)
 
-            with suppress(Exception):
-                if not await payment_btn.is_visible(timeout=3000):
-                    logger.success("🎉 二次提交后结账按钮已消失，等待入库验证")
+                challenge_started = await agent.wait_for_challenge_start(
+                    timeout_seconds=15
+                )
+                if challenge_started:
+                    try:
+                        logger.debug("检查验证码...")
+                        challenge_result = await asyncio.wait_for(
+                            agent.wait_for_challenge(),
+                            timeout=max(
+                                settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+                                settings.EXECUTION_TIMEOUT
+                                + settings.RESPONSE_TIMEOUT
+                                + 15,
+                            ),
+                        )
+                        if getattr(challenge_result, "value", challenge_result) != "success":
+                            logger.warning(f"结账验证码结果: {challenge_result}")
+                    except Exception as e:
+                        logger.warning(f"结账验证码未确认通过: {e}")
+                else:
+                    logger.debug("结账等待 15 秒后未出现 hCaptcha，检查提交结果")
+
+                outcome = await wait_for_checkout_outcome()
+                if outcome.get("button_hidden"):
+                    logger.success("🎉 结账按钮已消失，等待入库验证")
                     return True
+
+                status = int(outcome.get("status") or 0)
+                payload = outcome.get("payload") or {}
+                if 200 <= status < 300:
+                    logger.success(
+                        f"🎉 Epic confirm-order 返回 HTTP {status}，等待入库验证"
+                    )
+                    return True
+
+                retryable_captcha_failure = is_retryable_confirm_order_failure(
+                    status, payload
+                )
+                no_submission_seen = not outcome
+                if transaction_attempt == 1 and (
+                    retryable_captcha_failure or no_submission_seen
+                ):
+                    reason = (
+                        EPIC_CAPTCHA_CHALLENGE_FAILED
+                        if retryable_captcha_failure
+                        else "confirm-order request was not observed"
+                    )
+                    logger.warning(
+                        "Retrying Epic checkout with a fresh hCaptcha transaction: "
+                        f"{reason}"
+                    )
+                    await page.wait_for_timeout(1500)
+                    continue
+
+                if status:
+                    logger.warning(
+                        "Epic confirm-order rejected checkout: "
+                        f"HTTP {status}, errorCode={payload.get('errorCode', '')}"
+                    )
+                break
 
             logger.warning("⚠️ 结账按钮仍可见，尚不能确认领取成功")
             return False
@@ -872,6 +942,9 @@ class EpicGames:
             with suppress(Exception):
                 await page.reload()
             return False
+        finally:
+            with suppress(Exception):
+                page.remove_listener("response", capture_confirm_order_response)
 
     async def add_promotion_to_cart(self, page: Page, promotions: List[PromotionGame]) -> bool:
         has_pending_cart_items = False

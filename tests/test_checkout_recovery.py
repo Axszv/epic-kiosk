@@ -45,6 +45,59 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("cp -a /tmp/hcaptcha/.cache/.", workflow)
         self.assertIn("cp -a /tmp/hcaptcha/.challenge/.", workflow)
 
+    def test_checkout_retries_only_a_fresh_explicit_transaction(self):
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def _handle_instant_checkout")
+        end = source.index("async def add_promotion_to_cart", start)
+        branch = source[start:end]
+
+        self.assertIn("for transaction_attempt in range(1, 3)", branch)
+        self.assertIn("confirm_order_responses", branch)
+        self.assertIn("is_retryable_confirm_order_failure", branch)
+        self.assertIn("no_submission_seen = not outcome", branch)
+        self.assertIn("agent.prepare_for_new_challenge()", branch)
+        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 1)
+
+    def test_captcha_failure_detector_is_exact(self):
+        tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
+        selected = []
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name)
+                and target.id == "EPIC_CAPTCHA_CHALLENGE_FAILED"
+                for target in node.targets
+            ):
+                selected.append(node)
+            elif (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "is_retryable_confirm_order_failure"
+            ):
+                selected.append(node)
+        namespace = {"Any": object}
+        exec(
+            compile(
+                ast.Module(body=selected, type_ignores=[]),
+                str(SERVICE_SOURCE),
+                "exec",
+            ),
+            namespace,
+        )
+        detector = namespace["is_retryable_confirm_order_failure"]
+
+        self.assertTrue(
+            detector(
+                400,
+                {"errorCode": "epic.error.captcha.challenge.failed"},
+            )
+        )
+        self.assertFalse(
+            detector(
+                409,
+                {"errorCode": "epic.error.captcha.challenge.failed"},
+            )
+        )
+        self.assertFalse(detector(400, {"errorCode": "some.other.error"}))
+
 
 if __name__ == "__main__":
     unittest.main()

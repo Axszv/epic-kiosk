@@ -350,13 +350,22 @@ class EpicAuthorization:
                 response_payload = json.loads(body_text)
             if response_payload is None:
                 response_payload = {"body": body_text}
-            safe_payload = sanitize_epic_response_payload(response_payload)
-            log_method = logger.warning if r.status >= 400 else logger.debug
-            log_method(
-                "Epic confirm-order response: "
-                f"HTTP {r.status} | "
-                f"{json.dumps(safe_payload, ensure_ascii=False)[:4000]}"
-            )
+            if r.status >= 400:
+                safe_payload = sanitize_epic_response_payload(response_payload)
+                logger.warning(
+                    "Epic confirm-order response: "
+                    f"HTTP {r.status} | "
+                    f"{json.dumps(safe_payload, ensure_ascii=False)[:4000]}"
+                )
+            else:
+                order_response = response_payload.get("orderResponse", {})
+                order_status = order_response.get("orderStatus") or order_response.get(
+                    "status", ""
+                )
+                logger.debug(
+                    "Epic confirm-order response: "
+                    f"HTTP {r.status} | orderStatus={order_status}"
+                )
             return
 
         if "/id/api/email/exists" in r.url:
