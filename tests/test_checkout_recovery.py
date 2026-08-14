@@ -26,6 +26,22 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn('if "/purchase" in frame.url:', branch)
         self.assertIn("*purchase_frames", branch)
         self.assertLess(branch.index("*purchase_frames"), branch.index('(\"page\", page)'))
+        self.assertIn("_is_main_page_product_cta", branch)
+        self.assertIn("Skipping the product-page CTA", branch)
+
+    def test_checkout_reopens_a_missing_purchase_iframe(self):
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("async def _ensure_purchase_checkout_open", source)
+        self.assertIn("Purchase iframe is not open", source)
+        modal_start = source.index("async def _handle_device_not_supported_modal")
+        reopen_start = source.index("async def _ensure_purchase_checkout_open")
+        uk_start = source.index("async def _uk_confirm_order")
+        self.assertLess(modal_start, reopen_start)
+        self.assertLess(reopen_start, uk_start)
+        start = source.index("async def _handle_instant_checkout")
+        end = source.index("async def add_promotion_to_cart", start)
+        branch = source[start:end]
+        self.assertIn("await self._ensure_purchase_checkout_open(page)", branch)
 
     def test_uncertain_checkout_checks_strict_ownership_evidence(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")

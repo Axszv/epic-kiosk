@@ -65,6 +65,14 @@ def captcha_drag_response_is_valid(parsed_response: Any, minimum_distance: float
     if not isinstance(paths, list) or not paths:
         return False
 
+    challenge_prompt = str(parsed_response.get("challenge_prompt") or "").casefold()
+    single_path_puzzle = (
+        ("pipe" in challenge_prompt and "route" in challenge_prompt)
+        or "place where it fits" in challenge_prompt
+    )
+    if single_path_puzzle and len(paths) != 1:
+        return False
+
     for path in paths:
         if hasattr(path, "model_dump"):
             path = path.model_dump()
@@ -439,9 +447,12 @@ JSON Schema:
                 if getattr(response_schema, "__name__", "") == "ImageDragDropChallenge":
                     schema_instruction += (
                         "\n拖动任务的 start_point 和 end_point 必须是不同位置，"
-                        "不要返回零位移路径。start_point 必须位于带 Move 标识的"
-                        "可拖动图块或图标的中心，不要选择图块边缘、背景或目标轮廓；"
-                        "end_point 必须位于正确目标轮廓的中心。"
+                        "不要返回零位移路径。所有 start_point 都必须位于右侧或上方"
+                        "带 Move 标识的可拖动图块中心，绝不能选择左侧主画布里的已有"
+                        "物体、管道、背景或目标轮廓。管道路线题只返回一条路径：选择"
+                        "正确的右侧管道候选，end_point 放在两段断开管道之间的空缺"
+                        "中心，不能放到已有管道上。轮廓匹配题也只返回一条路径，"
+                        "end_point 必须位于精确匹配轮廓的几何中心。"
                     )
                 if final_messages and final_messages[0].get("role") == "system":
                     final_messages[0]["content"] += "\n\n" + schema_instruction
@@ -671,7 +682,7 @@ JSON Schema:
                             and not captcha_drag_response_is_valid(parsed_response)
                         ):
                             raise ValueError(
-                                "captcha model returned a zero-distance drag path"
+                                "captcha model returned an invalid drag path set"
                             )
                         logger.debug(f"✅ JSON 解析成功")
                     else:
@@ -734,7 +745,7 @@ JSON Schema:
                                 and not captcha_drag_response_is_valid(parsed_response)
                             ):
                                 raise ValueError(
-                                    "fallback captcha model returned a zero-distance drag path"
+                                    "fallback captcha model returned an invalid drag path set"
                                 )
                             logger.debug(f"✅ 备用模型 JSON 解析成功")
 

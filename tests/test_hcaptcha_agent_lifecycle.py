@@ -72,6 +72,9 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
         self.assertIn("frame closed without a validated server response", source)
         self.assertIn("_perform_drag_drop_with_dom_source", source)
+        self.assertIn("_match_drag_user_prompt", source)
+        self.assertIn("PIPE_ROUTE_DRAG_PROMPT", source)
+        self.assertIn("SHAPE_FIT_DRAG_PROMPT", source)
         self.assertIn("_payload_drag_source", source)
         self.assertIn("_challenge_drag_canvas_box", source)
         self.assertIn("_derive_drag_canvas_box", source)
@@ -91,6 +94,19 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         source = (ROOT / "app/settings.py").read_text(encoding="utf-8")
 
         self.assertIn('os.getenv("DISABLE_BEZIER_TRAJECTORY", "false")', source)
+
+    def test_specialized_drag_prompts_handle_homoglyphs(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+
+        pipe_prompt = module.EpicAgentV._specialized_drag_prompt(
+            "Move the pipе into tһe grid to finiѕh the route"
+        )
+        shape_prompt = module.EpicAgentV._specialized_drag_prompt(
+            "Pleаse drag the element to the place where it fits"
+        )
+
+        self.assertIn("single open gap", pipe_prompt)
+        self.assertIn("exact silhouette-matching puzzle", shape_prompt)
 
     def test_agent_continues_when_hcaptcha_issues_another_round(self):
         module = importlib.import_module("services.hcaptcha_agent_service")

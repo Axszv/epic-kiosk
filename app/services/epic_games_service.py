@@ -648,6 +648,13 @@ class EpicGames:
             except Exception:
                 return False
 
+        async def _is_main_page_product_cta(label: str, btn) -> bool:
+            if label != "page":
+                return False
+            with suppress(Exception):
+                return await btn.get_attribute("data-testid") == "purchase-cta-button"
+            return False
+
         async def _describe_buttons(label: str, container: Any):
             try:
                 buttons = await container.locator("button").all()
@@ -674,6 +681,9 @@ class EpicGames:
                 try:
                     btn = container.locator("button", has_text=text_value).first
                     if await _button_is_usable(btn):
+                        if await _is_main_page_product_cta(label, btn):
+                            logger.debug("Skipping the product-page CTA while locating checkout")
+                            continue
                         btn_text = (await btn.text_content(timeout=1000) or "").strip()
                         logger.info(f"✅ 找到结账按钮: {btn_text!r} | 容器: {label} | 文本: {text_value}")
                         return container, btn
@@ -684,6 +694,9 @@ class EpicGames:
                 try:
                     btn = container.locator(selector).first
                     if await _button_is_usable(btn):
+                        if await _is_main_page_product_cta(label, btn):
+                            logger.debug("Skipping the product-page CTA while locating checkout")
+                            continue
                         btn_text = (await btn.text_content(timeout=1000) or "").strip()
                         logger.info(f"✅ 找到结账按钮: {btn_text!r} | 容器: {label} | 选择器: {selector}")
                         return container, btn
@@ -703,12 +716,14 @@ class EpicGames:
         raise AssertionError("Could not find Place Order button in checkout containers")
 
     @staticmethod
-    async def _handle_device_not_supported_modal(page: Page) -> bool:
+    async def _handle_device_not_supported_modal(
+        page: Page, timeout_ms: int = 3000
+    ) -> bool:
         """Continue past Epic's intermediate unsupported-device modal."""
         dialog = page.locator("[role='dialog']").filter(has_text="Device not supported").first
 
         try:
-            await dialog.wait_for(state="visible", timeout=3000)
+            await dialog.wait_for(state="visible", timeout=timeout_ms)
         except Exception:
             return False
 
@@ -733,6 +748,29 @@ class EpicGames:
         except Exception as err:
             logger.warning(f"⚠️ 处理 Epic 设备不支持弹窗失败: {err}")
             return False
+
+    @classmethod
+    async def _ensure_purchase_checkout_open(cls, page: Page) -> bool:
+        if any("/purchase" in frame.url for frame in page.frames if frame != page.main_frame):
+            return False
+
+        product_cta = page.locator(
+            "button[data-testid='purchase-cta-button']"
+        ).first
+        try:
+            await product_cta.wait_for(state="visible", timeout=2000)
+            if await product_cta.is_disabled(timeout=1000):
+                return False
+        except Exception:
+            return False
+
+        logger.warning(
+            "Purchase iframe is not open; clicking the product CTA again before checkout"
+        )
+        await product_cta.click(force=True)
+        await cls._handle_device_not_supported_modal(page, timeout_ms=20000)
+        await page.wait_for_timeout(2500)
+        return True
 
     @staticmethod
     async def _uk_confirm_order(wpc: Any):
@@ -859,6 +897,7 @@ class EpicGames:
 
         try:
             await self._handle_device_not_supported_modal(page)
+            await self._ensure_purchase_checkout_open(page)
             wpc, payment_btn = await self._active_purchase_container(page)
             if await self._handle_device_not_supported_modal(page):
                 wpc, payment_btn = await self._active_purchase_container(page)

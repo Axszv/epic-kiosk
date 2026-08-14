@@ -14,6 +14,39 @@ from playwright.async_api import Page
 from settings import settings
 
 
+DRAG_PROMPT_TRANSLATION = str.maketrans(
+    {
+        "а": "a",
+        "ԁ": "d",
+        "е": "e",
+        "һ": "h",
+        "і": "i",
+        "ο": "o",
+        "р": "p",
+        "ѕ": "s",
+    }
+)
+PIPE_ROUTE_DRAG_PROMPT = """
+This is a missing-pipe placement puzzle. The only draggable choices are the
+objects in the dark tray on the RIGHT, each marked Move. Existing pipes,
+animals, barrels, circles, and scenery in the LEFT play area are never drag
+sources. Select the green pipe piece from the right tray that exactly bridges
+the single open gap in the route. Return exactly ONE path: start at the center
+of that right-tray pipe piece and end at the center of the EMPTY GAP between
+the two disconnected pipe ends. Do not drop onto an existing pipe segment and
+do not return one path for every tray choice.
+""".strip()
+SHAPE_FIT_DRAG_PROMPT = """
+This is an exact silhouette-matching puzzle. The only drag source is the clear
+object inside the Move card above the play area. Compare its complete outline,
+orientation, corners, and protrusions against every faint outline below.
+Ignore approximate or merely similar distractors. Return exactly ONE path:
+start at the center of the Move-card object and end at the geometric center of
+the one outline that matches it exactly, so the dragged object fully overlays
+that outline.
+""".strip()
+
+
 async def load_hsw_script(page: Page, url: str) -> str:
     """Load hsw.js without Camoufox/Juggler response-text decoding."""
     response = await page.context.request.get(
@@ -58,9 +91,37 @@ class EpicAgentV(AgentV):
         # DOM element before pressing the mouse button.
         self._original_perform_drag_drop = self.robotic_arm._perform_drag_drop
         self.robotic_arm._perform_drag_drop = self._perform_drag_drop_with_dom_source
+        self._original_match_user_prompt = self.robotic_arm._match_user_prompt
+        self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
 
     async def _single_crumb_count(self) -> int:
         return 1
+
+    @staticmethod
+    def _normalize_drag_prompt(value: str) -> str:
+        return " ".join((value or "").translate(DRAG_PROMPT_TRANSLATION).casefold().split())
+
+    @classmethod
+    def _specialized_drag_prompt(cls, challenge_prompt: str) -> str | None:
+        normalized = cls._normalize_drag_prompt(challenge_prompt)
+        if "route" in normalized and "pipe" in normalized:
+            return PIPE_ROUTE_DRAG_PROMPT
+        if "drag the element" in normalized and "where it fits" in normalized:
+            return SHAPE_FIT_DRAG_PROMPT
+        return None
+
+    def _match_drag_user_prompt(self, job_type) -> str:
+        base_prompt = self._original_match_user_prompt(job_type)
+        payload = getattr(self.robotic_arm, "captcha_payload", None)
+        challenge_prompt = ""
+        if payload is not None:
+            with suppress(Exception):
+                challenge_prompt = payload.get_requester_question() or ""
+        specialized = self._specialized_drag_prompt(challenge_prompt)
+        if specialized is None:
+            return base_prompt
+        logger.debug(f"Using specialized hCaptcha drag guidance: {challenge_prompt}")
+        return f"{specialized}\n\nChallenge instruction: {challenge_prompt}"
 
     @staticmethod
     def _nearest_drag_source(

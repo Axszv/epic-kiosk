@@ -92,6 +92,23 @@ class OpenAICompatibilityTests(unittest.TestCase):
 
         self.assertFalse(captcha_drag_response_is_valid(response))
 
+    def test_rejects_multiple_paths_for_single_gap_drag_puzzles(self):
+        response = {
+            "challenge_prompt": "Move the pipe into the grid to finish the route",
+            "paths": [
+                {
+                    "start_point": {"x": 1100, "y": 440},
+                    "end_point": {"x": 900, "y": 520},
+                },
+                {
+                    "start_point": {"x": 1100, "y": 528},
+                    "end_point": {"x": 960, "y": 560},
+                },
+            ],
+        }
+
+        self.assertFalse(captcha_drag_response_is_valid(response))
+
     def test_accepts_distinct_drag_path(self):
         response = {
             "paths": [
