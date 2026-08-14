@@ -115,15 +115,20 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("agent.prepare_for_new_challenge()", branch)
         self.assertIn("challenge_succeeded", branch)
         self.assertIn(
-            "Submitting checkout immediately after validated hCaptcha",
+            "Submitting checkout after the rejected automatic hCaptcha request",
             branch,
         )
         self.assertLess(
-            branch.index("Submitting checkout immediately after validated hCaptcha"),
+            branch.index("initial_outcome = await wait_for_initial_checkout_outcome()"),
+            branch.index("Submitting checkout after the rejected automatic hCaptcha request"),
+        )
+        self.assertLess(
+            branch.index("Submitting checkout after the rejected automatic hCaptcha request"),
             branch.index("outcome = await wait_for_checkout_outcome()"),
         )
         self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
         self.assertIn("retryable_failure = response", branch)
+        self.assertIn("await expect(payment_btn).to_be_enabled(timeout=2500)", branch)
 
     def test_captcha_failure_detector_is_exact(self):
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))

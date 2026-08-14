@@ -1021,6 +1021,21 @@ class EpicGames:
                 return confirm_order_responses.get_nowait()
             return retryable_failure
 
+        async def wait_for_initial_checkout_outcome(
+            timeout_seconds: float = 2,
+        ) -> dict[str, Any]:
+            deadline = asyncio.get_running_loop().time() + timeout_seconds
+            while asyncio.get_running_loop().time() < deadline:
+                if not confirm_order_responses.empty():
+                    return confirm_order_responses.get_nowait()
+                try:
+                    if not await payment_btn.is_visible():
+                        return {"button_hidden": True}
+                except Exception:
+                    return {"button_hidden": True}
+                await page.wait_for_timeout(100)
+            return {}
+
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
 
@@ -1068,20 +1083,39 @@ class EpicGames:
                 else:
                     logger.debug("结账等待 15 秒后未出现 hCaptcha，检查提交结果")
 
+                initial_outcome = {}
                 if challenge_succeeded:
-                    # Preserve the timing of the historically reliable flow:
-                    # hCaptcha closes first, then the same checkout control is
-                    # clicked immediately so Talon consumes the validated widget
-                    # state. Re-locating after the first 400 is too late because
-                    # Epic has already reset the transaction by then.
-                    with suppress(Exception):
-                        if await payment_btn.is_visible():
-                            logger.info(
-                                "Submitting checkout immediately after validated hCaptcha"
-                            )
-                            await payment_btn.click(force=True)
+                    # Epic auto-submits as the hCaptcha iframe closes. Wait for
+                    # that request to settle before repeating the historical
+                    # second click; clicking while the first request is still
+                    # in flight is silently ignored by the checkout control.
+                    initial_outcome = await wait_for_initial_checkout_outcome()
+                    initial_status = int(initial_outcome.get("status") or 0)
+                    initial_payload = initial_outcome.get("payload") or {}
+                    initial_retryable_failure = is_retryable_confirm_order_failure(
+                        initial_status, initial_payload
+                    )
+                    if initial_outcome.get("button_hidden"):
+                        logger.success("🎉 结账按钮已消失，等待入库验证")
+                        return True
+                    if 200 <= initial_status < 300:
+                        logger.success(
+                            f"🎉 Epic confirm-order 返回 HTTP {initial_status}，等待入库验证"
+                        )
+                        return True
+                    if initial_retryable_failure or not initial_outcome:
+                        with suppress(Exception):
+                            await expect(payment_btn).to_be_enabled(timeout=2500)
+                        with suppress(Exception):
+                            if await payment_btn.is_visible():
+                                logger.info(
+                                    "Submitting checkout after the rejected automatic hCaptcha request"
+                                )
+                                await payment_btn.click(force=True)
 
                 outcome = await wait_for_checkout_outcome()
+                if not outcome and initial_outcome:
+                    outcome = initial_outcome
                 if outcome.get("button_hidden"):
                     logger.success("🎉 结账按钮已消失，等待入库验证")
                     return True
