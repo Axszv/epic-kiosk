@@ -172,7 +172,23 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
         self.assertEqual(result.value, "success")
         self.assertEqual(calls, 2)
+        self.assertGreater(agent.latest_captcha_pass_time, 0)
         agent._cache_validated_captcha_response.assert_called_once_with(response)
+
+    def test_preparing_new_challenge_resets_pass_timestamp(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent._captcha_payload_queue = asyncio.Queue()
+        agent._captcha_response_queue = asyncio.Queue()
+        agent._captcha_payload = object()
+        agent.latest_captcha_pass_time = 123.0
+        agent.robotic_arm = types.SimpleNamespace(
+            captcha_payload=object(), signal_crumb_count=1
+        )
+
+        agent.prepare_for_new_challenge()
+
+        self.assertEqual(agent.latest_captcha_pass_time, 0.0)
 
     def test_agent_keeps_only_latest_pending_payload(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
