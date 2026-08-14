@@ -1089,12 +1089,15 @@ class EpicGames:
                                             talon_refresh_ready.wait(),
                                             timeout=min(20.0, remaining),
                                         )
-                                        if await payment_btn.is_visible():
+                                        _, refreshed_payment_btn = (
+                                            await self._active_purchase_container(page)
+                                        )
+                                        if await refreshed_payment_btn.is_enabled():
                                             logger.info(
                                                 "Submitting checkout with the refreshed "
                                                 "Talon captcha state"
                                             )
-                                            await payment_btn.click(force=True)
+                                            await refreshed_payment_btn.click(force=True)
                                             recovery_submitted = True
                                 except asyncio.TimeoutError:
                                     logger.warning(
