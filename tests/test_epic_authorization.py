@@ -1,4 +1,6 @@
 import ast
+import hashlib
+import json
 import unittest
 from pathlib import Path
 
@@ -21,6 +23,8 @@ def load_detectors():
         "is_epic_email_transaction_failure",
         "is_recoverable_epic_captcha_error",
         "sanitize_epic_response_payload",
+        "diagnostic_value_fingerprint",
+        "summarize_epic_request_secrets",
     }
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -30,7 +34,7 @@ def load_detectors():
         elif isinstance(node, ast.FunctionDef) and node.name in wanted:
             selected.append(node)
     module = ast.Module(body=selected, type_ignores=[])
-    namespace = {}
+    namespace = {"hashlib": hashlib, "json": json}
     exec(compile(module, str(AUTHORIZATION_SOURCE), "exec"), namespace)
     return (
         namespace["is_cloudflare_security_check"],
@@ -38,6 +42,8 @@ def load_detectors():
         namespace["is_epic_email_transaction_failure"],
         namespace["is_recoverable_epic_captcha_error"],
         namespace["sanitize_epic_response_payload"],
+        namespace["diagnostic_value_fingerprint"],
+        namespace["summarize_epic_request_secrets"],
     )
 
 
@@ -47,6 +53,8 @@ def load_detectors():
     is_epic_email_transaction_failure,
     is_recoverable_epic_captcha_error,
     sanitize_epic_response_payload,
+    diagnostic_value_fingerprint,
+    summarize_epic_request_secrets,
 ) = load_detectors()
 
 
@@ -159,6 +167,27 @@ class EpicResponseDiagnosticTests(unittest.TestCase):
             {"errorMessage": "x" * 20}, max_string_length=8
         )
         self.assertEqual(sanitized["errorMessage"], "xxxxxxxx...<truncated>")
+
+    def test_request_secret_summary_keeps_only_fingerprints(self):
+        payload = {
+            "syncToken": "sync-value",
+            "order": {
+                "captchaResponse": "P1_secret-value",
+                "offerId": "offer-value",
+            },
+        }
+
+        summary = summarize_epic_request_secrets(payload)
+
+        self.assertEqual(
+            summary["syncToken"], diagnostic_value_fingerprint("sync-value")
+        )
+        self.assertEqual(
+            summary["order.captchaResponse"],
+            diagnostic_value_fingerprint("P1_secret-value"),
+        )
+        self.assertNotIn("order.offerId", summary)
+        self.assertNotIn("P1_secret-value", json.dumps(summary))
 
 
 if __name__ == "__main__":

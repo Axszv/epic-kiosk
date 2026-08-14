@@ -6,6 +6,7 @@
 @Desc    :
 """
 import asyncio
+import hashlib
 import json
 import time
 from contextlib import suppress
@@ -97,6 +98,34 @@ def sanitize_epic_response_payload(value, *, max_string_length: int = 1000):
     if isinstance(value, str) and len(value) > max_string_length:
         return f"{value[:max_string_length]}...<truncated>"
     return value
+
+
+def diagnostic_value_fingerprint(value) -> dict[str, int | str]:
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return {
+        "length": len(value),
+        "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()[:12],
+    }
+
+
+def summarize_epic_request_secrets(value, path: str = "") -> dict[str, dict]:
+    summary = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            item_path = f"{path}.{key}" if path else str(key)
+            normalized_key = str(key).casefold()
+            if any(
+                marker in normalized_key
+                for marker in ("captcha", "challenge", "token")
+            ):
+                summary[item_path] = diagnostic_value_fingerprint(item)
+            elif isinstance(item, (dict, list)):
+                summary.update(summarize_epic_request_secrets(item, item_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            summary.update(summarize_epic_request_secrets(item, f"{path}[{index}]"))
+    return summary
 
 
 class ErrorType(Enum):
@@ -350,12 +379,35 @@ class EpicAuthorization:
                 response_payload = json.loads(body_text)
             if response_payload is None:
                 response_payload = {"body": body_text}
+            request_payload = {}
+            with suppress(Exception):
+                request_payload = json.loads(r.request.post_data or "{}")
+            request_secret_summary = summarize_epic_request_secrets(request_payload)
+            request_headers = {}
+            with suppress(Exception):
+                all_headers = await r.request.all_headers()
+                request_headers = {
+                    key: value
+                    for key, value in all_headers.items()
+                    if any(
+                        marker in key.casefold()
+                        for marker in ("captcha", "challenge", "token")
+                    )
+                }
+            request_secret_summary.update(
+                {
+                    f"header.{key}": diagnostic_value_fingerprint(value)
+                    for key, value in request_headers.items()
+                }
+            )
             if r.status >= 400:
                 safe_payload = sanitize_epic_response_payload(response_payload)
                 logger.warning(
                     "Epic confirm-order response: "
                     f"HTTP {r.status} | "
-                    f"{json.dumps(safe_payload, ensure_ascii=False)[:4000]}"
+                    f"{json.dumps(safe_payload, ensure_ascii=False)[:4000]} | "
+                    "requestSecrets="
+                    f"{json.dumps(request_secret_summary, ensure_ascii=False)}"
                 )
             else:
                 order_response = response_payload.get("orderResponse", {})
@@ -364,7 +416,9 @@ class EpicAuthorization:
                 )
                 logger.debug(
                     "Epic confirm-order response: "
-                    f"HTTP {r.status} | orderStatus={order_status}"
+                    f"HTTP {r.status} | orderStatus={order_status} | "
+                    "requestSecrets="
+                    f"{json.dumps(request_secret_summary, ensure_ascii=False)}"
                 )
             return
 

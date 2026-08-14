@@ -1,6 +1,7 @@
 """Page-scoped hCaptcha agent lifecycle."""
 
 import asyncio
+import hashlib
 import time
 from contextlib import suppress
 from typing import Any
@@ -96,6 +97,18 @@ class EpicAgentV(AgentV):
 
     async def _single_crumb_count(self) -> int:
         return 1
+
+    @staticmethod
+    def _captcha_pass_metadata(response) -> str:
+        token = str(getattr(response, "generated_pass_UUID", "") or "")
+        fingerprint = (
+            hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
+        )
+        expiration = getattr(response, "expiration", None)
+        return (
+            f"token_present={bool(token)}, token_length={len(token)}, "
+            f"token_sha256={fingerprint}, expiration={expiration}"
+        )
 
     @staticmethod
     def _normalize_drag_prompt(value: str) -> str:
@@ -511,7 +524,9 @@ class EpicAgentV(AgentV):
             while not self._captcha_response_queue.empty():
                 response = self._captcha_response_queue.get_nowait()
                 if response and response.is_pass:
-                    logger.success("Challenge success")
+                    logger.success(
+                        f"Challenge success: {self._captcha_pass_metadata(response)}"
+                    )
                     self._cache_validated_captcha_response(response)
                     return ChallengeSignal.SUCCESS
                 logger.warning("hCaptcha rejected the submitted round; checking for the next round")
