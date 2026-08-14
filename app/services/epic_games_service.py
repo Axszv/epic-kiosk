@@ -977,7 +977,13 @@ class EpicGames:
                     )
                     while not confirm_order_responses.empty():
                         confirm_order_responses.get_nowait()
-                    await page.wait_for_timeout(500)
+                    # Epic re-renders the checkout controls after the automatic
+                    # rejected submission. The old button locator can remain
+                    # attached but ignore clicks while the replacement control
+                    # is still disabled. The previously working flow naturally
+                    # waited about 2.5 seconds before its second submission.
+                    await page.wait_for_timeout(2500)
+                    wpc, payment_btn = await self._active_purchase_container(page)
                     await payment_btn.click(force=True)
                     outcome = await wait_for_checkout_outcome()
 

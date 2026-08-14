@@ -77,6 +77,11 @@ class CheckoutRecoveryTests(unittest.TestCase):
             "Retrying Epic confirm-order with the validated ",
             branch,
         )
+        self.assertIn("await page.wait_for_timeout(2500)", branch)
+        self.assertGreaterEqual(
+            branch.count("await self._active_purchase_container(page)"),
+            2,
+        )
         self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
 
     def test_captcha_failure_detector_is_exact(self):
