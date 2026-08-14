@@ -1,4 +1,6 @@
 import ast
+import hashlib
+import json
 import unittest
 from pathlib import Path
 
@@ -9,6 +11,45 @@ WORKFLOW_SOURCE = ROOT / ".github" / "workflows" / "epic-claim.yml"
 
 
 class CheckoutRecoveryTests(unittest.TestCase):
+    @staticmethod
+    def _load_diagnostic_helpers():
+        tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
+        names = {
+            "CHECKOUT_DIAGNOSTIC_URL_MARKERS",
+            "CHECKOUT_DIAGNOSTIC_SECRET_MARKERS",
+            "is_checkout_diagnostic_url",
+            "diagnostic_fingerprint",
+            "summarize_checkout_secrets",
+            "parse_checkout_diagnostic_body",
+            "checkout_body_summary",
+        }
+        selected = []
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id in names
+                for target in node.targets
+            ):
+                selected.append(node)
+            elif isinstance(node, ast.FunctionDef) and node.name in names:
+                selected.append(node)
+        namespace = {
+            "Any": object,
+            "hashlib": hashlib,
+            "json": json,
+            "parse_qsl": __import__("urllib.parse", fromlist=["parse_qsl"]).parse_qsl,
+            "urlsplit": __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit,
+            "suppress": __import__("contextlib", fromlist=["suppress"]).suppress,
+        }
+        exec(
+            compile(
+                ast.Module(body=selected, type_ignores=[]),
+                str(SERVICE_SOURCE),
+                "exec",
+            ),
+            namespace,
+        )
+        return namespace
+
     def test_checkout_waits_for_delayed_hcaptcha_signals(self):
         raw_source = SERVICE_SOURCE.read_text(encoding="utf-8")
         source = ast.unparse(ast.parse(raw_source))
@@ -123,6 +164,33 @@ class CheckoutRecoveryTests(unittest.TestCase):
             )
         )
         self.assertFalse(detector(400, {"errorCode": "some.other.error"}))
+
+    def test_checkout_network_diagnostics_cover_epic_risk_endpoints(self):
+        helpers = self._load_diagnostic_helpers()
+        matches = helpers["is_checkout_diagnostic_url"]
+
+        self.assertTrue(matches("https://talon-service-prod.ecosec.on.epicgames.com/v1/execute"))
+        self.assertTrue(matches("https://payment-website-pci.ol.epicgames.com/purchase/confirm-order"))
+        self.assertTrue(matches("https://store.epicgames.com/api/risk/evaluate"))
+        self.assertFalse(matches("https://store.epicgames.com/en-US/p/example"))
+
+    def test_checkout_network_diagnostics_only_emit_secret_fingerprints(self):
+        helpers = self._load_diagnostic_helpers()
+        summarize = helpers["checkout_body_summary"]
+        token = "captcha-secret-value"
+
+        summary = summarize(
+            json.dumps(
+                {
+                    "offerId": "visible-offer-id",
+                    "security": {"captchaToken": token},
+                }
+            )
+        )
+
+        self.assertEqual(set(summary), {"security.captchaToken"})
+        self.assertEqual(summary["security.captchaToken"]["length"], len(token))
+        self.assertNotIn(token, json.dumps(summary))
 
 
 if __name__ == "__main__":

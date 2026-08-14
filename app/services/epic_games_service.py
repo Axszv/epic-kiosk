@@ -5,11 +5,13 @@
 # Description: 游戏商城控制句柄
 
 import asyncio
+import hashlib
 import json
 from contextlib import suppress
 from enum import Enum
 from json import JSONDecodeError
 from typing import Any, List
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 from loguru import logger
@@ -44,6 +46,21 @@ REGION_UNAVAILABLE_MARKERS = (
     "unavailable in your region",
 )
 EPIC_CAPTCHA_CHALLENGE_FAILED = "epic.error.captcha.challenge.failed"
+CHECKOUT_DIAGNOSTIC_URL_MARKERS = (
+    "talon",
+    "ecosec",
+    "captcha",
+    "challenge",
+    "risk",
+    "confirm-order",
+)
+CHECKOUT_DIAGNOSTIC_SECRET_MARKERS = (
+    "captcha",
+    "challenge",
+    "proof",
+    "response",
+    "token",
+)
 
 
 def emit_desktop_result(title: str, status: str) -> None:
@@ -55,6 +72,69 @@ def emit_desktop_result(title: str, status: str) -> None:
 def is_retryable_confirm_order_failure(status: int, payload: dict[str, Any]) -> bool:
     error_code = str(payload.get("errorCode") or payload.get("message") or "")
     return status == 400 and error_code == EPIC_CAPTCHA_CHALLENGE_FAILED
+
+
+def is_checkout_diagnostic_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    host = parsed.netloc.casefold()
+    path = parsed.path.casefold()
+    if "talon" in host or "ecosec" in host:
+        return True
+    if "/purchase/confirm-order" in path:
+        return True
+    return "epic" in host and any(
+        marker in path for marker in CHECKOUT_DIAGNOSTIC_URL_MARKERS
+    )
+
+
+def diagnostic_fingerprint(value: Any) -> dict[str, int | str]:
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return {
+        "length": len(value),
+        "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()[:12],
+    }
+
+
+def summarize_checkout_secrets(value: Any, path: str = "") -> dict[str, dict]:
+    summary = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            item_path = f"{path}.{key}" if path else str(key)
+            normalized_key = str(key).casefold()
+            if any(
+                marker in normalized_key
+                for marker in CHECKOUT_DIAGNOSTIC_SECRET_MARKERS
+            ):
+                summary[item_path] = diagnostic_fingerprint(item)
+            elif isinstance(item, (dict, list)):
+                summary.update(summarize_checkout_secrets(item, item_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            summary.update(summarize_checkout_secrets(item, f"{path}[{index}]"))
+    return summary
+
+
+def parse_checkout_diagnostic_body(body: str | None) -> Any:
+    if not body:
+        return {}
+    with suppress(Exception):
+        return json.loads(body)
+    with suppress(Exception):
+        values = dict(parse_qsl(body, keep_blank_values=True))
+        if values:
+            return values
+    return body
+
+
+def checkout_body_summary(body: str | None) -> dict[str, dict]:
+    parsed = parse_checkout_diagnostic_body(body)
+    summary = summarize_checkout_secrets(parsed)
+    if summary:
+        return summary
+    if isinstance(parsed, str) and parsed:
+        return {"raw_body": diagnostic_fingerprint(parsed)}
+    return {}
 
 
 class GameCollectResult(Enum):
@@ -864,8 +944,45 @@ class EpicGames:
         logger.info("🚀 开始即时结账流程...")
         agent = get_hcaptcha_agent(page)
         confirm_order_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        checkout_request_ids: dict[int, int] = {}
+        checkout_request_counter = 0
+
+        async def capture_checkout_request(request) -> None:
+            nonlocal checkout_request_counter
+            if not is_checkout_diagnostic_url(request.url):
+                return
+            checkout_request_counter += 1
+            trace_id = checkout_request_counter
+            checkout_request_ids[id(request)] = trace_id
+            parsed_url = urlsplit(request.url)
+            summary = checkout_body_summary(request.post_data)
+            with suppress(Exception):
+                headers = await request.all_headers()
+                for key, value in headers.items():
+                    if any(
+                        marker in key.casefold()
+                        for marker in CHECKOUT_DIAGNOSTIC_SECRET_MARKERS
+                    ):
+                        summary[f"header.{key}"] = diagnostic_fingerprint(value)
+            logger.info(
+                "CHECKOUT_NET_REQUEST:"
+                f"{trace_id}:{request.method}:{parsed_url.netloc}{parsed_url.path}:"
+                f"{json.dumps(summary, ensure_ascii=False, sort_keys=True)}"
+            )
 
         async def capture_confirm_order_response(response) -> None:
+            if is_checkout_diagnostic_url(response.url):
+                parsed_url = urlsplit(response.url)
+                trace_id = checkout_request_ids.get(id(response.request), 0)
+                body_text = ""
+                with suppress(Exception):
+                    body_text = await response.text()
+                logger.info(
+                    "CHECKOUT_NET_RESPONSE:"
+                    f"{trace_id}:{response.status}:"
+                    f"{parsed_url.netloc}{parsed_url.path}:"
+                    f"{json.dumps(checkout_body_summary(body_text), ensure_ascii=False, sort_keys=True)}"
+                )
             if "/purchase/confirm-order" not in response.url:
                 return
             payload = {}
@@ -893,6 +1010,7 @@ class EpicGames:
                 return confirm_order_responses.get_nowait()
             return {}
 
+        page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
 
         try:
@@ -1038,6 +1156,8 @@ class EpicGames:
                 await page.reload()
             return False
         finally:
+            with suppress(Exception):
+                page.remove_listener("request", capture_checkout_request)
             with suppress(Exception):
                 page.remove_listener("response", capture_confirm_order_response)
 
