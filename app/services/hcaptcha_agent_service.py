@@ -3,6 +3,7 @@
 import asyncio
 import time
 from contextlib import suppress
+from typing import Any
 from weakref import WeakKeyDictionary
 
 from hcaptcha_challenger.agent import AgentV
@@ -44,9 +45,170 @@ class EpicAgentV(AgentV):
         # crumb with the first page's type, so return to AgentV after each page
         # and classify the newly rendered challenge again.
         self.robotic_arm.check_crumb_count = self._single_crumb_count
+        # Upstream executes the model's start coordinate verbatim. Visual
+        # models often identify the correct target while missing the small
+        # draggable tile by tens of pixels, so align the start with the actual
+        # DOM element before pressing the mouse button.
+        self._original_perform_drag_drop = self.robotic_arm._perform_drag_drop
+        self.robotic_arm._perform_drag_drop = self._perform_drag_drop_with_dom_source
 
     async def _single_crumb_count(self) -> int:
         return 1
+
+    @staticmethod
+    def _nearest_drag_source(
+        model_x: float,
+        model_y: float,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda candidate: (
+                (float(candidate["x"]) - model_x) ** 2
+                + (float(candidate["y"]) - model_y) ** 2,
+                -float(candidate.get("score", 0)),
+            ),
+        )
+
+    async def _drag_source_candidates(self) -> list[dict[str, Any]]:
+        frame = await self._get_nested_challenge_frame_locator()
+        if frame is None:
+            return []
+
+        elements = frame.locator(".challenge-view *")
+        try:
+            metadata = await elements.evaluate_all(
+                """elements => {
+                    const root = document.querySelector('.challenge-view');
+                    if (!root) return [];
+                    const rootRect = root.getBoundingClientRect();
+                    const rootArea = Math.max(1, rootRect.width * rootRect.height);
+                    const nodes = Array.from(elements);
+                    const indexByNode = new Map(nodes.map((node, index) => [node, index]));
+                    const found = new Map();
+
+                    const visibleBox = element => {
+                        const style = getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        if (
+                            style.display === 'none' ||
+                            style.visibility === 'hidden' ||
+                            Number(style.opacity || 1) <= 0 ||
+                            rect.width < 20 ||
+                            rect.height < 20 ||
+                            rect.width * rect.height > rootArea * 0.55
+                        ) return null;
+                        return {style, rect};
+                    };
+
+                    const add = (element, score, reason) => {
+                        const index = indexByNode.get(element);
+                        const box = visibleBox(element);
+                        if (index === undefined || !box) return;
+                        const current = found.get(index);
+                        if (!current || score > current.score) {
+                            found.set(index, {index, score, reason});
+                        }
+                    };
+
+                    for (const element of nodes) {
+                        const style = getComputedStyle(element);
+                        const cursor = (style.cursor || '').toLowerCase();
+                        const directText = Array.from(element.childNodes)
+                            .filter(node => node.nodeType === Node.TEXT_NODE)
+                            .map(node => node.textContent || '')
+                            .join(' ')
+                            .trim()
+                            .toLowerCase();
+                        const exactMove = directText === 'move' ||
+                            (element.textContent || '').trim().toLowerCase() === 'move';
+                        const draggable = element.draggable ||
+                            element.getAttribute('draggable') === 'true';
+                        const moveCursor = ['move', 'grab', 'grabbing'].includes(cursor);
+
+                        if (draggable) add(element, 320, 'draggable');
+                        if (moveCursor) add(element, 280, `cursor:${cursor}`);
+
+                        if (exactMove) {
+                            add(element, 180, 'move-label');
+                            let parent = element.parentElement;
+                            let depth = 0;
+                            while (parent && parent !== root && depth < 5) {
+                                const box = visibleBox(parent);
+                                if (box && box.rect.width >= 55 && box.rect.height >= 55) {
+                                    add(parent, 360 - depth * 20, 'move-container');
+                                    break;
+                                }
+                                parent = parent.parentElement;
+                                depth += 1;
+                            }
+                        }
+                    }
+
+                    return Array.from(found.values())
+                        .sort((left, right) => right.score - left.score)
+                        .slice(0, 8);
+                }"""
+            )
+        except Exception as err:
+            logger.debug(f"Could not inspect hCaptcha drag source elements: {err}")
+            return []
+
+        candidates: list[dict[str, Any]] = []
+        for item in metadata or []:
+            try:
+                box = await elements.nth(int(item["index"])).bounding_box()
+            except Exception:
+                continue
+            if not box:
+                continue
+            candidate = {
+                "x": box["x"] + box["width"] / 2,
+                "y": box["y"] + box["height"] / 2,
+                "score": item.get("score", 0),
+                "reason": item.get("reason", "dom"),
+            }
+            if any(
+                abs(candidate["x"] - existing["x"]) < 12
+                and abs(candidate["y"] - existing["y"]) < 12
+                for existing in candidates
+            ):
+                continue
+            candidates.append(candidate)
+        return candidates
+
+    async def _perform_drag_drop_with_dom_source(
+        self,
+        path,
+        steps: int = 25,
+        delay_ms: int = 15,
+    ):
+        model_x = float(path.start_point.x)
+        model_y = float(path.start_point.y)
+        candidates = await self._drag_source_candidates()
+        candidate = self._nearest_drag_source(model_x, model_y, candidates)
+        if candidate is not None:
+            corrected_x = int(round(candidate["x"]))
+            corrected_y = int(round(candidate["y"]))
+            distance = ((corrected_x - model_x) ** 2 + (corrected_y - model_y) ** 2) ** 0.5
+            path.start_point.x = corrected_x
+            path.start_point.y = corrected_y
+            logger.info(
+                "Corrected hCaptcha drag source: "
+                f"model=({model_x:.0f},{model_y:.0f}), "
+                f"dom=({corrected_x},{corrected_y}), "
+                f"distance={distance:.1f}, reason={candidate['reason']}"
+            )
+        else:
+            logger.debug("No DOM hCaptcha drag source found; using model start coordinate")
+
+        return await self._original_perform_drag_drop(
+            path,
+            steps=steps,
+            delay_ms=delay_ms,
+        )
 
     @staticmethod
     def _drain_queue(queue) -> int:

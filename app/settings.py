@@ -439,7 +439,9 @@ JSON Schema:
                 if getattr(response_schema, "__name__", "") == "ImageDragDropChallenge":
                     schema_instruction += (
                         "\n拖动任务的 start_point 和 end_point 必须是不同位置，"
-                        "不要返回零位移路径。"
+                        "不要返回零位移路径。start_point 必须位于带 Move 标识的"
+                        "可拖动图块或图标的中心，不要选择图块边缘、背景或目标轮廓；"
+                        "end_point 必须位于正确目标轮廓的中心。"
                     )
                 if final_messages and final_messages[0].get("role") == "system":
                     final_messages[0]["content"] += "\n\n" + schema_instruction

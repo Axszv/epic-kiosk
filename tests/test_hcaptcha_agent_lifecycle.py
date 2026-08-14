@@ -71,6 +71,8 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("hCaptcha issued another round after submission", source)
         self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
         self.assertIn("frame closed without a validated server response", source)
+        self.assertIn("_perform_drag_drop_with_dom_source", source)
+        self.assertIn("Corrected hCaptcha drag source", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
 
     def test_checkout_resets_agent_before_submitting_order(self):
@@ -129,6 +131,53 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
         self.assertEqual(agent._captcha_payload_queue.qsize(), 1)
         self.assertEqual(agent._captcha_payload_queue.get_nowait(), "new")
+
+    def test_agent_selects_nearest_dom_drag_source(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        candidates = [
+            {"x": 955, "y": 460, "score": 360, "reason": "move-container"},
+            {"x": 1135, "y": 560, "score": 280, "reason": "cursor:grab"},
+        ]
+
+        selected = module.EpicAgentV._nearest_drag_source(900, 465, candidates)
+
+        self.assertEqual(selected["x"], 955)
+        self.assertEqual(selected["reason"], "move-container")
+
+    def test_agent_prefers_higher_score_for_equal_drag_sources(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        candidates = [
+            {"x": 950, "y": 460, "score": 180, "reason": "move-label"},
+            {"x": 950, "y": 460, "score": 360, "reason": "move-container"},
+        ]
+
+        selected = module.EpicAgentV._nearest_drag_source(900, 465, candidates)
+
+        self.assertEqual(selected["reason"], "move-container")
+
+    def test_agent_corrects_drag_path_before_upstream_execution(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent._drag_source_candidates = AsyncMock(
+            return_value=[
+                {"x": 955.4, "y": 460.4, "score": 360, "reason": "move-container"}
+            ]
+        )
+        agent._original_perform_drag_drop = AsyncMock(return_value="dragged")
+        path = types.SimpleNamespace(
+            start_point=types.SimpleNamespace(x=900, y=465),
+            end_point=types.SimpleNamespace(x=1115, y=540),
+        )
+
+        result = asyncio.run(agent._perform_drag_drop_with_dom_source(path))
+
+        self.assertEqual(result, "dragged")
+        self.assertEqual((path.start_point.x, path.start_point.y), (955, 460))
+        agent._original_perform_drag_drop.assert_awaited_once_with(
+            path,
+            steps=25,
+            delay_ms=15,
+        )
 
     def test_authorization_module_imports_with_runtime_annotations(self):
         source = (ROOT / "app/services/epic_authorization_service.py").read_text(
