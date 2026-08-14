@@ -80,6 +80,28 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("_derive_drag_canvas_box", source)
         self.assertIn("Corrected hCaptcha drag source", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
+        self.assertIn("replace_hcaptcha_agent", source)
+        self.assertIn('page.remove_listener("response", agent._task_handler)', source)
+
+    def test_replacing_agent_detaches_the_previous_response_listener(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        page = MagicMock()
+        previous = MagicMock()
+        replacement = MagicMock()
+        module._AGENTS[page] = previous
+
+        original_agent_class = module.EpicAgentV
+        module.EpicAgentV = MagicMock(return_value=replacement)
+        try:
+            result = module.replace_hcaptcha_agent(page)
+        finally:
+            module.EpicAgentV = original_agent_class
+
+        self.assertIs(result, replacement)
+        page.remove_listener.assert_called_once_with(
+            "response", previous._task_handler
+        )
+        self.assertIs(module._AGENTS[page], replacement)
 
     def test_checkout_resets_agent_before_submitting_order(self):
         source = (ROOT / "app/services/epic_games_service.py").read_text(

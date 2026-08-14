@@ -630,6 +630,11 @@ class EpicAgentV(AgentV):
 _AGENTS: WeakKeyDictionary[Page, AgentV] = WeakKeyDictionary()
 
 
+def _detach_hcaptcha_agent(page: Page, agent: AgentV) -> None:
+    with suppress(Exception):
+        page.remove_listener("response", agent._task_handler)
+
+
 def get_hcaptcha_agent(page: Page) -> AgentV:
     """Return the one hCaptcha agent attached to a browser page.
 
@@ -641,4 +646,22 @@ def get_hcaptcha_agent(page: Page) -> AgentV:
     if agent is None:
         agent = EpicAgentV(page=page, agent_config=settings)
         _AGENTS[page] = agent
+    return agent
+
+
+def replace_hcaptcha_agent(page: Page) -> AgentV:
+    """Replace the page agent before a new checkout transaction.
+
+    Epic's Talon checkout state is transaction-scoped. Reusing the login agent
+    across multiple checkout documents can retain stale challenge queues and
+    script state, while constructing agents without detaching them leaves
+    duplicate response listeners behind.
+    """
+    previous = _AGENTS.pop(page, None)
+    if previous is not None:
+        _detach_hcaptcha_agent(page, previous)
+
+    agent = EpicAgentV(page=page, agent_config=settings)
+    _AGENTS[page] = agent
+    logger.debug("Replaced hCaptcha agent for a fresh checkout transaction")
     return agent

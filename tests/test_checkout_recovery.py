@@ -102,33 +102,27 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("cp -a /tmp/hcaptcha/.cache/.", workflow)
         self.assertIn("cp -a /tmp/hcaptcha/.challenge/.", workflow)
 
-    def test_checkout_retries_the_validated_transaction_before_a_fresh_one(self):
+    def test_checkout_uses_one_submission_per_fresh_agent_transaction(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _handle_instant_checkout")
         end = source.index("async def add_promotion_to_cart", start)
         branch = source[start:end]
 
-        self.assertIn("for transaction_attempt in range(1, 3)", branch)
+        self.assertIn("replace_hcaptcha_agent(page)", branch)
         self.assertIn("confirm_order_responses", branch)
-        self.assertIn("is_retryable_confirm_order_failure", branch)
-        self.assertIn("no_submission_seen = not outcome", branch)
         self.assertIn("agent.prepare_for_new_challenge()", branch)
-        self.assertIn("challenge_succeeded", branch)
-        self.assertIn(
-            "Submitting checkout after the rejected automatic hCaptcha request",
-            branch,
+        self.assertIn("await page.wait_for_timeout(3000)", branch)
+        self.assertLess(
+            branch.index("agent.prepare_for_new_challenge()"),
+            branch.index("await payment_btn.click(force=True)"),
         )
         self.assertLess(
-            branch.index("initial_outcome = await wait_for_initial_checkout_outcome()"),
-            branch.index("Submitting checkout after the rejected automatic hCaptcha request"),
+            branch.index("await payment_btn.click(force=True)"),
+            branch.index("await page.wait_for_timeout(3000)"),
         )
-        self.assertLess(
-            branch.index("Submitting checkout after the rejected automatic hCaptcha request"),
-            branch.index("outcome = await wait_for_checkout_outcome()"),
-        )
-        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
-        self.assertIn("retryable_failure = response", branch)
-        self.assertIn("await expect(payment_btn).to_be_enabled(timeout=2500)", branch)
+        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 1)
+        self.assertNotIn("for transaction_attempt", branch)
+        self.assertNotIn("Submitting checkout after the rejected", branch)
 
     def test_captcha_failure_detector_is_exact(self):
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
