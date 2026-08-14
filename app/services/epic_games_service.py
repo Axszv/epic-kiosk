@@ -946,6 +946,21 @@ class EpicGames:
         confirm_order_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
+        abort_first_confirm = False
+        first_confirm_aborted = asyncio.Event()
+
+        async def intercept_first_confirm_order(route) -> None:
+            nonlocal abort_first_confirm
+            if abort_first_confirm and not first_confirm_aborted.is_set():
+                abort_first_confirm = False
+                first_confirm_aborted.set()
+                logger.warning(
+                    "Aborting the first automatic confirm-order request so Talon "
+                    "can finish the hCaptcha callback"
+                )
+                await route.abort("blockedbyclient")
+                return
+            await route.continue_()
 
         async def capture_checkout_request(request) -> None:
             nonlocal checkout_request_counter
@@ -1012,6 +1027,8 @@ class EpicGames:
 
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
+        if settings.CHECKOUT_ABORT_STALE_CONFIRM:
+            await page.route("**/purchase/confirm-order", intercept_first_confirm_order)
 
         try:
             await self._handle_device_not_supported_modal(page)
@@ -1031,6 +1048,7 @@ class EpicGames:
 
             challenge_started = await agent.wait_for_challenge_start(timeout_seconds=15)
             if challenge_started:
+                abort_first_confirm = settings.CHECKOUT_ABORT_STALE_CONFIRM
                 try:
                     logger.debug("检查验证码...")
                     challenge_result = await asyncio.wait_for(
@@ -1042,8 +1060,25 @@ class EpicGames:
                             + 15,
                         ),
                     )
-                    if getattr(challenge_result, "value", challenge_result) != "success":
+                    challenge_succeeded = (
+                        getattr(challenge_result, "value", challenge_result)
+                        == "success"
+                    )
+                    if not challenge_succeeded:
                         logger.warning(f"结账验证码结果: {challenge_result}")
+                    elif settings.CHECKOUT_ABORT_STALE_CONFIRM:
+                        with suppress(asyncio.TimeoutError):
+                            await asyncio.wait_for(
+                                first_confirm_aborted.wait(), timeout=5
+                            )
+                        if first_confirm_aborted.is_set():
+                            await page.wait_for_timeout(3000)
+                            await expect(payment_btn).to_be_enabled(timeout=10000)
+                            logger.info(
+                                "Submitting confirm-order after the Talon hCaptcha "
+                                "callback settling window"
+                            )
+                            await payment_btn.click(force=True)
                 except Exception as e:
                     logger.warning(f"结账验证码未确认通过: {e}")
             else:
@@ -1081,6 +1116,11 @@ class EpicGames:
                 page.remove_listener("request", capture_checkout_request)
             with suppress(Exception):
                 page.remove_listener("response", capture_confirm_order_response)
+            if settings.CHECKOUT_ABORT_STALE_CONFIRM:
+                with suppress(Exception):
+                    await page.unroute(
+                        "**/purchase/confirm-order", intercept_first_confirm_order
+                    )
 
     async def add_promotion_to_cart(self, page: Page, promotions: List[PromotionGame]) -> bool:
         has_pending_cart_items = False
