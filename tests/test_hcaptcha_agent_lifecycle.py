@@ -73,6 +73,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("frame closed without a validated server response", source)
         self.assertIn("_perform_drag_drop_with_dom_source", source)
         self.assertIn("_payload_drag_source", source)
+        self.assertIn("_challenge_drag_canvas_box", source)
         self.assertIn("Corrected hCaptcha drag source", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
 
@@ -176,6 +177,30 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         )
 
         self.assertEqual((source["x"], source["y"]), (220, 280))
+
+    def test_agent_selects_standard_drag_canvas_box(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        candidates = [
+            {"tag": "div", "x": 710, "y": 224, "width": 500, "height": 470},
+            {"tag": "canvas", "x": 720, "y": 360, "width": 480, "height": 320},
+            {"tag": "div", "x": 720, "y": 224, "width": 480, "height": 100},
+        ]
+
+        selected = module.EpicAgentV._select_drag_canvas_box(candidates)
+
+        self.assertEqual(selected["tag"], "canvas")
+        self.assertEqual((selected["x"], selected["y"]), (720, 360))
+
+    def test_agent_accepts_div_backed_drag_canvas(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        candidates = [
+            {"tag": "div", "x": 720, "y": 360, "width": 480, "height": 320},
+            {"tag": "img", "x": 930, "y": 380, "width": 112, "height": 112},
+        ]
+
+        selected = module.EpicAgentV._select_drag_canvas_box(candidates)
+
+        self.assertEqual((selected["width"], selected["height"]), (480, 320))
 
     def test_agent_corrects_drag_path_before_upstream_execution(self):
         module = importlib.import_module("services.hcaptcha_agent_service")

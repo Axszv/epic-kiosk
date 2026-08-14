@@ -96,6 +96,65 @@ class EpicAgentV(AgentV):
         except (KeyError, TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _select_drag_canvas_box(
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, float] | None:
+        viable = []
+        target_ratio = (
+            EpicAgentV.HCAPTCHA_DRAG_CANVAS_WIDTH
+            / EpicAgentV.HCAPTCHA_DRAG_CANVAS_HEIGHT
+        )
+        for candidate in candidates:
+            try:
+                width = float(candidate["width"])
+                height = float(candidate["height"])
+                if width < 200 or height < 120:
+                    continue
+                ratio_error = abs(width / height - target_ratio)
+                if ratio_error > 0.15:
+                    continue
+                tag_bonus = 2 if str(candidate.get("tag", "")).lower() in {"canvas", "img"} else 0
+                viable.append(
+                    (
+                        ratio_error,
+                        -tag_bonus,
+                        -(width * height),
+                        candidate,
+                    )
+                )
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                continue
+        if not viable:
+            return None
+        return min(viable, key=lambda item: item[:3])[3]
+
+    async def _challenge_drag_canvas_box(self) -> dict[str, float] | None:
+        frame = await self._get_nested_challenge_frame_locator()
+        if frame is None:
+            return None
+        try:
+            candidates = await frame.locator(".challenge-view *").evaluate_all(
+                """elements => elements.map(element => {
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return {
+                        tag: element.tagName.toLowerCase(),
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        visible: style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            Number(style.opacity || 1) > 0
+                    };
+                }).filter(item => item.visible)"""
+            )
+        except Exception as err:
+            logger.debug(f"Could not inspect hCaptcha drag canvas: {err}")
+            return None
+        return self._select_drag_canvas_box(candidates or [])
+
     async def _payload_drag_source(self) -> dict[str, Any] | None:
         payload = getattr(self.robotic_arm, "captcha_payload", None)
         tasklist = getattr(payload, "tasklist", None) or []
@@ -108,18 +167,11 @@ class EpicAgentV(AgentV):
         if len(coords) < 2:
             return None
 
-        frame = await self._get_nested_challenge_frame_locator()
-        if frame is None:
+        canvas_box = await self._challenge_drag_canvas_box()
+        if not canvas_box:
+            logger.debug("Could not locate hCaptcha drag canvas for payload coordinates")
             return None
-        try:
-            task_image = frame.locator(".task-image").first
-            task_box = await task_image.bounding_box()
-        except Exception as err:
-            logger.debug(f"Could not locate hCaptcha task image for payload coordinates: {err}")
-            return None
-        if not task_box:
-            return None
-        return self._project_payload_coordinate(coords, task_box)
+        return self._project_payload_coordinate(coords, canvas_box)
 
     async def _drag_source_candidates(self) -> list[dict[str, Any]]:
         frame = await self._get_nested_challenge_frame_locator()
