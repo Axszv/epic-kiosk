@@ -507,6 +507,7 @@ class EpicGames:
     def __init__(self, page: Page):
         self.page = page
         self._promotions: List[PromotionGame] = []
+        self.last_checkout_error_code: str | None = None
 
     @staticmethod
     async def _save_debug_page(page: Page, label: str):
@@ -942,15 +943,12 @@ class EpicGames:
 
     async def _handle_instant_checkout(self, page: Page) -> bool:
         logger.info("🚀 开始即时结账流程...")
+        self.last_checkout_error_code = None
         agent = replace_hcaptcha_agent(page)
         confirm_order_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
         delay_first_confirm = settings.CHECKOUT_CONFIRM_DELAY_MS > 0
-        captcha_failure_seen = asyncio.Event()
-        captcha_rejection_processed = asyncio.Event()
-        talon_refresh_started = asyncio.Event()
-        talon_refresh_ready = asyncio.Event()
 
         async def delay_first_confirm_order(route) -> None:
             nonlocal delay_first_confirm
@@ -991,30 +989,6 @@ class EpicGames:
 
         async def capture_confirm_order_response(response) -> None:
             parsed_url = urlsplit(response.url)
-            if (
-                captcha_failure_seen.is_set()
-                and captcha_rejection_processed.is_set()
-                and parsed_url.path.endswith("/v1/init/execute")
-                and 200 <= response.status < 300
-            ):
-                talon_refresh_started.set()
-                logger.debug("Talon started refreshing the rejected captcha state")
-            elif (
-                captcha_failure_seen.is_set()
-                and talon_refresh_started.is_set()
-                and parsed_url.path.endswith("/v1/phaser/batch")
-                and 200 <= response.status < 300
-            ):
-                talon_refresh_ready.set()
-                logger.debug("Talon refreshed the rejected captcha state")
-            elif (
-                captcha_failure_seen.is_set()
-                and parsed_url.path.endswith("/v1/phaser/batch")
-                and 200 <= response.status < 300
-            ):
-                captcha_rejection_processed.set()
-                logger.debug("Talon processed the rejected captcha state")
-
             if is_checkout_diagnostic_url(response.url):
                 trace_id = checkout_request_ids.get(id(response.request), 0)
                 body_text = ""
@@ -1031,8 +1005,6 @@ class EpicGames:
             payload = {}
             with suppress(Exception):
                 payload = await response.json()
-            if is_retryable_confirm_order_failure(response.status, payload):
-                captcha_failure_seen.set()
             confirm_order_responses.put_nowait(
                 {
                     "status": response.status,
@@ -1040,92 +1012,18 @@ class EpicGames:
                 }
             )
 
-        async def wait_for_checkout_outcome(timeout_seconds: float = 45) -> dict[str, Any]:
+        async def wait_for_checkout_outcome(timeout_seconds: float = 15) -> dict[str, Any]:
             deadline = asyncio.get_running_loop().time() + timeout_seconds
-            last_captcha_failure: dict[str, Any] = {}
-            recovery_submitted = False
             while asyncio.get_running_loop().time() < deadline:
-                while not confirm_order_responses.empty():
-                    outcome = confirm_order_responses.get_nowait()
-                    if is_retryable_confirm_order_failure(
-                        int(outcome.get("status") or 0),
-                        outcome.get("payload") or {},
-                    ):
-                        last_captcha_failure = outcome
-                        logger.info(
-                            "Ignoring the stale automatic captcha submission while "
-                            "waiting for Talon to process the rejection"
-                        )
-                        if recovery_submitted:
-                            return outcome
-                        else:
-                            remaining = max(
-                                0.0,
-                                deadline - asyncio.get_running_loop().time(),
-                            )
-                            try:
-                                await asyncio.wait_for(
-                                    captcha_rejection_processed.wait(),
-                                    timeout=min(15.0, remaining),
-                                )
-                            except asyncio.TimeoutError:
-                                logger.warning(
-                                    "Talon did not process the rejected captcha "
-                                    "state before checkout recovery timed out"
-                                )
-                            else:
-                                try:
-                                    if await payment_btn.is_visible():
-                                        logger.info(
-                                            "Refreshing Talon after it processed the "
-                                            "captcha rejection"
-                                        )
-                                        await payment_btn.click(force=True)
-                                        remaining = max(
-                                            0.0,
-                                            deadline - asyncio.get_running_loop().time(),
-                                        )
-                                        await asyncio.wait_for(
-                                            talon_refresh_ready.wait(),
-                                            timeout=min(20.0, remaining),
-                                        )
-                                        _, refreshed_payment_btn = (
-                                            await self._active_purchase_container(page)
-                                        )
-                                        if await refreshed_payment_btn.is_enabled():
-                                            logger.info(
-                                                "Submitting checkout with the refreshed "
-                                                "Talon captcha state"
-                                            )
-                                            await refreshed_payment_btn.click(force=True)
-                                            recovery_submitted = True
-                                except asyncio.TimeoutError:
-                                    logger.warning(
-                                        "Talon did not finish refreshing the rejected "
-                                        "captcha state before checkout recovery timed out"
-                                    )
-                                except Exception:
-                                    logger.debug(
-                                        "Checkout control closed during the Talon "
-                                        "recovery submission"
-                                    )
-                        continue
-                    return outcome
+                if not confirm_order_responses.empty():
+                    return confirm_order_responses.get_nowait()
                 try:
                     if not await payment_btn.is_visible():
                         return {"button_hidden": True}
                 except Exception:
                     return {"button_hidden": True}
                 await page.wait_for_timeout(250)
-            while not confirm_order_responses.empty():
-                outcome = confirm_order_responses.get_nowait()
-                if not is_retryable_confirm_order_failure(
-                    int(outcome.get("status") or 0),
-                    outcome.get("payload") or {},
-                ):
-                    return outcome
-                last_captcha_failure = outcome
-            return last_captcha_failure
+            return {}
 
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
@@ -1195,6 +1093,7 @@ class EpicGames:
 
             status = int(outcome.get("status") or 0)
             payload = outcome.get("payload") or {}
+            self.last_checkout_error_code = str(payload.get("errorCode") or "") or None
             if 200 <= status < 300:
                 logger.success(
                     f"🎉 Epic confirm-order 返回 HTTP {status}，等待入库验证"

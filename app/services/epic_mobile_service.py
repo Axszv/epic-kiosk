@@ -9,7 +9,11 @@ from urllib.parse import unquote, urlparse
 from loguru import logger
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from services.epic_games_service import EpicGames, REGION_UNAVAILABLE_MARKERS
+from services.epic_games_service import (
+    EPIC_CAPTCHA_CHALLENGE_FAILED,
+    EpicGames,
+    REGION_UNAVAILABLE_MARKERS,
+)
 from settings import RUNTIME_DIR
 
 
@@ -139,7 +143,11 @@ def emit_order_check(phase: str, offer: dict, status: str) -> None:
     logger.info(marker)
 
 
-async def collect_mobile_offer(page, offer: dict) -> dict:
+async def collect_mobile_offer(
+    page,
+    offer: dict,
+    _allow_captcha_retry: bool = True,
+) -> dict:
     platform = str(offer.get("platform") or "Mobile")
     title = str(offer.get("title") or "Unknown mobile offer")
     url = str(offer["url"])
@@ -275,6 +283,27 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         result["status"] = "checkout_submitted_unverified"
     else:
         result["status"] = "web_claim_not_available"
+
+    if (
+        _allow_captcha_retry
+        and result["status"] == "web_claim_not_available"
+        and epic.last_checkout_error_code == EPIC_CAPTCHA_CHALLENGE_FAILED
+    ):
+        logger.warning(
+            f"Retrying mobile checkout in a fresh transaction after explicit captcha "
+            f"rejection: {platform}:{title}"
+        )
+        retry_result = await collect_mobile_offer(
+            page,
+            offer,
+            _allow_captcha_retry=False,
+        )
+        retry_result.setdefault("notes", []).insert(
+            0,
+            "retried_after_explicit_captcha_rejection",
+        )
+        return retry_result
+
     emit_result(result)
     return result
 

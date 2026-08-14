@@ -139,19 +139,23 @@ class CheckoutRecoveryTests(unittest.TestCase):
         )
         self.assertLess(prepare_index, initial_click_index)
         self.assertLess(initial_click_index, settle_index)
-        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 3)
-        self.assertEqual(branch.count("await refreshed_payment_btn.click(force=True)"), 1)
+        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
         self.assertIn("Submitting checkout again immediately after", branch)
-        self.assertIn("Refreshing Talon after it processed", branch)
-        self.assertIn("Submitting checkout with the refreshed", branch)
-        self.assertIn("await self._active_purchase_container(page)", branch)
-        self.assertIn("await refreshed_payment_btn.is_enabled()", branch)
-        self.assertIn("captcha_rejection_processed", branch)
-        self.assertIn("talon_refresh_ready", branch)
-        self.assertIn("talon_refresh_started", branch)
+        self.assertNotIn("captcha_rejection_processed", branch)
+        self.assertNotIn("talon_refresh_ready", branch)
+        self.assertNotIn("talon_refresh_started", branch)
         self.assertNotIn("post_captcha_talon_ready", branch)
         self.assertNotIn("for transaction_attempt", branch)
         self.assertNotIn("Submitting checkout after the rejected", branch)
+
+    def test_mobile_captcha_rejection_retries_only_in_a_fresh_transaction(self):
+        source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("_allow_captcha_retry", source)
+        self.assertIn("EPIC_CAPTCHA_CHALLENGE_FAILED", source)
+        self.assertIn("retried_after_explicit_captcha_rejection", source)
+        self.assertIn("collect_mobile_offer(\n            page,\n            offer,\n            _allow_captcha_retry=False", source)
 
     def test_optional_talon_settling_delay_holds_the_original_request(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
