@@ -15,10 +15,12 @@ def load_detectors():
         "CLOUDFLARE_BODY_MARKERS",
         "EPIC_HCAPTCHA_HTML_MARKERS",
         "EPIC_EMAIL_TRANSACTION_ERROR_MARKERS",
+        "EPIC_DIAGNOSTIC_SECRET_MARKERS",
         "is_cloudflare_security_check",
         "is_epic_hcaptcha_challenge",
         "is_epic_email_transaction_failure",
         "is_recoverable_epic_captcha_error",
+        "sanitize_epic_response_payload",
     }
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -35,6 +37,7 @@ def load_detectors():
         namespace["is_epic_hcaptcha_challenge"],
         namespace["is_epic_email_transaction_failure"],
         namespace["is_recoverable_epic_captcha_error"],
+        namespace["sanitize_epic_response_payload"],
     )
 
 
@@ -43,6 +46,7 @@ def load_detectors():
     is_epic_hcaptcha_challenge,
     is_epic_email_transaction_failure,
     is_recoverable_epic_captcha_error,
+    sanitize_epic_response_payload,
 ) = load_detectors()
 
 
@@ -122,6 +126,39 @@ class EpicEmailTransactionTests(unittest.TestCase):
                 "errors.com.epicgames.account.invalid_account_credentials"
             )
         )
+
+
+class EpicResponseDiagnosticTests(unittest.TestCase):
+    def test_redacts_nested_credentials_and_captcha_values(self):
+        payload = {
+            "errorCode": "errors.com.epicgames.purchase.invalid_captcha",
+            "errorMessage": "The order was rejected",
+            "captchaToken": "captcha-value",
+            "details": {
+                "authorization": "Bearer value",
+                "cookieValue": "session=value",
+                "reason": "captcha validation failed",
+            },
+        }
+
+        sanitized = sanitize_epic_response_payload(payload)
+
+        self.assertEqual(
+            sanitized["errorCode"],
+            "errors.com.epicgames.purchase.invalid_captcha",
+        )
+        self.assertEqual(sanitized["captchaToken"], "***")
+        self.assertEqual(sanitized["details"]["authorization"], "***")
+        self.assertEqual(sanitized["details"]["cookieValue"], "***")
+        self.assertEqual(
+            sanitized["details"]["reason"], "captcha validation failed"
+        )
+
+    def test_truncates_unbounded_response_strings(self):
+        sanitized = sanitize_epic_response_payload(
+            {"errorMessage": "x" * 20}, max_string_length=8
+        )
+        self.assertEqual(sanitized["errorMessage"], "xxxxxxxx...<truncated>")
 
 
 if __name__ == "__main__":

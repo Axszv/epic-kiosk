@@ -34,6 +34,15 @@ EPIC_EMAIL_TRANSACTION_ERROR_MARKERS = (
     "incorrect response",
     "please refresh the page",
 )
+EPIC_DIAGNOSTIC_SECRET_MARKERS = (
+    "authorization",
+    "captcha",
+    "cookie",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
 
 
 def is_cloudflare_security_check(title: str, body_text: str, url: str = "") -> bool:
@@ -65,6 +74,29 @@ def is_recoverable_epic_captcha_error(error_code: str) -> bool:
     """Return whether Epic asks the browser to restart its captcha transaction."""
     normalized = (error_code or "").casefold()
     return "captcha_invalid" in normalized or "csrf_token_invalid" in normalized
+
+
+def sanitize_epic_response_payload(value, *, max_string_length: int = 1000):
+    """Redact credentials and captcha material before writing API diagnostics."""
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            normalized_key = str(key).casefold()
+            if any(marker in normalized_key for marker in EPIC_DIAGNOSTIC_SECRET_MARKERS):
+                sanitized[key] = "***"
+            else:
+                sanitized[key] = sanitize_epic_response_payload(
+                    item, max_string_length=max_string_length
+                )
+        return sanitized
+    if isinstance(value, list):
+        return [
+            sanitize_epic_response_payload(item, max_string_length=max_string_length)
+            for item in value
+        ]
+    if isinstance(value, str) and len(value) > max_string_length:
+        return f"{value[:max_string_length]}...<truncated>"
+    return value
 
 
 class ErrorType(Enum):
@@ -307,6 +339,24 @@ class EpicAuthorization:
 
     async def _on_response_anything(self, r: Response):
         if r.request.method != "POST" or "talon" in r.url:
+            return
+
+        if "/purchase/confirm-order" in r.url:
+            body_text = ""
+            response_payload = None
+            with suppress(Exception):
+                body_text = await r.text()
+            with suppress(Exception):
+                response_payload = json.loads(body_text)
+            if response_payload is None:
+                response_payload = {"body": body_text}
+            safe_payload = sanitize_epic_response_payload(response_payload)
+            log_method = logger.warning if r.status >= 400 else logger.debug
+            log_method(
+                "Epic confirm-order response: "
+                f"HTTP {r.status} | "
+                f"{json.dumps(safe_payload, ensure_ascii=False)[:4000]}"
+            )
             return
 
         if "/id/api/email/exists" in r.url:
