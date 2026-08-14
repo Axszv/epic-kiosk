@@ -76,14 +76,14 @@ def is_retryable_confirm_order_failure(status: int, payload: dict[str, Any]) -> 
 
 def is_checkout_diagnostic_url(url: str) -> bool:
     parsed = urlsplit(url)
+    normalized_url = url.casefold()
     host = parsed.netloc.casefold()
-    path = parsed.path.casefold()
-    if "talon" in host or "ecosec" in host:
+    if "talon" in normalized_url or "ecosec" in normalized_url:
         return True
-    if "/purchase/confirm-order" in path:
+    if "/purchase/confirm-order" in normalized_url:
         return True
     return "epic" in host and any(
-        marker in path for marker in CHECKOUT_DIAGNOSTIC_URL_MARKERS
+        marker in normalized_url for marker in CHECKOUT_DIAGNOSTIC_URL_MARKERS
     )
 
 

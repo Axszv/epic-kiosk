@@ -171,6 +171,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
 
         self.assertTrue(matches("https://talon-service-prod.ecosec.on.epicgames.com/v1/execute"))
         self.assertTrue(matches("https://payment-website-pci.ol.epicgames.com/purchase/confirm-order"))
+        self.assertTrue(matches("https://payment.epicgames.com/proxy?target=/purchase/confirm-order"))
         self.assertTrue(matches("https://store.epicgames.com/api/risk/evaluate"))
         self.assertFalse(matches("https://store.epicgames.com/en-US/p/example"))
 
