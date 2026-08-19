@@ -1151,7 +1151,10 @@ class EpicGames:
                                     "The post-captcha click did not require a Talon refresh"
                                 )
                             else:
-                                await payment_btn.wait_for(
+                                _, refreshed_payment_btn = (
+                                    await self._active_purchase_container(page)
+                                )
+                                await refreshed_payment_btn.wait_for(
                                     state="visible", timeout=10000
                                 )
                                 logger.info(
@@ -1159,7 +1162,7 @@ class EpicGames:
                                 )
                                 while not confirm_order_responses.empty():
                                     confirm_order_responses.get_nowait()
-                                await payment_btn.click(force=True)
+                                await refreshed_payment_btn.click(force=True)
                         except Exception:
                             logger.debug(
                                 "Checkout control closed before the post-Talon submit"
