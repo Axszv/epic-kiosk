@@ -107,7 +107,7 @@ class EpicHcaptchaDetectionTests(unittest.TestCase):
         start = source.index("async def _handle_right_account_validation")
         end = source.index("async def _login", start)
         branch = source[start:end]
-        self.assertIn('getattr(agent, "prepare_for_new_challenge", None)', branch)
+        self.assertIn("prepare_for_new_challenge = getattr", branch)
         self.assertIn("validation_deadline = time.monotonic() + 30", branch)
         self.assertIn("time.monotonic() < validation_deadline", branch)
 
@@ -131,6 +131,16 @@ class EpicHcaptchaDetectionTests(unittest.TestCase):
         self.assertIn("except PlaywrightTimeoutError:", branch)
         self.assertIn("继续观察 hCaptcha 或密码页状态", branch)
         self.assertNotIn("if not await self._has_hcaptcha_challenge()", branch)
+
+    def test_email_transaction_recovery_resets_hcaptcha_agent(self):
+        source = AUTHORIZATION_SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def recover_email_transaction")
+        end = source.index("# Keep this coordinator alive", start)
+        branch = source[start:end]
+
+        self.assertIn("prepare_for_new_challenge = getattr", branch)
+        self.assertIn("prepare_for_new_challenge()", branch)
+        self.assertIn("恢复邮箱事务的继续按钮点击等待超时", branch)
 
 
 class EpicEmailTransactionTests(unittest.TestCase):

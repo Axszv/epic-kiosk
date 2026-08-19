@@ -761,6 +761,11 @@ class EpicAuthorization:
                     )
                     await self.page.goto(point_url, wait_until="domcontentloaded")
                     await self.page.wait_for_timeout(1500)
+                    prepare_for_new_challenge = getattr(
+                        agent, "prepare_for_new_challenge", None
+                    )
+                    if callable(prepare_for_new_challenge):
+                        prepare_for_new_challenge()
                     if self._has_refresh_csrf_session():
                         self._is_login_success_signal.put_nowait({"csrf": True})
                         return True
@@ -776,7 +781,12 @@ class EpicAuthorization:
                     await email_box.type(settings.EPIC_EMAIL)
                     continue_button = self.page.locator("#continue")
                     await expect(continue_button).to_be_enabled(timeout=30000)
-                    await continue_button.click(timeout=5000, no_wait_after=True)
+                    try:
+                        await continue_button.click(timeout=5000, no_wait_after=True)
+                    except PlaywrightTimeoutError:
+                        logger.info(
+                            "恢复邮箱事务的继续按钮点击等待超时，继续观察 hCaptcha 或密码页状态"
+                        )
                     return True
 
                 # Keep this coordinator alive for the full login wait. Epic can
