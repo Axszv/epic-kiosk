@@ -38,7 +38,7 @@ URL_PRODUCT_BUNDLES = "https://store.epicgames.com/en-US/bundles/"
 URL_ACCOUNT_ORIGIN = "https://accounts.epicgames.com/"
 URL_ACCOUNT_TRANSACTIONS = f"{URL_ACCOUNT_ORIGIN}account/transactions?lang=en-US"
 URL_ORDER_HISTORY = f"{URL_ACCOUNT_ORIGIN}account/v2/payment/ajaxGetOrderHistory"
-URL_CONFIRM_ORDER = "https://payment-website-pci.ol.epicgames.com/v2/purchase/confirm-order"
+URL_CONFIRM_ORDER = "**/purchase/confirm-order**"
 
 REGION_UNAVAILABLE_MARKERS = (
     "currently unavailable in your platform or region",
@@ -1079,10 +1079,18 @@ class EpicGames:
                         for marker in CHECKOUT_DIAGNOSTIC_SECRET_MARKERS
                     ):
                         summary[f"header.{key}"] = diagnostic_fingerprint(value)
+            frame_url = ""
+            with suppress(Exception):
+                frame_url = request.frame.url if request.frame else ""
             logger.info(
                 "CHECKOUT_NET_REQUEST:"
                 f"{trace_id}:{request.method}:{parsed_url.netloc}{parsed_url.path}:"
-                f"{json.dumps(summary, ensure_ascii=False, sort_keys=True)}"
+                f"{json.dumps({
+                    "url": request.url,
+                    "resource_type": request.resource_type,
+                    "frame_url": frame_url,
+                    "body": summary,
+                }, ensure_ascii=False, sort_keys=True)}"
             )
 
         async def capture_confirm_order_response(response) -> None:

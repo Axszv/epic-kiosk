@@ -243,6 +243,11 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertTrue(matches("https://store.epicgames.com/api/risk/evaluate"))
         self.assertFalse(matches("https://store.epicgames.com/en-US/p/example"))
 
+    def test_checkout_route_matches_query_string_variants(self):
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('URL_CONFIRM_ORDER = "**/purchase/confirm-order**"', source)
+        self.assertIn('await page.route(URL_CONFIRM_ORDER, hold_first_confirm_order)', source)
+
     def test_checkout_network_diagnostics_only_emit_secret_fingerprints(self):
         helpers = self._load_diagnostic_helpers()
         summarize = helpers["checkout_body_summary"]
