@@ -107,7 +107,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         source = (ROOT / "app/services/epic_games_service.py").read_text(
             encoding="utf-8"
         )
-        prepare_index = source.index("agent.prepare_for_new_challenge()")
+        prepare_index = source.index("prepare_for_new_challenge = getattr(agent")
         click_index = source.index("await payment_btn.click(force=True)", prepare_index)
 
         self.assertLess(prepare_index, click_index)

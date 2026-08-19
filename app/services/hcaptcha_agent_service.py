@@ -931,6 +931,11 @@ def get_hcaptcha_agent(page: Page) -> AgentV:
     return agent
 
 
+def get_legacy_checkout_agent(page: Page) -> AgentV:
+    """Construct the original checkout agent for regression comparison."""
+    return AgentV(page=page, agent_config=settings)
+
+
 def replace_hcaptcha_agent(page: Page) -> AgentV:
     """Replace the page agent before a new checkout transaction.
 
