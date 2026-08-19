@@ -175,6 +175,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("confirm_order_request_counter", branch)
         self.assertIn("Submitting confirm-order with refreshed Talon state", branch)
         self.assertIn("wait_for_post_refresh_activity", branch)
+        self.assertIn("hCaptcha overlay after validated response", branch)
         self.assertIn("for phase_attempt in range(1, 4)", branch)
         self.assertIn('return "confirm_order_request"', branch)
         self.assertIn("CHECKOUT_BUTTON_STATE", source)

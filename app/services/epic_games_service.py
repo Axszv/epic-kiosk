@@ -1204,6 +1204,16 @@ class EpicGames:
                     else:
                         with suppress(Exception):
                             await agent.sync_validated_captcha_response()
+                        close_deadline = asyncio.get_running_loop().time() + 10
+                        while (
+                            await self._has_visible_hcaptcha(page)
+                            and asyncio.get_running_loop().time() < close_deadline
+                        ):
+                            await page.wait_for_timeout(250)
+                        logger.info(
+                            "hCaptcha overlay after validated response: "
+                            f"visible={await self._has_visible_hcaptcha(page)}"
+                        )
                         # Epic creates the first confirm-order body before Talon has
                         # finished consuming hCaptcha's success callback. Waiting
                         # before clicking is important: delaying the already-built

@@ -86,6 +86,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("HCAPTCHA_RESPONSE_SYNC", source)
         self.assertIn("capturedCallbackCount", source)
         self.assertIn("api.close(widgetId)", source)
+        self.assertIn("api.close()", source)
         self.assertIn('page.remove_listener("response", agent._task_handler)', source)
 
     def test_replacing_agent_detaches_the_previous_response_listener(self):

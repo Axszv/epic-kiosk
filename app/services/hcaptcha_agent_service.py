@@ -174,10 +174,14 @@ class EpicAgentV(AgentV):
                             }
                             bridge.lastToken = token;
                         }
-                        if (api && typeof api.close === 'function' && bridge) {
-                            for (const widgetId of bridge.widgetIds) {
+                        if (api && typeof api.close === 'function') {
+                            const widgetIds = bridge && bridge.widgetIds.length
+                                ? bridge.widgetIds
+                                : [undefined];
+                            for (const widgetId of widgetIds) {
                                 try {
-                                    api.close(widgetId);
+                                    if (widgetId === undefined) api.close();
+                                    else api.close(widgetId);
                                     closeCount += 1;
                                 } catch (_) {}
                             }
