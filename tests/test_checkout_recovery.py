@@ -156,8 +156,9 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("payment_btn.is_visible(timeout=500)", branch)
         self.assertIn("CHECKOUT_BUTTON_STATE", source)
         self.assertIn("await self._active_purchase_container(page)", branch)
-        self.assertIn("Reacquire both the frame and button", branch)
-        self.assertIn("Discarded stale automatic confirm-order", branch)
+        self.assertIn("Triggering Talon refresh after validated hCaptcha", branch)
+        self.assertIn("minimum_response_sequence", branch)
+        self.assertIn('payment_btn.evaluate("element => element.click()")', branch)
 
     def test_mobile_checkout_does_not_repeat_an_expensive_rejected_transaction(self):
         source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
