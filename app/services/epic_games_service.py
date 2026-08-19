@@ -970,6 +970,54 @@ class EpicGames:
                         return True
         return False
 
+    @staticmethod
+    async def _log_checkout_button_state(button: Any, phase: str) -> None:
+        try:
+            state = await button.evaluate(
+                """element => {
+                    const rect = element.getBoundingClientRect();
+                    const centerX = rect.left + rect.width / 2;
+                    const centerY = rect.top + rect.height / 2;
+                    const hit = document.elementFromPoint(centerX, centerY);
+                    const style = window.getComputedStyle(element);
+                    return {
+                        tag: element.tagName,
+                        text: (element.innerText || element.textContent || '').trim(),
+                        type: element.getAttribute('type'),
+                        testid: element.getAttribute('data-testid'),
+                        className: typeof element.className === 'string'
+                            ? element.className
+                            : '',
+                        disabled: Boolean(element.disabled),
+                        ariaDisabled: element.getAttribute('aria-disabled'),
+                        connected: element.isConnected,
+                        pointerEvents: style.pointerEvents,
+                        visibility: style.visibility,
+                        opacity: style.opacity,
+                        rect: {
+                            x: Math.round(rect.x),
+                            y: Math.round(rect.y),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height),
+                        },
+                        hit: hit ? {
+                            tag: hit.tagName,
+                            text: (hit.innerText || hit.textContent || '').trim().slice(0, 120),
+                            testid: hit.getAttribute('data-testid'),
+                            className: typeof hit.className === 'string'
+                                ? hit.className
+                                : '',
+                        } : null,
+                    };
+                }"""
+            )
+            logger.info(
+                f"CHECKOUT_BUTTON_STATE:{phase}:"
+                f"{json.dumps(state, ensure_ascii=False, sort_keys=True)}"
+            )
+        except Exception as err:
+            logger.warning(f"CHECKOUT_BUTTON_STATE:{phase}:inspect_failed:{err}")
+
     async def _handle_instant_checkout(self, page: Page) -> bool:
         logger.info("🚀 开始即时结账流程...")
         agent = replace_hcaptcha_agent(page)
@@ -980,6 +1028,7 @@ class EpicGames:
         post_captcha_refresh_requested = asyncio.Event()
         post_captcha_talon_started = asyncio.Event()
         post_captcha_talon_ready = asyncio.Event()
+        post_captcha_talon_batch_counter = 0
 
         async def delay_first_confirm_order(route) -> None:
             nonlocal delay_first_confirm
@@ -1019,6 +1068,7 @@ class EpicGames:
             )
 
         async def capture_confirm_order_response(response) -> None:
+            nonlocal post_captcha_talon_batch_counter
             parsed_url = urlsplit(response.url)
             if (
                 post_captcha_refresh_requested.is_set()
@@ -1033,8 +1083,12 @@ class EpicGames:
                 and parsed_url.path.endswith("/v1/phaser/batch")
                 and 200 <= response.status < 300
             ):
+                post_captcha_talon_batch_counter += 1
                 post_captcha_talon_ready.set()
-                logger.debug("Talon completed the post-captcha checkout refresh")
+                logger.debug(
+                    "Talon completed post-captcha checkout phase "
+                    f"{post_captcha_talon_batch_counter}"
+                )
             if is_checkout_diagnostic_url(response.url):
                 trace_id = checkout_request_ids.get(id(response.request), 0)
                 body_text = ""
@@ -1070,6 +1124,32 @@ class EpicGames:
                     return {"button_hidden": True}
                 await page.wait_for_timeout(250)
             return {}
+
+        async def wait_for_post_refresh_activity(
+            button: Any,
+            talon_batch_baseline: int,
+            request_baseline: int,
+            timeout_seconds: float = 8,
+        ) -> str:
+            deadline = asyncio.get_running_loop().time() + timeout_seconds
+            while asyncio.get_running_loop().time() < deadline:
+                if not confirm_order_responses.empty():
+                    return "confirm_order"
+                if post_captcha_talon_batch_counter > talon_batch_baseline:
+                    return "talon_batch"
+                try:
+                    if not await button.is_visible():
+                        return "button_hidden"
+                except Exception:
+                    return "button_hidden"
+                await page.wait_for_timeout(250)
+            logger.info(
+                "Post-refresh checkout click produced no decisive activity: "
+                f"requests_before={request_baseline}, requests_after={checkout_request_counter}, "
+                f"talon_batches_before={talon_batch_baseline}, "
+                f"talon_batches_after={post_captcha_talon_batch_counter}"
+            )
+            return "none"
 
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
@@ -1151,18 +1231,49 @@ class EpicGames:
                                     "The post-captcha click did not require a Talon refresh"
                                 )
                             else:
-                                _, refreshed_payment_btn = (
-                                    await self._active_purchase_container(page)
-                                )
-                                await refreshed_payment_btn.wait_for(
-                                    state="visible", timeout=10000
-                                )
-                                logger.info(
-                                    "Submitting confirm-order with refreshed Talon state"
-                                )
-                                while not confirm_order_responses.empty():
-                                    confirm_order_responses.get_nowait()
-                                await refreshed_payment_btn.click(force=True)
+                                for phase_attempt in range(1, 3):
+                                    _, refreshed_payment_btn = (
+                                        await self._active_purchase_container(page)
+                                    )
+                                    await refreshed_payment_btn.wait_for(
+                                        state="visible", timeout=10000
+                                    )
+                                    await self._log_checkout_button_state(
+                                        refreshed_payment_btn,
+                                        f"post_talon_{phase_attempt}_before",
+                                    )
+                                    while not confirm_order_responses.empty():
+                                        confirm_order_responses.get_nowait()
+                                    request_baseline = checkout_request_counter
+                                    talon_batch_baseline = (
+                                        post_captcha_talon_batch_counter
+                                    )
+                                    logger.info(
+                                        "Submitting confirm-order with refreshed Talon state "
+                                        f"[{phase_attempt}/2]"
+                                    )
+                                    if phase_attempt == 1:
+                                        await refreshed_payment_btn.click(force=True)
+                                    else:
+                                        await refreshed_payment_btn.evaluate(
+                                            "element => element.click()"
+                                        )
+                                    activity = await wait_for_post_refresh_activity(
+                                        refreshed_payment_btn,
+                                        talon_batch_baseline,
+                                        request_baseline,
+                                    )
+                                    logger.info(
+                                        "Post-refresh checkout activity "
+                                        f"[{phase_attempt}/2]: {activity}"
+                                    )
+                                    if activity in {
+                                        "confirm_order",
+                                        "button_hidden",
+                                    }:
+                                        break
+                                    if phase_attempt < 2:
+                                        await page.wait_for_timeout(1000)
                         except Exception:
                             logger.debug(
                                 "Checkout control closed before the post-Talon submit"
