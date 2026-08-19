@@ -1135,7 +1135,7 @@ class EpicGames:
             payment_btn: Any,
             confirm_order_request_baseline: int,
             talon_batch_baseline: int,
-            timeout_seconds: float = 15,
+            timeout_seconds: float = 45,
         ) -> str:
             deadline = asyncio.get_running_loop().time() + timeout_seconds
             while asyncio.get_running_loop().time() < deadline:
