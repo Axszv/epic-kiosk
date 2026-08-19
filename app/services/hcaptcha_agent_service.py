@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import time
 from contextlib import suppress
 from typing import Any
@@ -104,6 +105,7 @@ class EpicAgentV(AgentV):
     def __init__(self, *args, **kwargs):
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
+        self._validated_captcha_token = ""
         super().__init__(*args, **kwargs)
         # Upstream requires an exact visible `.challenge-view`, which misses
         # Epic's hCaptcha when it is nested inside the purchase iframe.
@@ -137,6 +139,142 @@ class EpicAgentV(AgentV):
             f"token_present={bool(token)}, token_length={len(token)}, "
             f"token_sha256={fingerprint}, expiration={expiration}"
         )
+
+    async def sync_validated_captcha_response(self) -> list[dict[str, Any]]:
+        """Mirror the validated pass into Epic's page-scoped hCaptcha widget."""
+        token = self._validated_captcha_token
+        if not token:
+            return []
+
+        results: list[dict[str, Any]] = []
+        for frame in self.page.frames:
+            with suppress(Exception):
+                result = await frame.evaluate(
+                    """token => {
+                        const textareaNames = [
+                            'textarea[name="h-captcha-response"]',
+                            'textarea[name="g-recaptcha-response"]',
+                        ];
+                        const textareas = textareaNames.flatMap(selector =>
+                            Array.from(document.querySelectorAll(selector))
+                        );
+                        for (const textarea of textareas) {
+                            textarea.value = token;
+                            textarea.dispatchEvent(new Event('input', {bubbles: true}));
+                            textarea.dispatchEvent(new Event('change', {bubbles: true}));
+                        }
+                        const api = window.hcaptcha;
+                        const bridge = window.__epicHcaptchaBridge;
+                        let callbackCount = 0;
+                        let closeCount = 0;
+                        if (bridge && bridge.lastToken !== token) {
+                            for (const callback of bridge.callbacks) {
+                                callback(token);
+                                callbackCount += 1;
+                            }
+                            bridge.lastToken = token;
+                        }
+                        if (api && typeof api.close === 'function' && bridge) {
+                            for (const widgetId of bridge.widgetIds) {
+                                try {
+                                    api.close(widgetId);
+                                    closeCount += 1;
+                                } catch (_) {}
+                            }
+                        }
+
+                        let responseLength = 0;
+                        if (api && typeof api.getResponse === 'function') {
+                            try {
+                                responseLength = (api.getResponse() || '').length;
+                            } catch (_) {
+                                responseLength = 0;
+                            }
+                        }
+                        return {
+                            textareaCount: textareas.length,
+                            callbackCount,
+                            closeCount,
+                            capturedCallbackCount: bridge ? bridge.callbacks.length : 0,
+                            widgetCount: bridge ? bridge.widgetIds.length : 0,
+                            responseLength,
+                        };
+                    }""",
+                    token,
+                )
+                if result and any(result.values()):
+                    result["frameUrl"] = frame.url[:180]
+                    results.append(result)
+        logger.info(
+            "HCAPTCHA_RESPONSE_SYNC:"
+            f"{json.dumps(results, ensure_ascii=False, sort_keys=True)}"
+        )
+        return results
+
+    async def install_hcaptcha_callback_bridge(self) -> None:
+        bridge_script = """() => {
+            if (window.__epicHcaptchaBridgeInstalled) return;
+            window.__epicHcaptchaBridgeInstalled = true;
+            const bridge = window.__epicHcaptchaBridge = {
+                callbacks: [],
+                widgetIds: [],
+                lastToken: '',
+            };
+            const resolveCallback = callback => {
+                if (typeof callback === 'function') return callback;
+                if (typeof callback === 'string' && typeof window[callback] === 'function') {
+                    return window[callback];
+                }
+                return null;
+            };
+            const wrapApi = api => {
+                if (!api || api.__epicCallbackBridgeWrapped) return api;
+                const originalRender = api.render;
+                if (typeof originalRender !== 'function') return api;
+                api.render = function(container, options, ...rest) {
+                    let nextOptions = options;
+                    if (options && typeof options === 'object') {
+                        const originalCallback = resolveCallback(options.callback);
+                        if (originalCallback) {
+                            bridge.callbacks.push(originalCallback);
+                            nextOptions = {...options};
+                            nextOptions.callback = function(token, ...args) {
+                                bridge.lastToken = token || '';
+                                return originalCallback.call(this, token, ...args);
+                            };
+                        }
+                    }
+                    const widgetId = originalRender.call(this, container, nextOptions, ...rest);
+                    if (widgetId !== undefined && widgetId !== null) {
+                        bridge.widgetIds.push(widgetId);
+                    }
+                    return widgetId;
+                };
+                Object.defineProperty(api, '__epicCallbackBridgeWrapped', {
+                    value: true,
+                    configurable: true,
+                });
+                return api;
+            };
+
+            let apiValue = window.hcaptcha;
+            if (apiValue) wrapApi(apiValue);
+            try {
+                Object.defineProperty(window, 'hcaptcha', {
+                    configurable: true,
+                    enumerable: true,
+                    get: () => apiValue,
+                    set: value => {
+                        apiValue = wrapApi(value);
+                    },
+                });
+            } catch (_) {}
+        }"""
+        await self.page.add_init_script(bridge_script)
+        for frame in self.page.frames:
+            with suppress(Exception):
+                await frame.evaluate(bridge_script)
+        logger.debug("Installed page-scoped hCaptcha callback bridge")
 
     @staticmethod
     def _normalize_drag_prompt(value: str) -> str:
@@ -650,6 +788,9 @@ class EpicAgentV(AgentV):
             while not self._captcha_response_queue.empty():
                 response = self._captcha_response_queue.get_nowait()
                 if response and response.is_pass:
+                    self._validated_captcha_token = str(
+                        getattr(response, "generated_pass_UUID", "") or ""
+                    )
                     logger.success(
                         f"Challenge success: {self._captcha_pass_metadata(response)}"
                     )

@@ -1021,6 +1021,7 @@ class EpicGames:
     async def _handle_instant_checkout(self, page: Page) -> bool:
         logger.info("🚀 开始即时结账流程...")
         agent = replace_hcaptcha_agent(page)
+        await agent.install_hcaptcha_callback_bridge()
         confirm_order_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
@@ -1201,6 +1202,8 @@ class EpicGames:
                     if not challenge_succeeded:
                         logger.warning(f"结账验证码结果: {challenge_result}")
                     else:
+                        with suppress(Exception):
+                            await agent.sync_validated_captcha_response()
                         # Epic creates the first confirm-order body before Talon has
                         # finished consuming hCaptcha's success callback. Waiting
                         # before clicking is important: delaying the already-built

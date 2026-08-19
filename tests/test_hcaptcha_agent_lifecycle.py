@@ -81,6 +81,11 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("Corrected hCaptcha drag source", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
         self.assertIn("replace_hcaptcha_agent", source)
+        self.assertIn("sync_validated_captcha_response", source)
+        self.assertIn("install_hcaptcha_callback_bridge", source)
+        self.assertIn("HCAPTCHA_RESPONSE_SYNC", source)
+        self.assertIn("capturedCallbackCount", source)
+        self.assertIn("api.close(widgetId)", source)
         self.assertIn('page.remove_listener("response", agent._task_handler)', source)
 
     def test_replacing_agent_detaches_the_previous_response_listener(self):
