@@ -137,11 +137,11 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("confirm_order_responses", branch)
         self.assertIn("agent.prepare_for_new_challenge()", branch)
         self.assertIn("await page.wait_for_timeout(3000)", branch)
-        self.assertIn("hold_first_confirm_order", branch)
-        self.assertIn("captcha_validation_done", branch)
-        self.assertIn("Holding the first confirm-order request", branch)
-        self.assertIn("Releasing the first confirm-order request after hCaptcha validation", branch)
-        self.assertIn("URL_CONFIRM_ORDER", branch)
+        self.assertNotIn("hold_first_confirm_order", branch)
+        self.assertNotIn("captcha_validation_done", branch)
+        self.assertIn("Submitting checkout [initial]", branch)
+        self.assertIn("Submitting checkout [validated]", branch)
+        self.assertIn('"/purchase/confirm-order"', branch)
         prepare_index = branch.index("agent.prepare_for_new_challenge()")
         initial_click_index = branch.index(
             "await payment_btn.click(force=True)", prepare_index
@@ -156,9 +156,8 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("payment_btn.is_visible(timeout=500)", branch)
         self.assertIn("CHECKOUT_BUTTON_STATE", source)
         self.assertIn("await self._active_purchase_container(page)", branch)
-        self.assertIn("Submitting checkout immediately after validated hCaptcha", branch)
-        self.assertNotIn("post_captcha_refresh_requested", branch)
-        self.assertNotIn("Submitting confirm-order with refreshed Talon state", branch)
+        self.assertIn("Reacquire both the frame and button", branch)
+        self.assertIn("Discarded stale automatic confirm-order", branch)
 
     def test_mobile_checkout_does_not_repeat_an_expensive_rejected_transaction(self):
         source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
@@ -178,21 +177,15 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertLess(rendered_scan, text_fallback)
         self.assertIn("timeout: int = 500", branch)
 
-    def test_optional_talon_settling_delay_holds_the_original_request(self):
+    def test_checkout_does_not_hold_the_stale_confirm_order_request(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _handle_instant_checkout")
         end = source.index("async def add_promotion_to_cart", start)
         branch = source[start:end]
 
-        self.assertIn("CHECKOUT_CONFIRM_DELAY_MS", branch)
-        self.assertIn("await route.continue_()", branch)
-        self.assertIn("Holding the first confirm-order request", branch)
-        self.assertIn("Releasing the first confirm-order request after hCaptcha validation", branch)
-        self.assertNotIn('route.abort("blockedbyclient")', branch)
-        self.assertLess(
-            branch.index("captcha_validation_done.wait()"),
-            branch.index("await route.continue_()"),
-        )
+        self.assertNotIn("await page.route(URL_CONFIRM_ORDER", branch)
+        self.assertNotIn("await route.continue_()", branch)
+        self.assertIn("Submitting checkout [validated]", branch)
 
     def test_captcha_failure_detector_is_exact(self):
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
@@ -247,7 +240,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
     def test_checkout_route_matches_query_string_variants(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         self.assertIn('URL_CONFIRM_ORDER = "**/purchase/confirm-order**"', source)
-        self.assertIn('await page.route(URL_CONFIRM_ORDER, hold_first_confirm_order)', source)
+        self.assertIn('"/purchase/confirm-order" in request.url', source)
 
     def test_checkout_network_diagnostics_only_emit_secret_fingerprints(self):
         helpers = self._load_diagnostic_helpers()
