@@ -512,6 +512,10 @@ class EpicAuthorization:
         Returns:
 
         """
+        prepare_for_new_challenge = getattr(agent, "prepare_for_new_challenge", None)
+        if callable(prepare_for_new_challenge):
+            prepare_for_new_challenge()
+
         try:
             await self.page.goto(
                 "https://www.epicgames.com/account/personal",
@@ -530,14 +534,28 @@ class EpicAuthorization:
 
         # == 账号长期不登录需要做的额外验证 == #
 
-        with suppress(Exception):
-            await asyncio.wait_for(
-                agent.wait_for_challenge(),
-                timeout=min(settings.EXECUTION_TIMEOUT, 90),
-            )
+        wait_for_challenge_start = getattr(agent, "wait_for_challenge_start", None)
+        challenge_started = False
+        if callable(wait_for_challenge_start):
+            with suppress(Exception):
+                challenge_started = await wait_for_challenge_start(timeout_seconds=5)
+        else:
+            challenge_started = await self._has_hcaptcha_challenge()
+
+        if challenge_started:
+            with suppress(Exception):
+                await asyncio.wait_for(
+                    agent.wait_for_challenge(),
+                    timeout=min(settings.EXECUTION_TIMEOUT, 90),
+                )
         await self.page.wait_for_timeout(500)
 
-        while not self._has_refresh_csrf_session() and btn_ids:
+        validation_deadline = time.monotonic() + 30
+        while (
+            not self._has_refresh_csrf_session()
+            and btn_ids
+            and time.monotonic() < validation_deadline
+        ):
             await self.page.wait_for_timeout(500)
             action_chains = btn_ids.copy()
             for action in action_chains:
@@ -629,7 +647,9 @@ class EpicAuthorization:
 
                 # 2. 点击继续按钮
                 try:
-                    await self.page.click("#continue", timeout=10000)
+                    continue_button = self.page.locator("#continue")
+                    await expect(continue_button).to_be_enabled(timeout=30000)
+                    await continue_button.click(timeout=5000, no_wait_after=True)
                 except Exception:
                     if not await self._has_hcaptcha_challenge():
                         raise
@@ -751,7 +771,9 @@ class EpicAuthorization:
                     await email_box.wait_for(state="visible", timeout=60000)
                     await email_box.clear()
                     await email_box.type(settings.EPIC_EMAIL)
-                    await self.page.click("#continue", timeout=10000)
+                    continue_button = self.page.locator("#continue")
+                    await expect(continue_button).to_be_enabled(timeout=30000)
+                    await continue_button.click(timeout=5000, no_wait_after=True)
                     return True
 
                 # Keep this coordinator alive for the full login wait. Epic can

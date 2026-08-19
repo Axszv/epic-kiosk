@@ -10,7 +10,7 @@ from weakref import WeakKeyDictionary
 from hcaptcha_challenger.agent import AgentV
 from hcaptcha_challenger.models import ChallengeSignal
 from loguru import logger
-from playwright.async_api import Page
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from settings import settings
 
@@ -548,6 +548,21 @@ class EpicAgentV(AgentV):
                     f"Challenge execution timed out after {self.config.EXECUTION_TIMEOUT}s"
                 )
                 return ChallengeSignal.EXECUTION_TIMEOUT
+            except PlaywrightTimeoutError as err:
+                # hCaptcha can close or replace the challenge DOM after the
+                # payload was queued. Upstream then waits 30 seconds for a
+                # stale `.challenge-view` screenshot and leaks the exception.
+                # Let any response/new payload win; otherwise finish this
+                # transaction without trapping the caller in a long timeout.
+                logger.warning(f"hCaptcha challenge DOM changed while solving: {err}")
+                if not self._captcha_response_queue.empty():
+                    continue
+                if not await self._has_visible_challenge_frame():
+                    logger.warning("hCaptcha challenge closed before it could be captured")
+                    return ChallengeSignal.FAILURE
+                if not self._captcha_payload_queue.empty():
+                    self._keep_latest_payload()
+                continue
 
             response_deadline = min(
                 deadline,

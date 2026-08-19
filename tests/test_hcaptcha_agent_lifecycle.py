@@ -174,6 +174,19 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         agent._cache_validated_captcha_response.assert_called_once_with(response)
 
+    def test_agent_handles_a_stale_challenge_dom_without_leaking_timeout(self):
+        source = (ROOT / "app/services/hcaptcha_agent_service.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("async def wait_for_challenge")
+        end = source.index("async def _task_handler", start)
+        branch = source[start:end]
+        self.assertIn("except PlaywrightTimeoutError as err:", branch)
+        self.assertIn(
+            'return ChallengeSignal.FAILURE',
+            branch,
+        )
+
     def test_agent_keeps_only_latest_pending_payload(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
         agent = module.EpicAgentV.__new__(module.EpicAgentV)

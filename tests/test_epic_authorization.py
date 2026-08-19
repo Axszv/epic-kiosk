@@ -102,6 +102,26 @@ class EpicHcaptchaDetectionTests(unittest.TestCase):
             is_epic_hcaptcha_challenge('<input id="email"><input id="password">')
         )
 
+    def test_post_login_validation_is_bounded_and_discards_stale_challenge(self):
+        source = AUTHORIZATION_SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def _handle_right_account_validation")
+        end = source.index("async def _login", start)
+        branch = source[start:end]
+        self.assertIn('getattr(agent, "prepare_for_new_challenge", None)', branch)
+        self.assertIn("validation_deadline = time.monotonic() + 30", branch)
+        self.assertIn("time.monotonic() < validation_deadline", branch)
+
+    def test_email_continue_waits_until_enabled_without_navigation_wait(self):
+        source = AUTHORIZATION_SOURCE.read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            source.count('expect(continue_button).to_be_enabled(timeout=30000)'),
+            2,
+        )
+        self.assertGreaterEqual(
+            source.count('continue_button.click(timeout=5000, no_wait_after=True)'),
+            2,
+        )
+
 
 class EpicEmailTransactionTests(unittest.TestCase):
     def test_detects_epic_rejection_statuses(self):
