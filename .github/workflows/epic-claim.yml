@@ -31,6 +31,10 @@ on:
         description: "Delay the first confirm-order request so the Talon hCaptcha callback can settle."
         required: false
         default: "0"
+      captcha_model:
+        description: "Captcha model for a manual A/B diagnostic run."
+        required: false
+        default: "agnes-2.5-flash"
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -53,7 +57,7 @@ jobs:
       GEMINI_API_KEY: not_used
       PRIMARY_MODEL: agnes-2.5-flash
       PRIMARY_MODEL_FALLBACK: agnes-2.5-flash
-      CAPTCHA_MODEL: agnes-2.5-flash
+      CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || 'agnes-2.5-flash' }}
       CAPTCHA_MODEL_FALLBACK: agnes-2.0-flash
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
