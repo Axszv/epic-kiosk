@@ -507,7 +507,6 @@ class EpicGames:
     def __init__(self, page: Page):
         self.page = page
         self._promotions: List[PromotionGame] = []
-        self.last_checkout_error_code: str | None = None
 
     @staticmethod
     async def _save_debug_page(page: Page, label: str):
@@ -720,10 +719,11 @@ class EpicGames:
 
         logger.info(f"🔎 扫描结账容器: {len(containers)} 个候选")
 
-        async def _button_is_usable(btn) -> bool:
+        async def _button_is_usable(btn, timeout: int = 500) -> bool:
             try:
-                await btn.wait_for(state="visible", timeout=2500)
-                if await btn.is_disabled(timeout=1000):
+                if not await btn.is_visible(timeout=timeout):
+                    return False
+                if await btn.is_disabled(timeout=timeout):
                     return False
                 return True
             except Exception:
@@ -757,6 +757,35 @@ class EpicGames:
 
         for label, container in containers:
             logger.info(f"🔎 检查结账容器: {label}")
+
+            # Read the currently rendered buttons once. Sequentially waiting on
+            # every possible text/selector can take several minutes when an
+            # hCaptcha frame is open, even though Add to library is already in
+            # the purchase iframe.
+            with suppress(Exception):
+                for btn in await container.locator("button").all():
+                    if not await _button_is_usable(btn):
+                        continue
+                    btn_text = " ".join(
+                        ((await btn.text_content(timeout=500)) or "").split()
+                    )
+                    if not btn_text:
+                        continue
+                    normalized = btn_text.casefold()
+                    if not any(
+                        text_value.casefold() in normalized
+                        for text_value in button_texts
+                    ):
+                        continue
+                    if await _is_main_page_product_cta(label, btn):
+                        logger.debug(
+                            "Skipping the product-page CTA while locating checkout"
+                        )
+                        continue
+                    logger.info(
+                        f"✅ 找到结账按钮: {btn_text!r} | 容器: {label} | rendered button"
+                    )
+                    return container, btn
 
             for text_value in button_texts:
                 try:
@@ -943,7 +972,6 @@ class EpicGames:
 
     async def _handle_instant_checkout(self, page: Page) -> bool:
         logger.info("🚀 开始即时结账流程...")
-        self.last_checkout_error_code = None
         agent = replace_hcaptcha_agent(page)
         confirm_order_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         checkout_request_ids: dict[int, int] = {}
@@ -1093,7 +1121,6 @@ class EpicGames:
 
             status = int(outcome.get("status") or 0)
             payload = outcome.get("payload") or {}
-            self.last_checkout_error_code = str(payload.get("errorCode") or "") or None
             if 200 <= status < 300:
                 logger.success(
                     f"🎉 Epic confirm-order 返回 HTTP {status}，等待入库验证"

@@ -148,14 +148,23 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertNotIn("for transaction_attempt", branch)
         self.assertNotIn("Submitting checkout after the rejected", branch)
 
-    def test_mobile_captcha_rejection_retries_only_in_a_fresh_transaction(self):
+    def test_mobile_checkout_does_not_repeat_an_expensive_rejected_transaction(self):
         source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("_allow_captcha_retry", source)
-        self.assertIn("EPIC_CAPTCHA_CHALLENGE_FAILED", source)
-        self.assertIn("retried_after_explicit_captcha_rejection", source)
-        self.assertIn("collect_mobile_offer(\n            page,\n            offer,\n            _allow_captcha_retry=False", source)
+        self.assertNotIn("_allow_captcha_retry", source)
+        self.assertNotIn("retried_after_explicit_captcha_rejection", source)
+        self.assertEqual(source.count("await epic._handle_instant_checkout(page)"), 1)
+
+    def test_checkout_scans_rendered_buttons_before_selector_fallbacks(self):
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def _active_purchase_container")
+        end = source.index("async def _handle_device_not_supported_modal", start)
+        branch = source[start:end]
+        rendered_scan = branch.index('container.locator("button").all()')
+        text_fallback = branch.index('container.locator("button", has_text=text_value)')
+        self.assertLess(rendered_scan, text_fallback)
+        self.assertIn("timeout: int = 500", branch)
 
     def test_optional_talon_settling_delay_holds_the_original_request(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
