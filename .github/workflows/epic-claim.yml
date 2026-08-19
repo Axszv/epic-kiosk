@@ -125,7 +125,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          CAMOUFOX_UBO_DIR="${HOME}/.cache/camoufox/addons/UBO"
+          if [ -d "${CAMOUFOX_UBO_DIR}" ] && [ ! -f "${CAMOUFOX_UBO_DIR}/manifest.json" ]; then
+            echo "Removing incomplete Camoufox UBO addon cache"
+            rm -rf "${CAMOUFOX_UBO_DIR}"
+          fi
           python -m camoufox fetch
+          if [ ! -f "${CAMOUFOX_UBO_DIR}/manifest.json" ]; then
+            echo "Camoufox UBO addon is incomplete after fetch; retrying cleanly"
+            rm -rf "${CAMOUFOX_UBO_DIR}"
+            python -m camoufox fetch
+          fi
+          test -f "${CAMOUFOX_UBO_DIR}/manifest.json"
           python -m camoufox version
 
       - name: Restore browser state

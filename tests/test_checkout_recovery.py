@@ -108,6 +108,13 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("CHECKOUT_CONFIRM_DELAY_MS:", workflow)
         self.assertIn("github.event.inputs.confirm_delay_ms || '0'", workflow)
 
+    def test_workflow_repairs_incomplete_camoufox_addon_cache(self):
+        workflow = WORKFLOW_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('CAMOUFOX_UBO_DIR="${HOME}/.cache/camoufox/addons/UBO"', workflow)
+        self.assertIn('! -f "${CAMOUFOX_UBO_DIR}/manifest.json"', workflow)
+        self.assertIn('rm -rf "${CAMOUFOX_UBO_DIR}"', workflow)
+        self.assertIn('test -f "${CAMOUFOX_UBO_DIR}/manifest.json"', workflow)
+
     def test_fresh_profile_diagnostic_uses_an_uncached_override(self):
         settings_source = (ROOT / "app" / "settings.py").read_text(encoding="utf-8")
         runner_source = (
