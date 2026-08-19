@@ -38,6 +38,7 @@ URL_PRODUCT_BUNDLES = "https://store.epicgames.com/en-US/bundles/"
 URL_ACCOUNT_ORIGIN = "https://accounts.epicgames.com/"
 URL_ACCOUNT_TRANSACTIONS = f"{URL_ACCOUNT_ORIGIN}account/transactions?lang=en-US"
 URL_ORDER_HISTORY = f"{URL_ACCOUNT_ORIGIN}account/v2/payment/ajaxGetOrderHistory"
+URL_CONFIRM_ORDER = "https://payment-website-pci.ol.epicgames.com/v2/purchase/confirm-order"
 
 REGION_UNAVAILABLE_MARKERS = (
     "currently unavailable in your platform or region",
@@ -1124,7 +1125,7 @@ class EpicGames:
 
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
-        await page.route("**/purchase/confirm-order", hold_first_confirm_order)
+        await page.route(URL_CONFIRM_ORDER, hold_first_confirm_order)
 
         try:
             await self._handle_device_not_supported_modal(page)
@@ -1209,7 +1210,7 @@ class EpicGames:
                 page.remove_listener("response", capture_confirm_order_response)
             with suppress(Exception):
                 await page.unroute(
-                    "**/purchase/confirm-order", hold_first_confirm_order
+                    URL_CONFIRM_ORDER, hold_first_confirm_order
                 )
 
     async def add_promotion_to_cart(self, page: Page, promotions: List[PromotionGame]) -> bool:

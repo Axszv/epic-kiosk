@@ -141,6 +141,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("captcha_validation_done", branch)
         self.assertIn("Holding the first confirm-order request", branch)
         self.assertIn("Releasing the first confirm-order request after hCaptcha validation", branch)
+        self.assertIn("URL_CONFIRM_ORDER", branch)
         prepare_index = branch.index("agent.prepare_for_new_challenge()")
         initial_click_index = branch.index(
             "await payment_btn.click(force=True)", prepare_index
