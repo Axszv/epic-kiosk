@@ -122,6 +122,16 @@ class EpicHcaptchaDetectionTests(unittest.TestCase):
             2,
         )
 
+    def test_email_continue_timeout_defers_to_captcha_state_observer(self):
+        source = AUTHORIZATION_SOURCE.read_text(encoding="utf-8")
+        start = source.index("# 2. 点击继续按钮")
+        end = source.index("if not await self._solve_pre_password_hcaptcha", start)
+        branch = source[start:end]
+
+        self.assertIn("except PlaywrightTimeoutError:", branch)
+        self.assertIn("继续观察 hCaptcha 或密码页状态", branch)
+        self.assertNotIn("if not await self._has_hcaptcha_challenge()", branch)
+
 
 class EpicEmailTransactionTests(unittest.TestCase):
     def test_detects_epic_rejection_statuses(self):

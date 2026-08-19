@@ -14,7 +14,7 @@ from enum import Enum
 
 from hcaptcha_challenger.agent import AgentV
 from loguru import logger
-from playwright.async_api import expect, Page, Response
+from playwright.async_api import expect, Page, Response, TimeoutError as PlaywrightTimeoutError
 
 from settings import RUNTIME_DIR, settings
 from services.hcaptcha_agent_service import get_hcaptcha_agent
@@ -650,10 +650,13 @@ class EpicAuthorization:
                     continue_button = self.page.locator("#continue")
                     await expect(continue_button).to_be_enabled(timeout=30000)
                     await continue_button.click(timeout=5000, no_wait_after=True)
-                except Exception:
-                    if not await self._has_hcaptcha_challenge():
-                        raise
-                    logger.info("邮箱继续按钮触发 hCaptcha，等待解题器完成")
+                except PlaywrightTimeoutError:
+                    # Epic can synchronously start Talon/hCaptcha from this click,
+                    # keeping Playwright's action pending after the event fired.
+                    # The observer below handles the challenge/password transition.
+                    logger.info(
+                        "邮箱继续按钮点击等待超时，继续观察 hCaptcha 或密码页状态"
+                    )
 
                 if not await self._solve_pre_password_hcaptcha(agent):
                     return (False, ErrorType.CAPTCHA_FAILED)
