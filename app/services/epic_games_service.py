@@ -1025,24 +1025,38 @@ class EpicGames:
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
         confirm_order_request_counter = 0
-        delay_first_confirm = settings.CHECKOUT_CONFIRM_DELAY_MS > 0
-        post_captcha_refresh_requested = asyncio.Event()
-        post_captcha_talon_started = asyncio.Event()
-        post_captcha_talon_ready = asyncio.Event()
-        post_captcha_talon_batch_counter = 0
+        captcha_validation_done = asyncio.Event()
+        captcha_validation_succeeded = False
+        first_confirm_order_held = False
 
-        async def delay_first_confirm_order(route) -> None:
-            nonlocal delay_first_confirm
-            if delay_first_confirm:
-                delay_first_confirm = False
+        async def hold_first_confirm_order(route) -> None:
+            nonlocal first_confirm_order_held
+            if not first_confirm_order_held:
+                first_confirm_order_held = True
                 logger.info(
-                    "Delaying the first automatic confirm-order request for "
-                    f"{settings.CHECKOUT_CONFIRM_DELAY_MS}ms so Talon can finish "
-                    "the hCaptcha callback"
+                    "Holding the first confirm-order request until the "
+                    "current hCaptcha transaction completes"
                 )
-                await page.wait_for_timeout(settings.CHECKOUT_CONFIRM_DELAY_MS)
-                await route.continue_()
-                return
+                try:
+                    await asyncio.wait_for(
+                        captcha_validation_done.wait(),
+                        timeout=max(
+                            settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+                            settings.EXECUTION_TIMEOUT
+                            + settings.RESPONSE_TIMEOUT
+                            + 15,
+                        ),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Timed out waiting for hCaptcha validation before "
+                        "releasing confirm-order"
+                    )
+                if captcha_validation_succeeded and settings.CHECKOUT_CONFIRM_DELAY_MS > 0:
+                    await page.wait_for_timeout(settings.CHECKOUT_CONFIRM_DELAY_MS)
+                logger.info(
+                    "Releasing the first confirm-order request after hCaptcha validation"
+                )
             await route.continue_()
 
         async def capture_checkout_request(request) -> None:
@@ -1071,27 +1085,7 @@ class EpicGames:
             )
 
         async def capture_confirm_order_response(response) -> None:
-            nonlocal post_captcha_talon_batch_counter
             parsed_url = urlsplit(response.url)
-            if (
-                post_captcha_refresh_requested.is_set()
-                and parsed_url.path.endswith("/v1/init/execute")
-                and 200 <= response.status < 300
-            ):
-                post_captcha_talon_started.set()
-                logger.debug("Talon started the post-captcha checkout refresh")
-            elif (
-                post_captcha_refresh_requested.is_set()
-                and post_captcha_talon_started.is_set()
-                and parsed_url.path.endswith("/v1/phaser/batch")
-                and 200 <= response.status < 300
-            ):
-                post_captcha_talon_batch_counter += 1
-                post_captcha_talon_ready.set()
-                logger.debug(
-                    "Talon completed post-captcha checkout phase "
-                    f"{post_captcha_talon_batch_counter}"
-                )
             if is_checkout_diagnostic_url(response.url):
                 trace_id = checkout_request_ids.get(id(response.request), 0)
                 body_text = ""
@@ -1128,42 +1122,9 @@ class EpicGames:
                 await page.wait_for_timeout(250)
             return {}
 
-        async def wait_for_post_refresh_activity(
-            button: Any,
-            talon_batch_baseline: int,
-            request_baseline: int,
-            confirm_order_request_baseline: int,
-            timeout_seconds: float = 8,
-        ) -> str:
-            deadline = asyncio.get_running_loop().time() + timeout_seconds
-            while asyncio.get_running_loop().time() < deadline:
-                if confirm_order_request_counter > confirm_order_request_baseline:
-                    return "confirm_order_request"
-                if not confirm_order_responses.empty():
-                    return "confirm_order"
-                if post_captcha_talon_batch_counter > talon_batch_baseline:
-                    return "talon_batch"
-                try:
-                    if not await button.is_visible(timeout=500):
-                        return "button_hidden"
-                except Exception:
-                    return "button_hidden"
-                await page.wait_for_timeout(250)
-            logger.info(
-                "Post-refresh checkout click produced no decisive activity: "
-                f"requests_before={request_baseline}, requests_after={checkout_request_counter}, "
-                "confirm_order_requests_before="
-                f"{confirm_order_request_baseline}, "
-                f"confirm_order_requests_after={confirm_order_request_counter}, "
-                f"talon_batches_before={talon_batch_baseline}, "
-                f"talon_batches_after={post_captcha_talon_batch_counter}"
-            )
-            return "none"
-
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
-        if settings.CHECKOUT_CONFIRM_DELAY_MS > 0:
-            await page.route("**/purchase/confirm-order", delay_first_confirm_order)
+        await page.route("**/purchase/confirm-order", hold_first_confirm_order)
 
         try:
             await self._handle_device_not_supported_modal(page)
@@ -1194,118 +1155,24 @@ class EpicGames:
                             + 15,
                         ),
                     )
-                    challenge_succeeded = (
+                except Exception as e:
+                    captcha_validation_done.set()
+                    logger.warning(f"结账验证码未确认通过: {e}")
+                else:
+                    captcha_validation_succeeded = (
                         getattr(challenge_result, "value", challenge_result)
                         == "success"
                     )
-                    if not challenge_succeeded:
+                    captcha_validation_done.set()
+                    if not captcha_validation_succeeded:
                         logger.warning(f"结账验证码结果: {challenge_result}")
                     else:
-                        # Epic creates the first confirm-order body before Talon has
-                        # finished consuming hCaptcha's success callback. Waiting
-                        # before clicking is important: delaying the already-built
-                        # network request keeps the stale captchaToken in its body.
-                        try:
-                            logger.info(
-                                "Reacquiring the checkout control after validated hCaptcha"
-                            )
-                            _, payment_btn = await self._active_purchase_container(page)
-                            logger.info(
-                                "Waiting for the checkout control to become visible "
-                                "after validated hCaptcha"
-                            )
-                            await payment_btn.wait_for(state="visible", timeout=10000)
-                            logger.info(
-                                "Waiting for the validated hCaptcha callback "
-                                "before building confirm-order"
-                            )
-                            await page.wait_for_timeout(2000)
-                            logger.info(
-                                "Submitting checkout after "
-                                "validated hCaptcha"
-                            )
-                            stale_responses = 0
-                            while not confirm_order_responses.empty():
-                                confirm_order_responses.get_nowait()
-                                stale_responses += 1
-                            if stale_responses:
-                                logger.info(
-                                    "Discarded stale automatic confirm-order "
-                                    f"response(s): {stale_responses}"
-                                )
-                            post_captcha_refresh_requested.set()
-                            await payment_btn.click(force=True)
-                            try:
-                                await asyncio.wait_for(
-                                    post_captcha_talon_started.wait(), timeout=10
-                                )
-                            except asyncio.TimeoutError:
-                                logger.debug(
-                                    "The post-captcha click did not require a Talon refresh"
-                                )
-                            else:
-                                try:
-                                    await asyncio.wait_for(
-                                        post_captcha_talon_ready.wait(), timeout=45
-                                    )
-                                except asyncio.TimeoutError:
-                                    logger.warning(
-                                        "Talon started but did not finish the post-captcha "
-                                        "checkout refresh within 45 seconds"
-                                    )
-                                    raise
-                                for phase_attempt in range(1, 4):
-                                    _, refreshed_payment_btn = (
-                                        await self._active_purchase_container(page)
-                                    )
-                                    await refreshed_payment_btn.wait_for(
-                                        state="visible", timeout=10000
-                                    )
-                                    await self._log_checkout_button_state(
-                                        refreshed_payment_btn,
-                                        f"post_talon_{phase_attempt}_before",
-                                    )
-                                    while not confirm_order_responses.empty():
-                                        confirm_order_responses.get_nowait()
-                                    request_baseline = checkout_request_counter
-                                    confirm_order_request_baseline = (
-                                        confirm_order_request_counter
-                                    )
-                                    talon_batch_baseline = (
-                                        post_captcha_talon_batch_counter
-                                    )
-                                    logger.info(
-                                        "Submitting confirm-order with refreshed Talon state "
-                                        f"[{phase_attempt}/3]"
-                                    )
-                                    await refreshed_payment_btn.evaluate(
-                                        "element => element.click()"
-                                    )
-                                    activity = await wait_for_post_refresh_activity(
-                                        refreshed_payment_btn,
-                                        talon_batch_baseline,
-                                        request_baseline,
-                                        confirm_order_request_baseline,
-                                    )
-                                    logger.info(
-                                        "Post-refresh checkout activity "
-                                        f"[{phase_attempt}/3]: {activity}"
-                                    )
-                                    if activity in {
-                                        "confirm_order_request",
-                                        "confirm_order",
-                                        "button_hidden",
-                                    }:
-                                        break
-                                    if phase_attempt < 3:
-                                        await page.wait_for_timeout(1000)
-                        except Exception:
-                            logger.debug(
-                                "Checkout control closed before the post-Talon submit"
-                            )
-                except Exception as e:
-                            logger.warning(f"结账验证码未确认通过: {e}")
+                        logger.info(
+                            "hCaptcha validated; the held confirm-order request "
+                            "can now continue"
+                        )
             else:
+                captcha_validation_done.set()
                 logger.debug("结账等待 45 秒后未出现 hCaptcha，检查提交结果")
 
             outcome = await wait_for_checkout_outcome()
@@ -1340,11 +1207,10 @@ class EpicGames:
                 page.remove_listener("request", capture_checkout_request)
             with suppress(Exception):
                 page.remove_listener("response", capture_confirm_order_response)
-            if settings.CHECKOUT_CONFIRM_DELAY_MS > 0:
-                with suppress(Exception):
-                    await page.unroute(
-                        "**/purchase/confirm-order", delay_first_confirm_order
-                    )
+            with suppress(Exception):
+                await page.unroute(
+                    "**/purchase/confirm-order", hold_first_confirm_order
+                )
 
     async def add_promotion_to_cart(self, page: Page, promotions: List[PromotionGame]) -> bool:
         has_pending_cart_items = False
