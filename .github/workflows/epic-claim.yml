@@ -80,8 +80,13 @@ jobs:
 
       - name: Install system packages
         run: |
+          # GitHub-hosted Ubuntu occasionally points the runner at a stalled
+          # regional mirror. Use the public archive mirror for this ephemeral job.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i -E 's#https?://[^[:space:]]+/ubuntu#https://archive.ubuntu.com/ubuntu#g' /etc/apt/apt-mirrors.txt
+          fi
           for attempt in 1 2 3; do
-            if timeout 180s sudo apt-get update && \
+            if timeout 240s sudo apt-get -o Acquire::Retries=3 update && \
               timeout 300s sudo apt-get install -y --no-install-recommends \
                 xvfb xauth curl ca-certificates \
                 fonts-liberation \
