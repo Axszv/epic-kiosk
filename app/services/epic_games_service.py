@@ -977,6 +977,9 @@ class EpicGames:
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
         delay_first_confirm = settings.CHECKOUT_CONFIRM_DELAY_MS > 0
+        post_captcha_refresh_requested = asyncio.Event()
+        post_captcha_talon_started = asyncio.Event()
+        post_captcha_talon_ready = asyncio.Event()
 
         async def delay_first_confirm_order(route) -> None:
             nonlocal delay_first_confirm
@@ -1017,6 +1020,21 @@ class EpicGames:
 
         async def capture_confirm_order_response(response) -> None:
             parsed_url = urlsplit(response.url)
+            if (
+                post_captcha_refresh_requested.is_set()
+                and parsed_url.path.endswith("/v1/init/execute")
+                and 200 <= response.status < 300
+            ):
+                post_captcha_talon_started.set()
+                logger.debug("Talon started the post-captcha checkout refresh")
+            elif (
+                post_captcha_refresh_requested.is_set()
+                and post_captcha_talon_started.is_set()
+                and parsed_url.path.endswith("/v1/phaser/batch")
+                and 200 <= response.status < 300
+            ):
+                post_captcha_talon_ready.set()
+                logger.debug("Talon completed the post-captcha checkout refresh")
             if is_checkout_diagnostic_url(response.url):
                 trace_id = checkout_request_ids.get(id(response.request), 0)
                 body_text = ""
@@ -1122,7 +1140,26 @@ class EpicGames:
                                     "Discarded stale automatic confirm-order "
                                     f"response(s): {stale_responses}"
                                 )
+                            post_captcha_refresh_requested.set()
                             await payment_btn.click(force=True)
+                            try:
+                                await asyncio.wait_for(
+                                    post_captcha_talon_ready.wait(), timeout=15
+                                )
+                            except asyncio.TimeoutError:
+                                logger.debug(
+                                    "The post-captcha click did not require a Talon refresh"
+                                )
+                            else:
+                                await payment_btn.wait_for(
+                                    state="visible", timeout=10000
+                                )
+                                logger.info(
+                                    "Submitting confirm-order with refreshed Talon state"
+                                )
+                                while not confirm_order_responses.empty():
+                                    confirm_order_responses.get_nowait()
+                                await payment_btn.click(force=True)
                         except Exception:
                             logger.debug(
                                 "Checkout control closed before the post-Talon submit"

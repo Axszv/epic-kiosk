@@ -139,7 +139,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         )
         self.assertLess(prepare_index, initial_click_index)
         self.assertLess(initial_click_index, settle_index)
-        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
+        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 3)
         visible_wait_index = branch.index(
             'await payment_btn.wait_for(state="visible", timeout=10000)'
         )
@@ -164,10 +164,11 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertLess(validated_submit_index, stale_response_drain_index)
         self.assertLess(stale_response_drain_index, post_captcha_click_index)
         self.assertLess(validated_submit_index, post_captcha_click_index)
+        self.assertIn("post_captcha_refresh_requested", branch)
+        self.assertIn("post_captcha_talon_started", branch)
+        self.assertIn("post_captcha_talon_ready", branch)
+        self.assertIn("Submitting confirm-order with refreshed Talon state", branch)
         self.assertNotIn("captcha_rejection_processed", branch)
-        self.assertNotIn("talon_refresh_ready", branch)
-        self.assertNotIn("talon_refresh_started", branch)
-        self.assertNotIn("post_captcha_talon_ready", branch)
         self.assertNotIn("for transaction_attempt", branch)
         self.assertNotIn("Submitting checkout after the rejected", branch)
 
