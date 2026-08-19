@@ -1024,6 +1024,7 @@ class EpicGames:
         confirm_order_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
+        confirm_order_request_counter = 0
         delay_first_confirm = settings.CHECKOUT_CONFIRM_DELAY_MS > 0
         post_captcha_refresh_requested = asyncio.Event()
         post_captcha_talon_started = asyncio.Event()
@@ -1045,10 +1046,12 @@ class EpicGames:
             await route.continue_()
 
         async def capture_checkout_request(request) -> None:
-            nonlocal checkout_request_counter
+            nonlocal checkout_request_counter, confirm_order_request_counter
             if not is_checkout_diagnostic_url(request.url):
                 return
             checkout_request_counter += 1
+            if "/purchase/confirm-order" in request.url:
+                confirm_order_request_counter += 1
             trace_id = checkout_request_counter
             checkout_request_ids[id(request)] = trace_id
             parsed_url = urlsplit(request.url)
@@ -1129,10 +1132,13 @@ class EpicGames:
             button: Any,
             talon_batch_baseline: int,
             request_baseline: int,
+            confirm_order_request_baseline: int,
             timeout_seconds: float = 8,
         ) -> str:
             deadline = asyncio.get_running_loop().time() + timeout_seconds
             while asyncio.get_running_loop().time() < deadline:
+                if confirm_order_request_counter > confirm_order_request_baseline:
+                    return "confirm_order_request"
                 if not confirm_order_responses.empty():
                     return "confirm_order"
                 if post_captcha_talon_batch_counter > talon_batch_baseline:
@@ -1146,6 +1152,9 @@ class EpicGames:
             logger.info(
                 "Post-refresh checkout click produced no decisive activity: "
                 f"requests_before={request_baseline}, requests_after={checkout_request_counter}, "
+                "confirm_order_requests_before="
+                f"{confirm_order_request_baseline}, "
+                f"confirm_order_requests_after={confirm_order_request_counter}, "
                 f"talon_batches_before={talon_batch_baseline}, "
                 f"talon_batches_after={post_captcha_talon_batch_counter}"
             )
@@ -1231,7 +1240,7 @@ class EpicGames:
                                     "The post-captcha click did not require a Talon refresh"
                                 )
                             else:
-                                for phase_attempt in range(1, 3):
+                                for phase_attempt in range(1, 4):
                                     _, refreshed_payment_btn = (
                                         await self._active_purchase_container(page)
                                     )
@@ -1245,34 +1254,36 @@ class EpicGames:
                                     while not confirm_order_responses.empty():
                                         confirm_order_responses.get_nowait()
                                     request_baseline = checkout_request_counter
+                                    confirm_order_request_baseline = (
+                                        confirm_order_request_counter
+                                    )
                                     talon_batch_baseline = (
                                         post_captcha_talon_batch_counter
                                     )
                                     logger.info(
                                         "Submitting confirm-order with refreshed Talon state "
-                                        f"[{phase_attempt}/2]"
+                                        f"[{phase_attempt}/3]"
                                     )
-                                    if phase_attempt == 1:
-                                        await refreshed_payment_btn.click(force=True)
-                                    else:
-                                        await refreshed_payment_btn.evaluate(
-                                            "element => element.click()"
-                                        )
+                                    await refreshed_payment_btn.evaluate(
+                                        "element => element.click()"
+                                    )
                                     activity = await wait_for_post_refresh_activity(
                                         refreshed_payment_btn,
                                         talon_batch_baseline,
                                         request_baseline,
+                                        confirm_order_request_baseline,
                                     )
                                     logger.info(
                                         "Post-refresh checkout activity "
-                                        f"[{phase_attempt}/2]: {activity}"
+                                        f"[{phase_attempt}/3]: {activity}"
                                     )
                                     if activity in {
+                                        "confirm_order_request",
                                         "confirm_order",
                                         "button_hidden",
                                     }:
                                         break
-                                    if phase_attempt < 2:
+                                    if phase_attempt < 3:
                                         await page.wait_for_timeout(1000)
                         except Exception:
                             logger.debug(
