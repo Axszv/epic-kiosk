@@ -120,15 +120,27 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
     def test_specialized_drag_prompts_handle_homoglyphs(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
 
-        pipe_prompt = module.EpicAgentV._specialized_drag_prompt(
+        pipe_prompt = module.EpicAgentV._specialized_visual_prompt(
             "Move the pipе into tһe grid to finiѕh the route"
         )
-        shape_prompt = module.EpicAgentV._specialized_drag_prompt(
+        shape_prompt = module.EpicAgentV._specialized_visual_prompt(
             "Pleаse drag the element to the place where it fits"
         )
 
         self.assertIn("single open gap", pipe_prompt)
         self.assertIn("exact silhouette-matching puzzle", shape_prompt)
+
+    def test_specialized_prompts_cover_observed_epic_challenges(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        shape_prompt = module.EpicAgentV._specialized_visual_prompt(
+            "Please drag the icon on the bottom to the place where it fits"
+        )
+        flying_prompt = module.EpicAgentV._specialized_visual_prompt(
+            "Click on all animals capable of flying"
+        )
+        self.assertIn("internal and external geometry", shape_prompt)
+        self.assertIn("chickens or", flying_prompt)
+        self.assertIn("Do not select horses", flying_prompt)
 
     def test_captcha_pass_metadata_fingerprints_without_exposing_token(self):
         module = importlib.import_module("services.hcaptcha_agent_service")

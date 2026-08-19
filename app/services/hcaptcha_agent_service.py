@@ -39,12 +39,21 @@ do not return one path for every tray choice.
 """.strip()
 SHAPE_FIT_DRAG_PROMPT = """
 This is an exact silhouette-matching puzzle. The only drag source is the clear
-object inside the Move card above the play area. Compare its complete outline,
-orientation, corners, and protrusions against every faint outline below.
-Ignore approximate or merely similar distractors. Return exactly ONE path:
-start at the center of the Move-card object and end at the geometric center of
-the one outline that matches it exactly, so the dragged object fully overlays
-that outline.
+object inside the Move card at the bottom of the play area. First compare its
+complete outline, rotation, outer corners, inner cutouts, bars, and protrusions
+against EVERY candidate shape. Ignore candidates that share only a broad square
+or diamond silhouette. Return exactly ONE path: start at the center of the
+Move-card object and end at the geometric center of the one candidate whose
+full internal and external geometry matches exactly. Do not choose the nearest
+candidate and do not choose before checking them all.
+""".strip()
+FLYING_ANIMALS_PROMPT = """
+Classify each pictured animal by real-world biological ability before selecting
+coordinates. Select only animals that can propel themselves through the air by
+flying, including birds capable of short powered flight such as chickens or
+roosters. Do not select horses, cattle, reptiles, amphibians, fish, sharks, or
+other terrestrial or marine animals. Inspect every animal once, then return one
+point at the visual center of each qualifying animal and no points on background.
 """.strip()
 
 
@@ -115,12 +124,16 @@ class EpicAgentV(AgentV):
         return " ".join((value or "").translate(DRAG_PROMPT_TRANSLATION).casefold().split())
 
     @classmethod
-    def _specialized_drag_prompt(cls, challenge_prompt: str) -> str | None:
+    def _specialized_visual_prompt(cls, challenge_prompt: str) -> str | None:
         normalized = cls._normalize_drag_prompt(challenge_prompt)
         if "route" in normalized and "pipe" in normalized:
             return PIPE_ROUTE_DRAG_PROMPT
-        if "drag the element" in normalized and "where it fits" in normalized:
+        if "where it fits" in normalized and (
+            "drag" in normalized or "move" in normalized
+        ):
             return SHAPE_FIT_DRAG_PROMPT
+        if "animals capable of flying" in normalized:
+            return FLYING_ANIMALS_PROMPT
         return None
 
     def _match_drag_user_prompt(self, job_type) -> str:
@@ -130,11 +143,14 @@ class EpicAgentV(AgentV):
         if payload is not None:
             with suppress(Exception):
                 challenge_prompt = payload.get_requester_question() or ""
-        specialized = self._specialized_drag_prompt(challenge_prompt)
+        specialized = self._specialized_visual_prompt(challenge_prompt)
         if specialized is None:
             return base_prompt
-        logger.debug(f"Using specialized hCaptcha drag guidance: {challenge_prompt}")
-        return f"{specialized}\n\nChallenge instruction: {challenge_prompt}"
+        logger.debug(f"Using specialized hCaptcha visual guidance: {challenge_prompt}")
+        return (
+            f"{base_prompt}\n\n{specialized}\n\n"
+            f"Challenge instruction: {challenge_prompt}"
+        )
 
     @staticmethod
     def _nearest_drag_source(
