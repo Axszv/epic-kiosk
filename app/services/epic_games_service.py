@@ -1099,17 +1099,30 @@ class EpicGames:
                         # before clicking is important: delaying the already-built
                         # network request keeps the stale captchaToken in its body.
                         try:
-                            if await payment_btn.is_visible():
+                            logger.info(
+                                "Waiting for the checkout control to become visible "
+                                "after validated hCaptcha"
+                            )
+                            await payment_btn.wait_for(state="visible", timeout=10000)
+                            logger.info(
+                                "Waiting for the validated hCaptcha callback "
+                                "before building confirm-order"
+                            )
+                            await page.wait_for_timeout(2000)
+                            logger.info(
+                                "Submitting checkout after "
+                                "validated hCaptcha"
+                            )
+                            stale_responses = 0
+                            while not confirm_order_responses.empty():
+                                confirm_order_responses.get_nowait()
+                                stale_responses += 1
+                            if stale_responses:
                                 logger.info(
-                                    "Waiting for the validated hCaptcha callback "
-                                    "before building confirm-order"
+                                    "Discarded stale automatic confirm-order "
+                                    f"response(s): {stale_responses}"
                                 )
-                                await page.wait_for_timeout(2000)
-                                logger.info(
-                                    "Submitting checkout after "
-                                    "validated hCaptcha"
-                                )
-                                await payment_btn.click(force=True)
+                            await payment_btn.click(force=True)
                         except Exception:
                             logger.debug(
                                 "Checkout control closed before the post-Talon submit"

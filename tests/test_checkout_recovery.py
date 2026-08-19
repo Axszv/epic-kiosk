@@ -140,6 +140,9 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertLess(prepare_index, initial_click_index)
         self.assertLess(initial_click_index, settle_index)
         self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
+        visible_wait_index = branch.index(
+            'await payment_btn.wait_for(state="visible", timeout=10000)'
+        )
         callback_wait_index = branch.index(
             '"Waiting for the validated hCaptcha callback "'
         )
@@ -152,8 +155,14 @@ class CheckoutRecoveryTests(unittest.TestCase):
         post_captcha_click_index = branch.index(
             "await payment_btn.click(force=True)", validated_submit_index
         )
+        stale_response_drain_index = branch.index(
+            "while not confirm_order_responses.empty()", validated_submit_index
+        )
+        self.assertLess(visible_wait_index, callback_wait_index)
         self.assertLess(callback_wait_index, callback_settle_index)
         self.assertLess(callback_settle_index, validated_submit_index)
+        self.assertLess(validated_submit_index, stale_response_drain_index)
+        self.assertLess(stale_response_drain_index, post_captcha_click_index)
         self.assertLess(validated_submit_index, post_captcha_click_index)
         self.assertNotIn("captcha_rejection_processed", branch)
         self.assertNotIn("talon_refresh_ready", branch)
