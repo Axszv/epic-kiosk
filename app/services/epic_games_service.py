@@ -1025,7 +1025,6 @@ class EpicGames:
         checkout_request_ids: dict[int, int] = {}
         checkout_request_counter = 0
         confirm_order_request_counter = 0
-        captcha_rejection = asyncio.Event()
         delay_first_confirm = settings.CHECKOUT_CONFIRM_DELAY_MS > 0
         post_captcha_refresh_requested = asyncio.Event()
         post_captcha_talon_started = asyncio.Event()
@@ -1109,11 +1108,6 @@ class EpicGames:
             payload = {}
             with suppress(Exception):
                 payload = await response.json()
-            if (
-                response.status == 400
-                and payload.get("errorCode") == EPIC_CAPTCHA_CHALLENGE_FAILED
-            ):
-                captcha_rejection.set()
             confirm_order_responses.put_nowait(
                 {
                     "status": response.status,
@@ -1207,16 +1201,6 @@ class EpicGames:
                     if not challenge_succeeded:
                         logger.warning(f"结账验证码结果: {challenge_result}")
                     else:
-                        try:
-                            await asyncio.wait_for(captcha_rejection.wait(), timeout=5)
-                        except asyncio.TimeoutError:
-                            pass
-                        else:
-                            logger.warning(
-                                "Epic rejected the validated hCaptcha in this checkout "
-                                "transaction; starting a fresh checkout retry"
-                            )
-                            return False
                         # Epic creates the first confirm-order body before Talon has
                         # finished consuming hCaptcha's success callback. Waiting
                         # before clicking is important: delaying the already-built
