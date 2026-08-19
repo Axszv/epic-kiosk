@@ -1233,13 +1233,23 @@ class EpicGames:
                             await payment_btn.click(force=True)
                             try:
                                 await asyncio.wait_for(
-                                    post_captcha_talon_ready.wait(), timeout=15
+                                    post_captcha_talon_started.wait(), timeout=10
                                 )
                             except asyncio.TimeoutError:
                                 logger.debug(
                                     "The post-captcha click did not require a Talon refresh"
                                 )
                             else:
+                                try:
+                                    await asyncio.wait_for(
+                                        post_captcha_talon_ready.wait(), timeout=45
+                                    )
+                                except asyncio.TimeoutError:
+                                    logger.warning(
+                                        "Talon started but did not finish the post-captcha "
+                                        "checkout refresh within 45 seconds"
+                                    )
+                                    raise
                                 for phase_attempt in range(1, 4):
                                     _, refreshed_payment_btn = (
                                         await self._active_purchase_container(page)

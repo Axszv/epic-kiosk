@@ -169,6 +169,8 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("post_captcha_refresh_requested", branch)
         self.assertIn("post_captcha_talon_started", branch)
         self.assertIn("post_captcha_talon_ready", branch)
+        self.assertIn("post_captcha_talon_started.wait(), timeout=10", branch)
+        self.assertIn("post_captcha_talon_ready.wait(), timeout=45", branch)
         self.assertIn("post_captcha_talon_batch_counter", branch)
         self.assertIn("confirm_order_request_counter", branch)
         self.assertIn("Submitting confirm-order with refreshed Talon state", branch)
