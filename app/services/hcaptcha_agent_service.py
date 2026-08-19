@@ -55,6 +55,25 @@ roosters. Do not select horses, cattle, reptiles, amphibians, fish, sharks, or
 other terrestrial or marine animals. Inspect every animal once, then return one
 point at the visual center of each qualifying animal and no points on background.
 """.strip()
+ANIMAL_SILHOUETTE_PROMPT = """
+This is an exact animal-to-silhouette matching puzzle. The draggable animal
+cards are in the gray Move cards, and the silhouettes are in the play area.
+Choose exactly ONE animal card and exactly ONE silhouette. Compare the animal's
+full body outline, ears, legs, tail, head, and orientation against every
+silhouette before choosing. Do not choose a silhouette merely because it is
+nearby or has a similar size. Return exactly ONE path from the center of the
+chosen animal card to the center of its exact matching silhouette.
+""".strip()
+COUNTED_ANIMALS_PROMPT = """
+The left column contains instruction cards showing an animal and a required
+count. Do NOT click or return points on those instruction cards. The selectable
+animals are only the animals inside the large gridded play area on the RIGHT.
+For each instruction card, identify the matching animal type and select exactly
+the requested number of matching animals in the grid. Count rows and columns
+carefully, and return one point at the visual center of every selected grid
+animal, with no extra points. The output must contain exactly the total number
+of points implied by the instruction cards.
+""".strip()
 
 
 async def load_hsw_script(page: Page, url: str) -> str:
@@ -132,8 +151,12 @@ class EpicAgentV(AgentV):
             "drag" in normalized or "move" in normalized
         ):
             return SHAPE_FIT_DRAG_PROMPT
+        if "matching silhouette" in normalized and "animal" in normalized:
+            return ANIMAL_SILHOUETTE_PROMPT
         if "animals capable of flying" in normalized:
             return FLYING_ANIMALS_PROMPT
+        if "find all animals based on the number provided" in normalized:
+            return COUNTED_ANIMALS_PROMPT
         return None
 
     def _match_drag_user_prompt(self, job_type) -> str:

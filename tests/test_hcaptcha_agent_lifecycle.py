@@ -138,9 +138,17 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         flying_prompt = module.EpicAgentV._specialized_visual_prompt(
             "Click on all animals capable of flying"
         )
+        silhouette_prompt = module.EpicAgentV._specialized_visual_prompt(
+            "Drag ONE animal to the matching silhouette"
+        )
+        counted_prompt = module.EpicAgentV._specialized_visual_prompt(
+            "Find all animals based on the number provided"
+        )
         self.assertIn("internal and external geometry", shape_prompt)
         self.assertIn("chickens or", flying_prompt)
         self.assertIn("Do not select horses", flying_prompt)
+        self.assertIn("gray Move cards", silhouette_prompt)
+        self.assertIn("Do NOT click", counted_prompt)
 
     def test_captcha_pass_metadata_fingerprints_without_exposing_token(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
