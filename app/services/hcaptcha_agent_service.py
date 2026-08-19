@@ -105,7 +105,6 @@ class EpicAgentV(AgentV):
     def __init__(self, *args, **kwargs):
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
-        self._validated_captcha_token = ""
         super().__init__(*args, **kwargs)
         # Upstream requires an exact visible `.challenge-view`, which misses
         # Epic's hCaptcha when it is nested inside the purchase iframe.
@@ -792,9 +791,6 @@ class EpicAgentV(AgentV):
             while not self._captcha_response_queue.empty():
                 response = self._captcha_response_queue.get_nowait()
                 if response and response.is_pass:
-                    self._validated_captcha_token = str(
-                        getattr(response, "generated_pass_UUID", "") or ""
-                    )
                     logger.success(
                         f"Challenge success: {self._captcha_pass_metadata(response)}"
                     )
