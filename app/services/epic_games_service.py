@@ -1121,7 +1121,7 @@ class EpicGames:
                 if not confirm_order_responses.empty():
                     return confirm_order_responses.get_nowait()
                 try:
-                    if not await payment_btn.is_visible():
+                    if not await payment_btn.is_visible(timeout=500):
                         return {"button_hidden": True}
                 except Exception:
                     return {"button_hidden": True}
@@ -1144,7 +1144,7 @@ class EpicGames:
                 if post_captcha_talon_batch_counter > talon_batch_baseline:
                     return "talon_batch"
                 try:
-                    if not await button.is_visible():
+                    if not await button.is_visible(timeout=500):
                         return "button_hidden"
                 except Exception:
                     return "button_hidden"
@@ -1206,6 +1206,10 @@ class EpicGames:
                         # before clicking is important: delaying the already-built
                         # network request keeps the stale captchaToken in its body.
                         try:
+                            logger.info(
+                                "Reacquiring the checkout control after validated hCaptcha"
+                            )
+                            _, payment_btn = await self._active_purchase_container(page)
                             logger.info(
                                 "Waiting for the checkout control to become visible "
                                 "after validated hCaptcha"
@@ -1300,7 +1304,7 @@ class EpicGames:
                                 "Checkout control closed before the post-Talon submit"
                             )
                 except Exception as e:
-                    logger.warning(f"结账验证码未确认通过: {e}")
+                            logger.warning(f"结账验证码未确认通过: {e}")
             else:
                 logger.debug("结账等待 45 秒后未出现 hCaptcha，检查提交结果")
 
