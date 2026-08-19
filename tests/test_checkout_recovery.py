@@ -120,7 +120,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("tempfile.gettempdir()", runner_source)
         self.assertNotIn("app/volumes/user_data", runner_source[runner_source.index("if fresh_profile:"):runner_source.index("timeout_seconds", runner_source.index("if fresh_profile:"))])
 
-    def test_checkout_resubmits_immediately_after_validated_captcha(self):
+    def test_checkout_builds_request_after_validated_captcha_callback(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _handle_instant_checkout")
         end = source.index("async def add_promotion_to_cart", start)
@@ -140,7 +140,21 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertLess(prepare_index, initial_click_index)
         self.assertLess(initial_click_index, settle_index)
         self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
-        self.assertIn("Submitting checkout again immediately after", branch)
+        callback_wait_index = branch.index(
+            '"Waiting for the validated hCaptcha callback "'
+        )
+        callback_settle_index = branch.index(
+            "await page.wait_for_timeout(2000)", callback_wait_index
+        )
+        validated_submit_index = branch.index(
+            '"Submitting checkout after "', callback_settle_index
+        )
+        post_captcha_click_index = branch.index(
+            "await payment_btn.click(force=True)", validated_submit_index
+        )
+        self.assertLess(callback_wait_index, callback_settle_index)
+        self.assertLess(callback_settle_index, validated_submit_index)
+        self.assertLess(validated_submit_index, post_captcha_click_index)
         self.assertNotIn("captcha_rejection_processed", branch)
         self.assertNotIn("talon_refresh_ready", branch)
         self.assertNotIn("talon_refresh_started", branch)

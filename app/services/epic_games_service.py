@@ -1095,13 +1095,18 @@ class EpicGames:
                         logger.warning(f"结账验证码结果: {challenge_result}")
                     else:
                         # Epic creates the first confirm-order body before Talon has
-                        # returned its stale automatic request. The historical
-                        # working flow clicked again immediately after hCaptcha
-                        # success, before that 400 response resets the transaction.
+                        # finished consuming hCaptcha's success callback. Waiting
+                        # before clicking is important: delaying the already-built
+                        # network request keeps the stale captchaToken in its body.
                         try:
                             if await payment_btn.is_visible():
                                 logger.info(
-                                    "Submitting checkout again immediately after "
+                                    "Waiting for the validated hCaptcha callback "
+                                    "before building confirm-order"
+                                )
+                                await page.wait_for_timeout(2000)
+                                logger.info(
+                                    "Submitting checkout after "
                                     "validated hCaptcha"
                                 )
                                 await payment_btn.click(force=True)
