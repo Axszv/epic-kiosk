@@ -314,6 +314,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
     def test_agent_corrects_drag_path_before_upstream_execution(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
         agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent._move_card_centers = AsyncMock(return_value=[])
         agent._payload_drag_source = AsyncMock(return_value=None)
         agent._drag_source_candidates = AsyncMock(
             return_value=[
@@ -336,6 +337,29 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
             delay_ms=15,
         )
         agent._payload_drag_source.assert_awaited_once_with(900.0, 465.0)
+
+    def test_agent_reverses_drag_when_model_ends_on_move_card(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent._move_card_centers = AsyncMock(
+            return_value=[
+                {"x": 1140.0, "y": 397.0, "score": 2000, "reason": "move-card"}
+            ]
+        )
+        agent._payload_drag_source = AsyncMock(return_value=None)
+        agent._drag_source_candidates = AsyncMock(return_value=[])
+        agent._original_perform_drag_drop = AsyncMock(return_value="dragged")
+        path = types.SimpleNamespace(
+            start_point=types.SimpleNamespace(x=760, y=397),
+            end_point=types.SimpleNamespace(x=1138, y=399),
+        )
+
+        result = asyncio.run(agent._perform_drag_drop_with_dom_source(path))
+
+        self.assertEqual(result, "dragged")
+        self.assertEqual((path.start_point.x, path.start_point.y), (1140, 397))
+        self.assertEqual((path.end_point.x, path.end_point.y), (760, 397))
+        agent._payload_drag_source.assert_not_awaited()
 
     def test_authorization_module_imports_with_runtime_annotations(self):
         source = (ROOT / "app/services/epic_authorization_service.py").read_text(

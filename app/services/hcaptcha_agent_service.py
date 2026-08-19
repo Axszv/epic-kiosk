@@ -443,6 +443,56 @@ class EpicAgentV(AgentV):
             candidates.append(candidate)
         return candidates
 
+    async def _move_card_centers(self) -> list[dict[str, float]]:
+        """Return visible centers of the hCaptcha cards marked `Move`."""
+        frame = await self._get_nested_challenge_frame_locator()
+        if frame is None:
+            return []
+        elements = frame.locator(".challenge-view *")
+        try:
+            boxes = await elements.evaluate_all(
+                """elements => {
+                    const root = document.querySelector('.challenge-view');
+                    if (!root) return [];
+                    const rootRect = root.getBoundingClientRect();
+                    const result = [];
+                    const seen = [];
+                    const visible = node => {
+                        const style = getComputedStyle(node);
+                        const rect = node.getBoundingClientRect();
+                        return style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            Number(style.opacity || 1) > 0 &&
+                            rect.width >= 45 && rect.height >= 45 &&
+                            rect.width < rootRect.width * 0.45 &&
+                            rect.height < rootRect.height * 0.7;
+                    };
+                    for (const element of elements) {
+                        const text = (element.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                        if (!text || !text.includes('move')) continue;
+                        let node = element;
+                        for (let depth = 0; node && node !== root && depth < 6; depth++, node = node.parentElement) {
+                            if (!visible(node)) continue;
+                            const rect = node.getBoundingClientRect();
+                            const center = {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
+                            if (seen.some(item => Math.hypot(item.x - center.x, item.y - center.y) < 18)) break;
+                            seen.push(center);
+                            result.push(center);
+                            break;
+                        }
+                    }
+                    return result;
+                }"""
+            )
+        except Exception as err:
+            logger.debug(f"Could not inspect hCaptcha Move cards: {err}")
+            return []
+        return [
+            {"x": float(item["x"]), "y": float(item["y"]), "score": 2000, "reason": "move-card"}
+            for item in boxes or []
+            if isinstance(item, dict) and "x" in item and "y" in item
+        ]
+
     async def _perform_drag_drop_with_dom_source(
         self,
         path,
@@ -451,7 +501,44 @@ class EpicAgentV(AgentV):
     ):
         model_x = float(path.start_point.x)
         model_y = float(path.start_point.y)
-        candidate = await self._payload_drag_source(model_x, model_y)
+        model_end_x = float(path.end_point.x)
+        model_end_y = float(path.end_point.y)
+        move_cards = []
+        with suppress(Exception):
+            move_cards = await self._move_card_centers()
+        candidate = None
+        if move_cards:
+            nearest_start = self._nearest_drag_source(model_x, model_y, move_cards)
+            nearest_end = self._nearest_drag_source(model_end_x, model_end_y, move_cards)
+            start_distance = (
+                (nearest_start["x"] - model_x) ** 2
+                + (nearest_start["y"] - model_y) ** 2
+            ) ** 0.5 if nearest_start else float("inf")
+            end_distance = (
+                (nearest_end["x"] - model_end_x) ** 2
+                + (nearest_end["y"] - model_end_y) ** 2
+            ) ** 0.5 if nearest_end else float("inf")
+            if end_distance + 30 < start_distance:
+                path.start_point.x, path.end_point.x = path.end_point.x, path.start_point.x
+                path.start_point.y, path.end_point.y = path.end_point.y, path.start_point.y
+                model_x, model_y = model_end_x, model_end_y
+                nearest_start = nearest_end
+                logger.info(
+                    "Corrected hCaptcha drag direction: model started outside Move card "
+                    f"and ended near one (start_distance={start_distance:.1f}, "
+                    f"end_distance={end_distance:.1f})"
+                )
+            if nearest_start is not None:
+                candidate = nearest_start
+                path.start_point.x = int(round(nearest_start["x"]))
+                path.start_point.y = int(round(nearest_start["y"]))
+                logger.info(
+                    "Corrected hCaptcha drag source to Move card: "
+                    f"({model_x:.0f},{model_y:.0f}) -> "
+                    f"({path.start_point.x},{path.start_point.y})"
+                )
+        if candidate is None:
+            candidate = await self._payload_drag_source(model_x, model_y)
         if candidate is None:
             candidates = await self._drag_source_candidates()
             candidate = self._nearest_drag_source(model_x, model_y, candidates)
