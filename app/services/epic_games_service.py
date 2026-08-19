@@ -1131,6 +1131,26 @@ class EpicGames:
                 await page.wait_for_timeout(250)
             return {}
 
+        async def wait_for_post_captcha_activity(
+            payment_btn: Any,
+            confirm_order_request_baseline: int,
+            talon_batch_baseline: int,
+            timeout_seconds: float = 15,
+        ) -> str:
+            deadline = asyncio.get_running_loop().time() + timeout_seconds
+            while asyncio.get_running_loop().time() < deadline:
+                if confirm_order_request_counter > confirm_order_request_baseline:
+                    return "confirm_order"
+                if post_captcha_talon_batch_counter > talon_batch_baseline:
+                    return "talon_batch"
+                try:
+                    if not await payment_btn.is_visible(timeout=500):
+                        return "button_hidden"
+                except Exception:
+                    return "button_hidden"
+                await page.wait_for_timeout(250)
+            return "none"
+
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
 
@@ -1202,21 +1222,43 @@ class EpicGames:
                             )
 
                         await page.wait_for_timeout(2000)
-                        response_baseline = confirm_order_response_counter
-                        try:
-                            _, payment_btn = await self._active_purchase_container(page)
-                            await payment_btn.wait_for(state="visible", timeout=10000)
-                        except Exception as err:
-                            logger.warning(
-                                "Validated hCaptcha but checkout control was not "
-                                f"available for the fresh submit: {err}"
+                        for phase_attempt in range(1, 4):
+                            try:
+                                _, payment_btn = await self._active_purchase_container(page)
+                                await payment_btn.wait_for(
+                                    state="visible", timeout=10000
+                                )
+                            except Exception as err:
+                                logger.warning(
+                                    "Validated hCaptcha but checkout control was not "
+                                    f"available for phase {phase_attempt}: {err}"
+                                )
+                                break
+
+                            response_baseline = confirm_order_response_counter
+                            confirm_order_request_baseline = (
+                                confirm_order_request_counter
                             )
-                        else:
+                            talon_batch_baseline = post_captcha_talon_batch_counter
                             logger.info(
-                                "Submitting checkout [validated] with refreshed "
-                                "purchase control via DOM click"
+                                "Advancing validated checkout state "
+                                f"[{phase_attempt}/3] via DOM click"
                             )
                             await payment_btn.evaluate("element => element.click()")
+                            activity = await wait_for_post_captcha_activity(
+                                payment_btn,
+                                confirm_order_request_baseline,
+                                talon_batch_baseline,
+                            )
+                            logger.info(
+                                "Validated checkout activity "
+                                f"[{phase_attempt}/3]: {activity}"
+                            )
+                            if activity in {"confirm_order", "button_hidden"}:
+                                break
+                            if activity == "none":
+                                break
+                            await page.wait_for_timeout(1000)
             else:
                 logger.debug("结账等待 45 秒后未出现 hCaptcha，检查提交结果")
 

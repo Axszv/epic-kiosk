@@ -140,7 +140,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertNotIn("hold_first_confirm_order", branch)
         self.assertNotIn("captcha_validation_done", branch)
         self.assertIn("Submitting checkout [initial]", branch)
-        self.assertIn("Submitting checkout [validated]", branch)
+        self.assertIn("Advancing validated checkout state", branch)
         self.assertIn('"/purchase/confirm-order"', branch)
         prepare_index = branch.index("agent.prepare_for_new_challenge()")
         initial_click_index = branch.index(
@@ -186,7 +186,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
 
         self.assertNotIn("await page.route(URL_CONFIRM_ORDER", branch)
         self.assertNotIn("await route.continue_()", branch)
-        self.assertIn("Submitting checkout [validated]", branch)
+        self.assertIn("Advancing validated checkout state", branch)
 
     def test_captcha_failure_detector_is_exact(self):
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
