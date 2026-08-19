@@ -156,6 +156,8 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("payment_btn.is_visible(timeout=500)", branch)
         self.assertIn("CHECKOUT_BUTTON_STATE", source)
         self.assertIn("await self._active_purchase_container(page)", branch)
+        self.assertIn("retry_checkout_after_captcha_rejection", branch)
+        self.assertIn("Retrying checkout once after Epic rejected the hCaptcha pass", branch)
         self.assertNotIn("post_captcha_refresh_requested", branch)
         self.assertNotIn("Submitting confirm-order with refreshed Talon state", branch)
 

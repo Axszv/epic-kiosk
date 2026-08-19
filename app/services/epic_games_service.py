@@ -1131,6 +1131,40 @@ class EpicGames:
                 await page.wait_for_timeout(250)
             return {}
 
+        async def retry_checkout_after_captcha_rejection() -> dict[str, Any]:
+            """Use the historical one-time retry after Epic rejects the pass."""
+            logger.info(
+                "Retrying checkout once after Epic rejected the hCaptcha pass"
+            )
+            try:
+                _, retry_button = await self._active_purchase_container(page)
+                await retry_button.wait_for(state="visible", timeout=10000)
+                await page.wait_for_timeout(1000)
+                await retry_button.click(force=True)
+            except Exception as err:
+                logger.warning(f"Could not resubmit checkout after captcha rejection: {err}")
+                return {}
+
+            if await agent.wait_for_challenge_start(timeout_seconds=10):
+                try:
+                    retry_result = await asyncio.wait_for(
+                        agent.wait_for_challenge(),
+                        timeout=max(
+                            settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+                            settings.EXECUTION_TIMEOUT
+                            + settings.RESPONSE_TIMEOUT
+                            + 15,
+                        ),
+                    )
+                except Exception as err:
+                    logger.warning(f"Retry checkout hCaptcha was not confirmed: {err}")
+                    return {}
+                if getattr(retry_result, "value", retry_result) != "success":
+                    logger.warning(f"Retry checkout hCaptcha result: {retry_result}")
+                    return {}
+
+            return await wait_for_checkout_outcome(timeout_seconds=20)
+
         page.on("request", capture_checkout_request)
         page.on("response", capture_confirm_order_response)
         await page.route(URL_CONFIRM_ORDER, hold_first_confirm_order)
@@ -1196,6 +1230,24 @@ class EpicGames:
                     f"🎉 Epic confirm-order 返回 HTTP {status}，等待入库验证"
                 )
                 return True
+
+            if is_retryable_confirm_order_failure(status, payload):
+                retry_outcome = await retry_checkout_after_captcha_rejection()
+                if retry_outcome.get("button_hidden"):
+                    logger.success("🎉 二次提交后结账按钮已消失，等待入库验证")
+                    return True
+                retry_status = int(retry_outcome.get("status") or 0)
+                if 200 <= retry_status < 300:
+                    logger.success(
+                        f"🎉 二次提交后 Epic confirm-order 返回 HTTP {retry_status}，等待入库验证"
+                    )
+                    return True
+                if retry_status:
+                    retry_payload = retry_outcome.get("payload") or {}
+                    logger.warning(
+                        "Epic retry confirm-order rejected checkout: "
+                        f"HTTP {retry_status}, errorCode={retry_payload.get('errorCode', '')}"
+                    )
 
             if status:
                 logger.warning(
