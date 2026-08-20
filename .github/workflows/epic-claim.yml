@@ -42,7 +42,9 @@ on:
     - cron: "23 12 * * 3,5"
 
 concurrency:
-  group: epic-kiosk-claim
+  # Keep scheduled/full runs mutually exclusive, while allowing targeted
+  # manual recovery runs for different accounts to execute in parallel.
+  group: epic-kiosk-claim-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.account_index || 'all' }}
   cancel-in-progress: false
 
 jobs:
