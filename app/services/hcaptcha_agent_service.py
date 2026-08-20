@@ -800,6 +800,18 @@ def get_login_hcaptcha_agent(page: Page) -> AgentV:
     return agent
 
 
+def replace_login_hcaptcha_agent(page: Page) -> AgentV:
+    """Reset upstream hCaptcha state after Epic restarts a login transaction."""
+    previous = _AGENTS.pop(page, None)
+    if previous is not None:
+        _detach_hcaptcha_agent(page, previous)
+
+    agent = AgentV(page=page, agent_config=settings)
+    _AGENTS[page] = agent
+    logger.debug("Replaced upstream hCaptcha agent for a fresh Epic login transaction")
+    return agent
+
+
 def get_legacy_checkout_agent(page: Page) -> AgentV:
     """Switch to the single-agent checkout flow used by historical successes."""
     previous = _AGENTS.pop(page, None)

@@ -17,7 +17,10 @@ from loguru import logger
 from playwright.async_api import expect, Page, Response, TimeoutError as PlaywrightTimeoutError
 
 from settings import RUNTIME_DIR, settings
-from services.hcaptcha_agent_service import get_login_hcaptcha_agent
+from services.hcaptcha_agent_service import (
+    get_login_hcaptcha_agent,
+    replace_login_hcaptcha_agent,
+)
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 
@@ -676,6 +679,7 @@ class EpicAuthorization:
                 await self._save_page_debug(
                     f"email_transaction_rejected_pre_password_{email_attempt}"
                 )
+                agent = replace_login_hcaptcha_agent(self.page)
                 await self.page.goto(point_url, wait_until="domcontentloaded")
                 await self.page.wait_for_timeout(1500)
                 email_input = self.page.locator("#email")
@@ -737,7 +741,7 @@ class EpicAuthorization:
                 captcha_attempt = 0
 
                 async def recover_email_transaction(rejection) -> bool:
-                    nonlocal email_transaction_retries, captcha_success
+                    nonlocal agent, email_transaction_retries, captcha_success
                     email_transaction_retries += 1
                     if email_transaction_retries > 3:
                         logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务，停止本次登录")
@@ -759,13 +763,9 @@ class EpicAuthorization:
                     await self._save_page_debug(
                         f"email_transaction_rejected_{email_transaction_retries}"
                     )
+                    agent = replace_login_hcaptcha_agent(self.page)
                     await self.page.goto(point_url, wait_until="domcontentloaded")
                     await self.page.wait_for_timeout(1500)
-                    prepare_for_new_challenge = getattr(
-                        agent, "prepare_for_new_challenge", None
-                    )
-                    if callable(prepare_for_new_challenge):
-                        prepare_for_new_challenge()
                     if self._has_refresh_csrf_session():
                         self._is_login_success_signal.put_nowait({"csrf": True})
                         return True

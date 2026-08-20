@@ -43,6 +43,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertNotIn("AgentV(", authorization_source)
         self.assertNotIn("AgentV(", games_source)
         self.assertIn("get_login_hcaptcha_agent", authorization_source)
+        self.assertIn("replace_login_hcaptcha_agent", authorization_source)
         self.assertIn("get_hcaptcha_agent", games_source)
 
     def test_factory_has_one_page_scoped_cache(self):
@@ -77,6 +78,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
         self.assertIn("replace_hcaptcha_agent", source)
         self.assertIn("get_login_hcaptcha_agent", source)
+        self.assertIn("replace_login_hcaptcha_agent", source)
         self.assertIn('page.remove_listener("response", agent._task_handler)', source)
 
     def test_replacing_agent_detaches_the_previous_response_listener(self):
@@ -92,6 +94,26 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
             result = module.replace_hcaptcha_agent(page)
         finally:
             module.EpicAgentV = original_agent_class
+
+        self.assertIs(result, replacement)
+        page.remove_listener.assert_called_once_with(
+            "response", previous._task_handler
+        )
+        self.assertIs(module._AGENTS[page], replacement)
+
+    def test_replacing_login_agent_detaches_the_previous_response_listener(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        page = MagicMock()
+        previous = MagicMock()
+        replacement = MagicMock()
+        module._AGENTS[page] = previous
+
+        original_agent_class = module.AgentV
+        module.AgentV = MagicMock(return_value=replacement)
+        try:
+            result = module.replace_login_hcaptcha_agent(page)
+        finally:
+            module.AgentV = original_agent_class
 
         self.assertIs(result, replacement)
         page.remove_listener.assert_called_once_with(

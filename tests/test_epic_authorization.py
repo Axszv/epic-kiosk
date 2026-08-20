@@ -138,8 +138,8 @@ class EpicHcaptchaDetectionTests(unittest.TestCase):
         end = source.index("# Keep this coordinator alive", start)
         branch = source[start:end]
 
-        self.assertIn("prepare_for_new_challenge = getattr", branch)
-        self.assertIn("prepare_for_new_challenge()", branch)
+        self.assertIn("nonlocal agent", branch)
+        self.assertIn("agent = replace_login_hcaptcha_agent(self.page)", branch)
         self.assertIn("恢复邮箱事务的继续按钮点击等待超时", branch)
 
 
