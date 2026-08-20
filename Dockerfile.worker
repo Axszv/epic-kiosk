@@ -47,6 +47,7 @@ RUN uv pip install --system --no-cache \
     pydantic-settings>=2.8.1 \
     celery[redis]>=5.4.0 \
     "hcaptcha-challenger[camoufox]>=0.18.13" \
+    "camoufox==0.4.11" \
     openai \
     redis \
     requests \
