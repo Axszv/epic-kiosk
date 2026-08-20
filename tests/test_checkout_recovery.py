@@ -66,6 +66,15 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertLess(settle, challenge)
         self.assertLess(challenge, second_click)
 
+        agent_source = (
+            ROOT / "app" / "services" / "hcaptcha_agent_service.py"
+        ).read_text(encoding="utf-8")
+        legacy_start = agent_source.index("def get_legacy_checkout_agent")
+        legacy_end = agent_source.index("def replace_hcaptcha_agent", legacy_start)
+        legacy_branch = agent_source[legacy_start:legacy_end]
+        self.assertIn("_AGENTS.pop(page, None)", legacy_branch)
+        self.assertIn("_detach_hcaptcha_agent(page, previous)", legacy_branch)
+
     def test_purchase_frames_are_scanned_before_the_main_page(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _active_purchase_container")
