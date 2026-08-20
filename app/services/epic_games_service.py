@@ -22,7 +22,11 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt
 from models import OrderItem, Order
 from models import PromotionGame
 from settings import settings, RUNTIME_DIR
-from services.hcaptcha_agent_service import get_hcaptcha_agent, replace_hcaptcha_agent
+from services.hcaptcha_agent_service import (
+    get_hcaptcha_agent,
+    get_legacy_checkout_agent,
+    replace_hcaptcha_agent,
+)
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 URL_LOGIN = (
@@ -1020,6 +1024,56 @@ class EpicGames:
             logger.warning(f"CHECKOUT_BUTTON_STATE:{phase}:inspect_failed:{err}")
 
     async def _handle_instant_checkout(self, page: Page) -> bool:
+        return await self._handle_legacy_instant_checkout(page)
+
+    async def _handle_legacy_instant_checkout(self, page: Page) -> bool:
+        """Use the checkout sequence proven by the successful August runs."""
+        logger.info("🚀 开始即时结账流程...")
+        agent = get_legacy_checkout_agent(page)
+        prepare_for_new_challenge = getattr(agent, "prepare_for_new_challenge", None)
+        if callable(prepare_for_new_challenge):
+            prepare_for_new_challenge()
+
+        try:
+            await self._handle_device_not_supported_modal(page)
+            await self._ensure_purchase_checkout_open(page)
+            _, payment_btn = await self._active_purchase_container(page)
+            if await self._handle_device_not_supported_modal(page):
+                _, payment_btn = await self._active_purchase_container(page)
+
+            logger.debug(f"点击支付按钮: {await payment_btn.text_content()}")
+            await payment_btn.click(force=True)
+            await page.wait_for_timeout(3000)
+
+            try:
+                logger.debug("检查验证码...")
+                await agent.wait_for_challenge()
+            except Exception as err:
+                logger.warning(f"结账验证码未确认通过: {err}")
+
+            with suppress(Exception):
+                if not await payment_btn.is_visible():
+                    logger.success("🎉 结账按钮已消失，等待入库验证")
+                    return True
+
+            with suppress(Exception):
+                await payment_btn.click(force=True)
+                await page.wait_for_timeout(2000)
+
+            with suppress(Exception):
+                if not await payment_btn.is_visible(timeout=3000):
+                    logger.success("🎉 二次提交后结账按钮已消失，等待入库验证")
+                    return True
+
+            logger.warning("⚠️ 结账按钮仍可见，尚不能确认领取成功")
+            return False
+        except Exception as err:
+            logger.warning(f"⚠️ 即时结账警告（游戏可能已领取）: {err}")
+            with suppress(Exception):
+                await page.reload()
+            return False
+
+    async def _handle_diagnostic_instant_checkout(self, page: Page) -> bool:
         logger.info("🚀 开始即时结账流程...")
         agent = replace_hcaptcha_agent(page)
         confirm_order_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()

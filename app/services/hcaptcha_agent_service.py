@@ -790,6 +790,15 @@ def get_hcaptcha_agent(page: Page) -> AgentV:
     return agent
 
 
+def get_legacy_checkout_agent(page: Page) -> AgentV:
+    """Switch to the single-agent checkout flow used by historical successes."""
+    previous = _AGENTS.pop(page, None)
+    if previous is not None:
+        _detach_hcaptcha_agent(page, previous)
+        logger.debug("Detached page-scoped Epic hCaptcha agent for legacy checkout")
+    return AgentV(page=page, agent_config=settings)
+
+
 def replace_hcaptcha_agent(page: Page) -> AgentV:
     """Replace the page agent before a new checkout transaction.
 

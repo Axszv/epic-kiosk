@@ -50,13 +50,30 @@ class CheckoutRecoveryTests(unittest.TestCase):
         )
         return namespace
 
-    def test_checkout_waits_for_delayed_hcaptcha_signals(self):
-        raw_source = SERVICE_SOURCE.read_text(encoding="utf-8")
-        source = ast.unparse(ast.parse(raw_source))
-        self.assertIn("wait_for_challenge_start", source)
-        self.assertIn("timeout_seconds=45", source)
-        self.assertIn("CHECKOUT_CAPTCHA_TIMEOUT_SECONDS", source)
-        self.assertIn("EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 15", source)
+    def test_checkout_uses_historical_legacy_agent_sequence(self):
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def _handle_legacy_instant_checkout")
+        end = source.index("async def _handle_diagnostic_instant_checkout", start)
+        branch = source[start:end]
+
+        self.assertIn("get_legacy_checkout_agent(page)", branch)
+        self.assertIn("await payment_btn.click(force=True)", branch)
+        first_click = branch.index("await payment_btn.click(force=True)")
+        settle = branch.index("await page.wait_for_timeout(3000)", first_click)
+        challenge = branch.index("await agent.wait_for_challenge()", settle)
+        second_click = branch.index("await payment_btn.click(force=True)", challenge)
+        self.assertLess(first_click, settle)
+        self.assertLess(settle, challenge)
+        self.assertLess(challenge, second_click)
+
+        agent_source = (
+            ROOT / "app" / "services" / "hcaptcha_agent_service.py"
+        ).read_text(encoding="utf-8")
+        legacy_start = agent_source.index("def get_legacy_checkout_agent")
+        legacy_end = agent_source.index("def replace_hcaptcha_agent", legacy_start)
+        legacy_branch = agent_source[legacy_start:legacy_end]
+        self.assertIn("_AGENTS.pop(page, None)", legacy_branch)
+        self.assertIn("_detach_hcaptcha_agent(page, previous)", legacy_branch)
 
     def test_purchase_frames_are_scanned_before_the_main_page(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
@@ -79,7 +96,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
         uk_start = source.index("async def _uk_confirm_order")
         self.assertLess(modal_start, reopen_start)
         self.assertLess(reopen_start, uk_start)
-        start = source.index("async def _handle_instant_checkout")
+        start = source.index("async def _handle_legacy_instant_checkout")
         end = source.index("async def add_promotion_to_cart", start)
         branch = source[start:end]
         self.assertIn("await self._ensure_purchase_checkout_open(page)", branch)
@@ -129,37 +146,21 @@ class CheckoutRecoveryTests(unittest.TestCase):
 
     def test_checkout_builds_request_after_validated_captcha_callback(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
-        start = source.index("async def _handle_instant_checkout")
-        end = source.index("async def add_promotion_to_cart", start)
+        start = source.index("async def _handle_legacy_instant_checkout")
+        end = source.index("async def _handle_diagnostic_instant_checkout", start)
         branch = source[start:end]
 
-        self.assertIn("replace_hcaptcha_agent(page)", branch)
-        self.assertIn("confirm_order_responses", branch)
-        self.assertIn("agent.prepare_for_new_challenge()", branch)
+        self.assertIn("get_legacy_checkout_agent(page)", branch)
+        self.assertNotIn("confirm_order_responses", branch)
         self.assertIn("await page.wait_for_timeout(3000)", branch)
-        self.assertIn("hold_first_confirm_order", branch)
-        self.assertIn("captcha_validation_done", branch)
-        self.assertIn("Holding the first confirm-order request", branch)
-        self.assertIn("Releasing the first confirm-order request after hCaptcha validation", branch)
-        self.assertIn("URL_CONFIRM_ORDER", branch)
-        prepare_index = branch.index("agent.prepare_for_new_challenge()")
-        initial_click_index = branch.index(
-            "await payment_btn.click(force=True)", prepare_index
-        )
+        initial_click_index = branch.index("await payment_btn.click(force=True)")
         settle_index = branch.index(
             "await page.wait_for_timeout(3000)", initial_click_index
         )
-        self.assertLess(prepare_index, initial_click_index)
         self.assertLess(initial_click_index, settle_index)
-        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 1)
-        self.assertIn("confirm_order_request_counter", branch)
-        self.assertIn("payment_btn.is_visible(timeout=500)", branch)
-        self.assertIn("CHECKOUT_BUTTON_STATE", source)
+        self.assertEqual(branch.count("await payment_btn.click(force=True)"), 2)
         self.assertIn("await self._active_purchase_container(page)", branch)
-        self.assertIn("retry_checkout_after_captcha_rejection", branch)
-        self.assertIn("Retrying checkout once after Epic rejected the hCaptcha pass", branch)
-        self.assertNotIn("post_captcha_refresh_requested", branch)
-        self.assertNotIn("Submitting confirm-order with refreshed Talon state", branch)
+        self.assertNotIn("Triggering Talon refresh after validated hCaptcha", branch)
 
     def test_mobile_checkout_does_not_repeat_an_expensive_rejected_transaction(self):
         source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
@@ -181,19 +182,13 @@ class CheckoutRecoveryTests(unittest.TestCase):
 
     def test_optional_talon_settling_delay_holds_the_original_request(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
-        start = source.index("async def _handle_instant_checkout")
-        end = source.index("async def add_promotion_to_cart", start)
+        start = source.index("async def _handle_legacy_instant_checkout")
+        end = source.index("async def _handle_diagnostic_instant_checkout", start)
         branch = source[start:end]
 
-        self.assertIn("CHECKOUT_CONFIRM_DELAY_MS", branch)
-        self.assertIn("await route.continue_()", branch)
-        self.assertIn("Holding the first confirm-order request", branch)
-        self.assertIn("Releasing the first confirm-order request after hCaptcha validation", branch)
-        self.assertNotIn('route.abort("blockedbyclient")', branch)
-        self.assertLess(
-            branch.index("captcha_validation_done.wait()"),
-            branch.index("await route.continue_()"),
-        )
+        self.assertNotIn("await page.route(URL_CONFIRM_ORDER", branch)
+        self.assertNotIn("await route.continue_()", branch)
+        self.assertIn("await payment_btn.click(force=True)", branch)
 
     def test_captcha_failure_detector_is_exact(self):
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
@@ -248,7 +243,7 @@ class CheckoutRecoveryTests(unittest.TestCase):
     def test_checkout_route_matches_query_string_variants(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         self.assertIn('URL_CONFIRM_ORDER = "**/purchase/confirm-order**"', source)
-        self.assertIn('await page.route(URL_CONFIRM_ORDER, hold_first_confirm_order)', source)
+        self.assertIn("URL_CONFIRM_ORDER", source)
 
     def test_checkout_network_diagnostics_only_emit_secret_fingerprints(self):
         helpers = self._load_diagnostic_helpers()
