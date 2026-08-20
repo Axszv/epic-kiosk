@@ -790,6 +790,16 @@ def get_hcaptcha_agent(page: Page) -> AgentV:
     return agent
 
 
+def get_login_hcaptcha_agent(page: Page) -> AgentV:
+    """Return the upstream agent used by Epic's login transaction."""
+    agent = _AGENTS.get(page)
+    if agent is None:
+        agent = AgentV(page=page, agent_config=settings)
+        _AGENTS[page] = agent
+        logger.debug("Created the upstream hCaptcha agent for Epic login")
+    return agent
+
+
 def get_legacy_checkout_agent(page: Page) -> AgentV:
     """Switch to the single-agent checkout flow used by historical successes."""
     previous = _AGENTS.pop(page, None)

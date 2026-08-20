@@ -33,22 +33,17 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         sys.modules.setdefault("playwright", MagicMock())
         sys.modules.setdefault("playwright.async_api", MagicMock())
 
-    def test_runtime_services_use_page_scoped_agent_factory(self):
-        for relative in (
-            "app/services/epic_authorization_service.py",
-            "app/services/epic_games_service.py",
-        ):
-            source = (ROOT / relative).read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            direct_constructors = [
-                node
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "AgentV"
-            ]
-            self.assertEqual(direct_constructors, [], relative)
-            self.assertIn("get_hcaptcha_agent", source)
+    def test_runtime_services_use_scoped_agent_factories(self):
+        authorization_source = (
+            ROOT / "app/services/epic_authorization_service.py"
+        ).read_text(encoding="utf-8")
+        games_source = (ROOT / "app/services/epic_games_service.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("AgentV(", authorization_source)
+        self.assertNotIn("AgentV(", games_source)
+        self.assertIn("get_login_hcaptcha_agent", authorization_source)
+        self.assertIn("get_hcaptcha_agent", games_source)
 
     def test_factory_has_one_page_scoped_cache(self):
         source = (ROOT / "app/services/hcaptcha_agent_service.py").read_text(
@@ -81,6 +76,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("Corrected hCaptcha drag source", source)
         self.assertIn("EpicAgentV(page=page, agent_config=settings)", source)
         self.assertIn("replace_hcaptcha_agent", source)
+        self.assertIn("get_login_hcaptcha_agent", source)
         self.assertIn('page.remove_listener("response", agent._task_handler)', source)
 
     def test_replacing_agent_detaches_the_previous_response_listener(self):
