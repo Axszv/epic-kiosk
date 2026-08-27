@@ -818,7 +818,10 @@ def get_legacy_checkout_agent(page: Page) -> AgentV:
     if previous is not None:
         _detach_hcaptcha_agent(page, previous)
         logger.debug("Detached page-scoped Epic hCaptcha agent for legacy checkout")
-    return AgentV(page=page, agent_config=settings)
+
+    agent = AgentV(page=page, agent_config=settings)
+    _AGENTS[page] = agent
+    return agent
 
 
 def replace_hcaptcha_agent(page: Page) -> AgentV:

@@ -121,6 +121,26 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         )
         self.assertIs(module._AGENTS[page], replacement)
 
+    def test_legacy_checkout_agent_replaces_and_caches_the_page_agent(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        page = MagicMock()
+        previous = MagicMock()
+        replacement = MagicMock()
+        module._AGENTS[page] = previous
+
+        original_agent_class = module.AgentV
+        module.AgentV = MagicMock(return_value=replacement)
+        try:
+            result = module.get_legacy_checkout_agent(page)
+        finally:
+            module.AgentV = original_agent_class
+
+        self.assertIs(result, replacement)
+        page.remove_listener.assert_called_once_with(
+            "response", previous._task_handler
+        )
+        self.assertIs(module._AGENTS[page], replacement)
+
     def test_checkout_resets_agent_before_submitting_order(self):
         source = (ROOT / "app/services/epic_games_service.py").read_text(
             encoding="utf-8"
