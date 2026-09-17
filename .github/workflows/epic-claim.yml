@@ -170,27 +170,19 @@ jobs:
           path: app/volumes
           key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Collect hCaptcha debug artifacts
-        if: always()
-        run: |
-          mkdir -p app/volumes/runtime/hcaptcha
-          if [ -d /tmp/hcaptcha/.cache ]; then
-            cp -a /tmp/hcaptcha/.cache/. app/volumes/runtime/hcaptcha/
-          fi
-          if [ -d /tmp/hcaptcha/.challenge ]; then
-            cp -a /tmp/hcaptcha/.challenge/. app/volumes/runtime/hcaptcha/
-          fi
-
       - name: Upload logs
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: epic-kiosk-logs
           path: |
             app/volumes/logs
-            app/volumes/runtime
+            app/volumes/runtime/*.json
+            app/volumes/runtime/*.html
+            app/volumes/runtime/*.png
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
 
       - name: Send ServerChan notification
         if: always()

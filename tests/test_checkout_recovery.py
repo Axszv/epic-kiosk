@@ -115,15 +115,26 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn('default: "300"', workflow)
         self.assertIn("github.event.inputs.execution_timeout || '300'", workflow)
         self.assertIn('CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "375"', workflow)
-        self.assertIn("Collect hCaptcha debug artifacts", workflow)
-        self.assertIn("cp -a /tmp/hcaptcha/.cache/.", workflow)
-        self.assertIn("cp -a /tmp/hcaptcha/.challenge/.", workflow)
         self.assertIn("fresh_profile:", workflow)
         self.assertIn("EPIC_FRESH_PROFILE:", workflow)
         self.assertIn("github.event.inputs.fresh_profile || 'false'", workflow)
         self.assertIn("confirm_delay_ms:", workflow)
         self.assertIn("CHECKOUT_CONFIRM_DELAY_MS:", workflow)
         self.assertIn("github.event.inputs.confirm_delay_ms || '0'", workflow)
+
+    def test_log_upload_is_bounded_and_does_not_fail_the_claim_job(self):
+        workflow = WORKFLOW_SOURCE.read_text(encoding="utf-8")
+        start = workflow.index("      - name: Upload logs")
+        end = workflow.index("      - name: Send ServerChan notification", start)
+        upload_step = workflow[start:end]
+
+        self.assertIn("continue-on-error: true", upload_step)
+        self.assertIn("app/volumes/logs", upload_step)
+        self.assertIn("app/volumes/runtime/*.json", upload_step)
+        self.assertIn("app/volumes/runtime/*.html", upload_step)
+        self.assertIn("app/volumes/runtime/*.png", upload_step)
+        self.assertNotIn("app/volumes/runtime\n", upload_step)
+        self.assertNotIn("/tmp/hcaptcha", workflow)
 
     def test_workflow_repairs_incomplete_camoufox_addon_cache(self):
         workflow = WORKFLOW_SOURCE.read_text(encoding="utf-8")
