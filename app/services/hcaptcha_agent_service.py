@@ -91,21 +91,6 @@ async def load_hsw_script(page: Page, url: str) -> str:
     return await response.text()
 
 
-class ResilientLegacyAgentV(AgentV):
-    """Keep the proven checkout solver while loading hsw.js safely."""
-
-    async def _task_handler(self, response):
-        if not response.url.endswith("/hsw.js"):
-            return await super()._task_handler(response)
-        try:
-            script = await load_hsw_script(self.page, response.url)
-            await self.page.evaluate(script)
-            if not await self.page.evaluate("typeof hsw === 'function'"):
-                raise RuntimeError("hsw function was not installed")
-        except Exception as err:
-            logger.warning(f"Checkout hsw.js injection failed: {err}")
-
-
 class EpicAgentV(AgentV):
     """AgentV with a Camoufox-safe hsw.js loader."""
 
@@ -834,7 +819,7 @@ def get_legacy_checkout_agent(page: Page) -> AgentV:
         _detach_hcaptcha_agent(page, previous)
         logger.debug("Detached page-scoped Epic hCaptcha agent for legacy checkout")
 
-    agent = ResilientLegacyAgentV(page=page, agent_config=settings)
+    agent = EpicAgentV(page=page, agent_config=settings)
     _AGENTS[page] = agent
     return agent
 

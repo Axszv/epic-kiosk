@@ -1053,9 +1053,13 @@ class EpicGames:
 
             try:
                 logger.debug("检查验证码...")
-                await asyncio.wait_for(
+                challenge_result = await asyncio.wait_for(
                     agent.wait_for_challenge(),
                     timeout=settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+                )
+                print(
+                    f"CHECKOUT_CAPTCHA_RESULT:{getattr(challenge_result, 'value', challenge_result)}",
+                    flush=True,
                 )
             except asyncio.TimeoutError:
                 logger.warning("Checkout hCaptcha exceeded its time budget")

@@ -128,12 +128,12 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         replacement = MagicMock()
         module._AGENTS[page] = previous
 
-        original_agent_class = module.ResilientLegacyAgentV
-        module.ResilientLegacyAgentV = MagicMock(return_value=replacement)
+        original_agent_class = module.EpicAgentV
+        module.EpicAgentV = MagicMock(return_value=replacement)
         try:
             result = module.get_legacy_checkout_agent(page)
         finally:
-            module.ResilientLegacyAgentV = original_agent_class
+            module.EpicAgentV = original_agent_class
 
         self.assertIs(result, replacement)
         page.remove_listener.assert_called_once_with(
@@ -141,11 +141,14 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         )
         self.assertIs(module._AGENTS[page], replacement)
 
-    def test_legacy_checkout_loads_hsw_without_decoding_the_browser_response(self):
+    def test_checkout_loads_hsw_without_decoding_the_browser_response(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
-        agent = module.ResilientLegacyAgentV.__new__(module.ResilientLegacyAgentV)
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
         agent.page = MagicMock()
         agent.page.evaluate = AsyncMock(side_effect=[None, True])
+        agent._hsw_lock = asyncio.Lock()
+        agent._hsw_document_key = ""
+        agent.page.url = "https://store.epicgames.com/p/test"
         response = types.SimpleNamespace(url="https://hcaptcha.com/hsw.js")
 
         with patch.object(module, "load_hsw_script", new=AsyncMock(return_value="hsw script")) as loader:
