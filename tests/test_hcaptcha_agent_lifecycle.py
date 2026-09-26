@@ -6,7 +6,7 @@ import types
 import unittest
 from enum import Enum
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,18 +128,31 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         replacement = MagicMock()
         module._AGENTS[page] = previous
 
-        original_agent_class = module.AgentV
-        module.AgentV = MagicMock(return_value=replacement)
+        original_agent_class = module.ResilientLegacyAgentV
+        module.ResilientLegacyAgentV = MagicMock(return_value=replacement)
         try:
             result = module.get_legacy_checkout_agent(page)
         finally:
-            module.AgentV = original_agent_class
+            module.ResilientLegacyAgentV = original_agent_class
 
         self.assertIs(result, replacement)
         page.remove_listener.assert_called_once_with(
             "response", previous._task_handler
         )
         self.assertIs(module._AGENTS[page], replacement)
+
+    def test_legacy_checkout_loads_hsw_without_decoding_the_browser_response(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.ResilientLegacyAgentV.__new__(module.ResilientLegacyAgentV)
+        agent.page = MagicMock()
+        agent.page.evaluate = AsyncMock(side_effect=[None, True])
+        response = types.SimpleNamespace(url="https://hcaptcha.com/hsw.js")
+
+        with patch.object(module, "load_hsw_script", new=AsyncMock(return_value="hsw script")) as loader:
+            asyncio.run(agent._task_handler(response))
+
+        loader.assert_awaited_once_with(agent.page, response.url)
+        agent.page.evaluate.assert_any_await("hsw script")
 
     def test_checkout_resets_agent_before_submitting_order(self):
         source = (ROOT / "app/services/epic_games_service.py").read_text(

@@ -93,6 +93,21 @@ async def product_cta(page):
     return None
 
 
+async def wait_for_mobile_ownership(page, attempts: int = 3) -> dict | None:
+    """Wait for an accepted checkout to appear in the product CTA."""
+    for _ in range(attempts):
+        with suppress(Exception):
+            await page.reload(wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
+        cta = await product_cta(page)
+        if cta is None:
+            continue
+        text = " ".join(((await cta.text_content()) or "").split())
+        if any(marker in text.lower() for marker in OWNED_MARKERS):
+            return {"text": text, "disabled": await cta.is_disabled()}
+    return None
+
+
 def offer_identity(offer: dict) -> str:
     sandbox_id = str(offer.get("sandboxId") or "").strip()
     offer_id = str(offer.get("offerId") or "").strip()
@@ -223,12 +238,14 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
     except Exception as err:
         result["notes"].append(f"checkout_error:{type(err).__name__}")
 
-    # Never submit this offer again in the same account attempt. Refresh once
-    # and require the product CTA to prove ownership; account-level retries
-    # handle an unverified submission with a fresh browser process.
-    with suppress(Exception):
-        await page.reload(wait_until="domcontentloaded")
-        await page.wait_for_timeout(5000)
+    # A completed checkout can take several seconds to reach the product page.
+    # Refresh for evidence without submitting another order.
+    owned_cta = await wait_for_mobile_ownership(page)
+    if owned_cta is not None:
+        result["final_cta"] = owned_cta
+        result["status"] = "verified_owned"
+        emit_result(result)
+        return result
 
     final_text = await body_text(page)
     result["final_buttons"] = await button_texts(page)
@@ -237,15 +254,10 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
 
     final_cta = await product_cta(page)
     if final_cta is not None:
-        final_cta_text = " ".join(((await final_cta.text_content()) or "").split())
         result["final_cta"] = {
-            "text": final_cta_text,
+            "text": " ".join(((await final_cta.text_content()) or "").split()),
             "disabled": await final_cta.is_disabled(),
         }
-        if any(marker in final_cta_text.lower() for marker in OWNED_MARKERS):
-            result["status"] = "verified_owned"
-            emit_result(result)
-            return result
 
     offer_id = str(offer.get("offerId") or "").strip()
     if offer_id:

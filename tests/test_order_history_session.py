@@ -5,7 +5,7 @@ import types
 import unittest
 from enum import Enum
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,6 +121,9 @@ class FakeContext:
 
     async def new_page(self):
         return self.account_page
+
+    async def cookies(self):
+        return []
 
 
 class FakeStorePage:
@@ -253,6 +256,57 @@ class OrderHistorySessionTests(unittest.TestCase):
         self.assertIn("verified_by_order_history", results[0]["notes"])
         collect.assert_not_awaited()
         emit.assert_called_once()
+
+    def test_order_history_401_is_not_retried_in_the_same_context(self):
+        page = FakeStorePage()
+        page.context.account_page.goto = AsyncMock()
+
+        async def redirect_to_login(*_args, **_kwargs):
+            page.context.account_page.url = "https://www.epicgames.com/id/login"
+
+        page.context.account_page.goto.side_effect = redirect_to_login
+        response = types.SimpleNamespace(
+            status_code=401,
+            url=epic_games_service.URL_ORDER_HISTORY,
+            raise_for_status=lambda: (_ for _ in ()).throw(RuntimeError("401")),
+        )
+        client = MagicMock()
+        client.get = AsyncMock(return_value=response)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(epic_games_service.httpx, "AsyncClient", return_value=client, create=True):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(epic_games_service.EpicGames.fetch_order_history(page))
+            with self.assertRaisesRegex(RuntimeError, "unauthorized in this browser context"):
+                asyncio.run(epic_games_service.EpicGames.fetch_order_history(page))
+
+        self.assertEqual(len(page.context.request.calls), 1)
+        client.get.assert_awaited_once()
+
+    def test_mobile_waits_for_a_delayed_owned_cta_without_clicking_again(self):
+        page = types.SimpleNamespace(
+            reload=AsyncMock(),
+            wait_for_timeout=AsyncMock(),
+        )
+        get_cta = types.SimpleNamespace(
+            text_content=AsyncMock(return_value="Get"),
+            is_disabled=AsyncMock(return_value=False),
+        )
+        owned_cta = types.SimpleNamespace(
+            text_content=AsyncMock(return_value="In Library"),
+            is_disabled=AsyncMock(return_value=True),
+        )
+
+        with patch.object(
+            epic_mobile_service,
+            "product_cta",
+            new=AsyncMock(side_effect=[get_cta, owned_cta]),
+        ):
+            result = asyncio.run(epic_mobile_service.wait_for_mobile_ownership(page))
+
+        self.assertEqual(result, {"text": "In Library", "disabled": True})
+        self.assertEqual(page.reload.await_count, 2)
 
 
 if __name__ == "__main__":

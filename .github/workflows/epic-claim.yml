@@ -138,14 +138,13 @@ jobs:
             echo "Removing incomplete Camoufox UBO addon cache"
             rm -rf "${CAMOUFOX_UBO_DIR}"
           fi
-          python -m camoufox fetch
+          python scripts/install_camoufox_browser.py
           if [ ! -f "${CAMOUFOX_UBO_DIR}/manifest.json" ]; then
             echo "Camoufox UBO addon is incomplete after fetch; retrying cleanly"
             rm -rf "${CAMOUFOX_UBO_DIR}"
-            python -m camoufox fetch
+            python scripts/install_camoufox_browser.py
           fi
           test -f "${CAMOUFOX_UBO_DIR}/manifest.json"
-          python -m camoufox version
 
       - name: Restore browser state
         uses: actions/cache/restore@v4

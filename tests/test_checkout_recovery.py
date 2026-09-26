@@ -60,11 +60,12 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn("await payment_btn.click(force=True)", branch)
         first_click = branch.index("await payment_btn.click(force=True)")
         settle = branch.index("await page.wait_for_timeout(3000)", first_click)
-        challenge = branch.index("await agent.wait_for_challenge()", settle)
+        challenge = branch.index("agent.wait_for_challenge()", settle)
         second_click = branch.index("await payment_btn.click(force=True)", challenge)
         self.assertLess(first_click, settle)
         self.assertLess(settle, challenge)
         self.assertLess(challenge, second_click)
+        self.assertIn("timeout=settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS", branch)
 
         agent_source = (
             ROOT / "app" / "services" / "hcaptcha_agent_service.py"

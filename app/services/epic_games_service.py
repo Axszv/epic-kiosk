@@ -12,6 +12,7 @@ from enum import Enum
 from json import JSONDecodeError
 from typing import Any, List
 from urllib.parse import parse_qsl, urlsplit
+from weakref import WeakSet
 
 import httpx
 from loguru import logger
@@ -43,6 +44,7 @@ URL_ACCOUNT_ORIGIN = "https://accounts.epicgames.com/"
 URL_ACCOUNT_TRANSACTIONS = f"{URL_ACCOUNT_ORIGIN}account/transactions?lang=en-US"
 URL_ORDER_HISTORY = f"{URL_ACCOUNT_ORIGIN}account/v2/payment/ajaxGetOrderHistory"
 URL_CONFIRM_ORDER = "**/purchase/confirm-order**"
+_ORDER_HISTORY_UNAUTHORIZED_CONTEXTS = WeakSet()
 
 REGION_UNAVAILABLE_MARKERS = (
     "currently unavailable in your platform or region",
@@ -587,6 +589,8 @@ class EpicGames:
     @staticmethod
     async def fetch_order_history(page: Page) -> dict:
         """Fetch Epic order history with the browser session."""
+        if page.context in _ORDER_HISTORY_UNAUTHORIZED_CONTEXTS:
+            raise RuntimeError("Order history is unauthorized in this browser context")
         endpoint = URL_ORDER_HISTORY
         request_headers = {
             "accept": "application/json, text/plain, */*",
@@ -654,6 +658,8 @@ class EpicGames:
                 f"ORDER_HISTORY_RESPONSE:httpx:{resp.status_code}:{resp.url}",
                 flush=True,
             )
+            if resp.status_code == 401:
+                _ORDER_HISTORY_UNAUTHORIZED_CONTEXTS.add(page.context)
             resp.raise_for_status()
             if not str(resp.url).startswith(endpoint):
                 raise RuntimeError(f"Order API redirected to {resp.url}")
@@ -1047,7 +1053,13 @@ class EpicGames:
 
             try:
                 logger.debug("检查验证码...")
-                await agent.wait_for_challenge()
+                await asyncio.wait_for(
+                    agent.wait_for_challenge(),
+                    timeout=settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Checkout hCaptcha exceeded its time budget")
+                return False
             except Exception as err:
                 logger.warning(f"结账验证码未确认通过: {err}")
 
