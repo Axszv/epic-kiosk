@@ -60,7 +60,7 @@ jobs:
       PRIMARY_MODEL: agnes-2.5-flash
       PRIMARY_MODEL_FALLBACK: agnes-2.5-flash
       CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || 'agnes-2.5-flash' }}
-      CAPTCHA_MODEL_FALLBACK: agnes-2.0-flash
+      CAPTCHA_MODEL_FALLBACK: agnes-3.0-flash
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
       RESPONSE_TIMEOUT: "90"

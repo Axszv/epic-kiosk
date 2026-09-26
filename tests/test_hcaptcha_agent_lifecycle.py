@@ -248,6 +248,33 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         agent._cache_validated_captcha_response.assert_called_once_with(response)
 
+    def test_agent_refreshes_once_when_visible_challenge_has_no_response(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent.config = types.SimpleNamespace(EXECUTION_TIMEOUT=1, RESPONSE_TIMEOUT=0.01)
+        agent._captcha_payload_queue = asyncio.Queue()
+        agent._captcha_response_queue = asyncio.Queue()
+        agent._has_visible_challenge_frame = AsyncMock(return_value=True)
+        agent._cache_validated_captcha_response = MagicMock()
+        agent.page = types.SimpleNamespace(wait_for_timeout=AsyncMock())
+        agent.robotic_arm = types.SimpleNamespace(refresh_challenge=AsyncMock())
+        response = types.SimpleNamespace(is_pass=True)
+        calls = 0
+
+        async def solve_round():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                agent._captcha_response_queue.put_nowait(response)
+
+        agent._solve_captcha = AsyncMock(side_effect=solve_round)
+
+        result = asyncio.run(agent.wait_for_challenge())
+
+        self.assertEqual(result.value, "success")
+        self.assertEqual(calls, 2)
+        agent.robotic_arm.refresh_challenge.assert_awaited_once()
+
     def test_agent_handles_a_stale_challenge_dom_without_leaking_timeout(self):
         source = (ROOT / "app/services/hcaptcha_agent_service.py").read_text(
             encoding="utf-8"

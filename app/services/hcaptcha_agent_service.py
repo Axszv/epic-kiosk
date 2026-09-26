@@ -645,6 +645,7 @@ class EpicAgentV(AgentV):
         """Solve every round emitted by one Epic checkout hCaptcha transaction."""
         deadline = time.monotonic() + self.config.EXECUTION_TIMEOUT
         round_number = 0
+        response_retries = 0
 
         while time.monotonic() < deadline:
             while not self._captcha_response_queue.empty():
@@ -723,12 +724,19 @@ class EpicAgentV(AgentV):
                 logger.error(
                     f"Wait for captcha response timeout {self.config.RESPONSE_TIMEOUT}s"
                 )
+                if response_retries == 0 and await self._has_visible_challenge_frame():
+                    response_retries += 1
+                    print("HCAPTCHA_RETRY:response_timeout", flush=True)
+                    await self.robotic_arm.refresh_challenge()
+                    continue
                 return ChallengeSignal.RESPONSE_TIMEOUT
 
         logger.error(f"Challenge execution timed out after {self.config.EXECUTION_TIMEOUT}s")
         return ChallengeSignal.EXECUTION_TIMEOUT
 
     async def _task_handler(self, response):
+        if "/checkcaptcha/" in response.url:
+            print(f"HCAPTCHA_CHECK_RESPONSE:{response.status}", flush=True)
         if (
             "/getcaptcha/" in response.url
             and response.headers.get("content-type", "") != "application/json"
@@ -761,6 +769,7 @@ class EpicAgentV(AgentV):
                     raise RuntimeError("hsw function was not installed")
                 self._hsw_document_key = document_key
                 logger.debug("Injected hsw.js through the resilient loader")
+                print("HCAPTCHA_HSW:injected", flush=True)
             except Exception as err:
                 # Mark this document as attempted so a burst of identical hsw
                 # responses cannot create a new task for every response.
