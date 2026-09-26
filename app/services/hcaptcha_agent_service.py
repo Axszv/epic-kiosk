@@ -641,6 +641,35 @@ class EpicAgentV(AgentV):
             await self.page.wait_for_timeout(250)
         return False
 
+    async def _retry_unanswered_challenge(self) -> bool:
+        frame = await self._get_nested_challenge_frame_locator()
+        if frame is not None:
+            submit = frame.locator("div.button-submit.button").first
+            with suppress(Exception):
+                if await submit.is_visible(timeout=1000):
+                    print("HCAPTCHA_RETRY:submit", flush=True)
+                    await submit.click(force=True, timeout=3000)
+                    for _ in range(40):
+                        if not self._captcha_response_queue.empty():
+                            return True
+                        await self.page.wait_for_timeout(250)
+                    return True
+        try:
+            await self.robotic_arm.refresh_challenge()
+        except Exception as err:
+            logger.warning(f"hCaptcha refresh control is unavailable: {err}")
+            return False
+        print("HCAPTCHA_RETRY:refresh", flush=True)
+        return True
+
+    async def _review_challenge_type(self):
+        challenge_type = await super()._review_challenge_type()
+        print(
+            f"HCAPTCHA_TASK:{getattr(challenge_type, 'value', challenge_type)}",
+            flush=True,
+        )
+        return challenge_type
+
     async def wait_for_challenge(self) -> ChallengeSignal:
         """Solve every round emitted by one Epic checkout hCaptcha transaction."""
         deadline = time.monotonic() + self.config.EXECUTION_TIMEOUT
@@ -726,9 +755,8 @@ class EpicAgentV(AgentV):
                 )
                 if response_retries == 0 and await self._has_visible_challenge_frame():
                     response_retries += 1
-                    print("HCAPTCHA_RETRY:response_timeout", flush=True)
-                    await self.robotic_arm.refresh_challenge()
-                    continue
+                    if await self._retry_unanswered_challenge():
+                        continue
                 return ChallengeSignal.RESPONSE_TIMEOUT
 
         logger.error(f"Challenge execution timed out after {self.config.EXECUTION_TIMEOUT}s")

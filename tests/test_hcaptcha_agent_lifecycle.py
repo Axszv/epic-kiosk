@@ -258,6 +258,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         agent._cache_validated_captcha_response = MagicMock()
         agent.page = types.SimpleNamespace(wait_for_timeout=AsyncMock())
         agent.robotic_arm = types.SimpleNamespace(refresh_challenge=AsyncMock())
+        agent._get_nested_challenge_frame_locator = AsyncMock(return_value=None)
         response = types.SimpleNamespace(is_pass=True)
         calls = 0
 
@@ -274,6 +275,27 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertEqual(result.value, "success")
         self.assertEqual(calls, 2)
         agent.robotic_arm.refresh_challenge.assert_awaited_once()
+
+    def test_unanswered_challenge_submits_visible_verify_once(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent._captcha_response_queue = asyncio.Queue()
+        agent.page = types.SimpleNamespace(wait_for_timeout=AsyncMock())
+        agent.robotic_arm = types.SimpleNamespace(refresh_challenge=AsyncMock())
+        submit = MagicMock()
+        submit.is_visible = AsyncMock(return_value=True)
+        submit.click = AsyncMock(
+            side_effect=lambda **_kwargs: agent._captcha_response_queue.put_nowait(object())
+        )
+        frame = MagicMock()
+        frame.locator.return_value.first = submit
+        agent._get_nested_challenge_frame_locator = AsyncMock(return_value=frame)
+
+        result = asyncio.run(agent._retry_unanswered_challenge())
+
+        self.assertTrue(result)
+        submit.click.assert_awaited_once()
+        agent.robotic_arm.refresh_challenge.assert_not_awaited()
 
     def test_agent_handles_a_stale_challenge_dom_without_leaking_timeout(self):
         source = (ROOT / "app/services/hcaptcha_agent_service.py").read_text(
