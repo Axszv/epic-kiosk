@@ -110,10 +110,11 @@ class EpicAgentV(AgentV):
         self.robotic_arm.get_challenge_frame_locator = (
             self._get_nested_challenge_frame_locator
         )
-        # hCaptcha can change task type between pages. Upstream processes every
-        # crumb with the first page's type, so return to AgentV after each page
-        # and classify the newly rendered challenge again.
-        self.robotic_arm.check_crumb_count = self._single_crumb_count
+        # Pages in one payload must all be answered before awaiting its result.
+        # Keep upstream page counting and track the page for drag coordinates.
+        self._challenge_page_index = 0
+        self._original_capture_spatial_mapping = self.robotic_arm._capture_spatial_mapping
+        self.robotic_arm._capture_spatial_mapping = self._capture_challenge_page
         # Upstream executes the model's start coordinate verbatim. Visual
         # models often identify the correct target while missing the small
         # draggable tile by tens of pixels, so align the start with the actual
@@ -123,8 +124,10 @@ class EpicAgentV(AgentV):
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
 
-    async def _single_crumb_count(self) -> int:
-        return 1
+    async def _capture_challenge_page(self, frame, cache_key, crumb_id):
+        self._challenge_page_index = int(crumb_id)
+        print(f"HCAPTCHA_PAGE:{self._challenge_page_index + 1}", flush=True)
+        return await self._original_capture_spatial_mapping(frame, cache_key, crumb_id)
 
     @staticmethod
     def _captcha_pass_metadata(response) -> str:
@@ -319,7 +322,10 @@ class EpicAgentV(AgentV):
         tasklist = getattr(payload, "tasklist", None) or []
         if not tasklist:
             return None
-        entities = getattr(tasklist[0], "entities", None) or []
+        page_index = getattr(self, "_challenge_page_index", 0)
+        if page_index < 0 or page_index >= len(tasklist):
+            return None
+        entities = getattr(tasklist[page_index], "entities", None) or []
         if not entities:
             return None
 
@@ -576,6 +582,7 @@ class EpicAgentV(AgentV):
         payloads = self._drain_queue(self._captcha_payload_queue)
         responses = self._drain_queue(self._captcha_response_queue)
         self._captcha_payload = None
+        self._challenge_page_index = 0
         self.robotic_arm.captcha_payload = None
         self.robotic_arm.signal_crumb_count = None
         logger.debug(
@@ -663,6 +670,7 @@ class EpicAgentV(AgentV):
         return True
 
     async def _review_challenge_type(self):
+        self._challenge_page_index = 0
         challenge_type = await super()._review_challenge_type()
         print(
             f"HCAPTCHA_TASK:{getattr(challenge_type, 'value', challenge_type)}",
