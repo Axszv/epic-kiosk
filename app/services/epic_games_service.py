@@ -1381,6 +1381,7 @@ class EpicGames:
                         continue
                     if await self._owned_from_product_page(page, promotion):
                          logger.success(f"✅ 游戏已在库中")
+                         emit_desktop_result(promotion.title, "already_owned")
                          continue
                     raise AssertionError(f"Could not find purchase button for {promotion.title}")
             except AssertionError:
@@ -1402,6 +1403,7 @@ class EpicGames:
             if is_disabled:
                 if any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED"]):
                     logger.success(f"✅ 游戏已在库中")
+                    emit_desktop_result(promotion.title, "already_owned")
                     continue
                 await self._save_debug_page(page, f"purchase_disabled_{promotion.namespace}")
                 raise AssertionError(
@@ -1410,6 +1412,7 @@ class EpicGames:
 
             if any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED"]):
                 logger.success(f"✅ 游戏已在库中")
+                emit_desktop_result(promotion.title, "already_owned")
                 continue
 
             if "CART" in btn_text_upper:

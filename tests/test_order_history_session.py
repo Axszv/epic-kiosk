@@ -132,6 +132,36 @@ class FakeStorePage:
 
 
 class OrderHistorySessionTests(unittest.TestCase):
+    def test_owned_promotions_emit_titles_even_when_initial_cta_is_missing(self):
+        agent = epic_games_service.EpicGames.__new__(epic_games_service.EpicGames)
+        agent._skip_region_unavailable = AsyncMock(return_value=False)
+        agent._owned_from_product_page = AsyncMock(return_value=True)
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.title = AsyncMock(return_value="Store")
+        continue_button = MagicMock(is_visible=AsyncMock(return_value=False))
+        purchase_button = MagicMock(
+            is_visible=AsyncMock(side_effect=[False, True]),
+            text_content=AsyncMock(return_value="In Library"),
+            is_disabled=AsyncMock(return_value=True),
+        )
+        page.locator.side_effect = lambda selector: (
+            types.SimpleNamespace(first=purchase_button)
+            if "purchase-cta-button" in selector else continue_button
+        )
+        promotions = [
+            types.SimpleNamespace(title=title, url="https://example.com/" + title)
+            for title in ("First", "Second")
+        ]
+        with patch.object(epic_games_service, "emit_desktop_result") as emit:
+            asyncio.run(agent.add_promotion_to_cart(page, promotions))
+
+        self.assertEqual(
+            [call.args for call in emit.call_args_list],
+            [("First", "already_owned"), ("Second", "already_owned")],
+        )
+        purchase_button.click.assert_not_called()
+
     def test_bootstraps_account_origin_after_unauthorized_api_request(self):
         page = FakeStorePage()
 
