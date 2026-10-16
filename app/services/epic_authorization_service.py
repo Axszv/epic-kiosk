@@ -17,6 +17,7 @@ from loguru import logger
 from playwright.async_api import expect, Page, Response, TimeoutError as PlaywrightTimeoutError
 
 from settings import RUNTIME_DIR, settings
+from services.epic_store_page import STORE_LOGIN_URL, store_signed_out
 from services.hcaptcha_agent_service import (
     get_login_hcaptcha_agent,
     replace_login_hcaptcha_agent,
@@ -572,7 +573,7 @@ class EpicAuthorization:
             await self._save_page_debug("account_validation_timeout")
             logger.warning("⚠️ 账号验证阶段未观察到 refresh-csrf，继续依赖已有会话状态")
 
-    async def _login(self) -> tuple[bool, ErrorType] | None:
+    async def _login(self, login_url: str | None = None) -> tuple[bool, ErrorType] | None:
         """
         执行登录流程
 
@@ -601,9 +602,12 @@ class EpicAuthorization:
         keepalive_task = None
 
         try:
-            point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
+            point_url = login_url or "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
+            if login_url and await self._store_session_ready():
+                logger.success("✅ Store login callback restored the existing session")
+                return (True, ErrorType.SUCCESS)
             if self._has_refresh_csrf_session():
                 logger.success("✅ 检测到已有 refresh-csrf 会话，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
@@ -1124,6 +1128,48 @@ class EpicAuthorization:
         except Exception as e:
             logger.error(f"❌ 处理 EULA 页面异常: {e}")
             return (False, ErrorType.EULA_FAILED)
+
+    async def _store_session_ready(self) -> bool:
+        if not self.page.url.startswith("https://store.epicgames.com/"):
+            return False
+        if await store_signed_out(self.page):
+            return False
+        with suppress(Exception):
+            status = await self.page.locator("egs-navigation").get_attribute(
+                "isloggedin", timeout=3000
+            )
+            return status == "true"
+        return False
+
+    async def reauthenticate_store(self) -> ErrorType:
+        """Rebuild the Store session once, preserving the browser profile."""
+        self._refresh_csrf_seen = False
+        for queue in (
+            self._is_login_success_signal,
+            self._is_refresh_csrf_signal,
+            self._email_transaction_failure_signal,
+        ):
+            while not queue.empty():
+                queue.get_nowait()
+        self._login_error_code = None
+        result = await self._login(login_url=STORE_LOGIN_URL)
+        if not result:
+            return ErrorType.UNKNOWN
+        success, error_type = result
+        if not success:
+            return error_type
+
+        # A successful account login/refresh-csrf alone does not establish the
+        # redesigned Store's session. Complete its own redirect/callback flow.
+        if not await self._store_session_ready():
+            await self.page.goto(STORE_LOGIN_URL, wait_until="domcontentloaded")
+        for _ in range(10):
+            if await self._store_session_ready():
+                logger.success("✅ Store session recovery verified")
+                return ErrorType.SUCCESS
+            await self.page.wait_for_timeout(1000)
+        await self._save_page_debug("store_session_recovery_failed")
+        return ErrorType.COOKIE_INVALID
 
     async def invoke(self) -> ErrorType:
         """

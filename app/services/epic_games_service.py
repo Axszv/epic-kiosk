@@ -23,6 +23,9 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt
 from models import OrderItem, Order
 from models import PromotionGame
 from settings import settings, RUNTIME_DIR
+from services.epic_store_page import (
+    StoreLoginRequired, is_login_url, product_cta, store_signed_out,
+)
 from services.hcaptcha_agent_service import (
     get_hcaptcha_agent,
     get_legacy_checkout_agent,
@@ -481,7 +484,8 @@ class EpicAgent:
         # 处理错误情况
         if result != GameCollectResult.SUCCESS:
             # 输出特定格式的错误日志，便于 worker.py 解析
-            logger.error(f"❌ GAME_ERROR:{result.value}")
+            if result != GameCollectResult.COOKIE_INVALID:
+                logger.error(f"❌ GAME_ERROR:{result.value}")
             return result
 
         # 检查是否有游戏需要领取
@@ -502,6 +506,9 @@ class EpicAgent:
             try:
                 await self.epic_games.collect_weekly_games(self._promotions)
                 return GameCollectResult.SUCCESS
+            except StoreLoginRequired:
+                logger.warning("Store product session requires reauthentication")
+                return GameCollectResult.COOKIE_INVALID
             except Exception as e:
                 logger.exception(e)
                 return GameCollectResult.UNKNOWN_ERROR
@@ -514,6 +521,10 @@ class EpicGames:
     def __init__(self, page: Page):
         self.page = page
         self._promotions: List[PromotionGame] = []
+
+    @staticmethod
+    def reset_order_history_session(page: Page) -> None:
+        _ORDER_HISTORY_UNAUTHORIZED_CONTEXTS.discard(page.context)
 
     @staticmethod
     async def _save_debug_page(page: Page, label: str):
@@ -875,12 +886,14 @@ class EpicGames:
         if any("/purchase" in frame.url for frame in page.frames if frame != page.main_frame):
             return False
 
-        product_cta = page.locator(
-            "button[data-testid='purchase-cta-button']"
-        ).first
+        purchase_btn = await product_cta(page, timeout=2000)
+        if purchase_btn is None:
+            return False
         try:
-            await product_cta.wait_for(state="visible", timeout=2000)
-            if await product_cta.is_disabled(timeout=1000):
+            if await purchase_btn.is_disabled(timeout=1000):
+                return False
+            text = " ".join((await purchase_btn.text_content() or "").split()).casefold()
+            if text not in {"get", "install", "claim", "buy now", "purchase"}:
                 return False
         except Exception:
             return False
@@ -888,7 +901,7 @@ class EpicGames:
         logger.warning(
             "Purchase iframe is not open; clicking the product CTA again before checkout"
         )
-        await product_cta.click(force=True)
+        await purchase_btn.click(force=True)
         await cls._handle_device_not_supported_modal(page, timeout_ms=20000)
         await page.wait_for_timeout(2500)
         return True
@@ -924,7 +937,9 @@ class EpicGames:
             await page.wait_for_timeout(3000)
 
         with suppress(Exception):
-            purchase_btn = page.locator("//button[@data-testid='purchase-cta-button']").first
+            purchase_btn = await product_cta(page)
+            if purchase_btn is None:
+                return False
             btn_text = (await purchase_btn.text_content(timeout=5000) or "").strip().upper()
             logger.info(f"Ownership CTA for {promotion.title}: {btn_text!r}")
             if any(marker in btn_text for marker in ("IN LIBRARY", "OWNED")):
@@ -1359,6 +1374,9 @@ class EpicGames:
             if await self._skip_region_unavailable(page, promotion):
                 continue
 
+            if await store_signed_out(page):
+                raise StoreLoginRequired()
+
             # 处理年龄限制弹窗
             try:
                 continue_btn = page.locator("//button//span[text()='Continue']")
@@ -1372,11 +1390,11 @@ class EpicGames:
             # ------------------------------------------------------------
 
             # 1. 尝试找到主按钮
-            purchase_btn = page.locator("//button[@data-testid='purchase-cta-button']").first
+            purchase_btn = await product_cta(page)
 
             # 2. 检查按钮可见性
             try:
-                if not await purchase_btn.is_visible(timeout=5000):
+                if purchase_btn is None:
                     if await self._skip_region_unavailable(page, promotion):
                         continue
                     if await self._owned_from_product_page(page, promotion):
@@ -1437,10 +1455,10 @@ class EpicGames:
                         await page.keyboard.press("Escape")
                     await page.goto(url, wait_until="load")
                     await page.wait_for_timeout(3000)
-                    purchase_btn = page.locator(
-                        "//button[@data-testid='purchase-cta-button']"
-                    ).first
-                    if not await purchase_btn.is_visible(timeout=10000):
+                    if await store_signed_out(page):
+                        raise StoreLoginRequired()
+                    purchase_btn = await product_cta(page)
+                    if purchase_btn is None:
                         if await self._skip_region_unavailable(page, promotion):
                             verified = True
                             break
@@ -1471,9 +1489,14 @@ class EpicGames:
                         continue
 
                 await purchase_btn.click()
+                await page.wait_for_timeout(3000)
+                if is_login_url(page.url):
+                    raise StoreLoginRequired()
 
                 # 点击后，转入即时结账流程
                 checkout_submitted = await self._handle_instant_checkout(page)
+                if is_login_url(page.url):
+                    raise StoreLoginRequired()
                 if not checkout_submitted:
                     logger.warning(
                         f"Checkout not submitted [{checkout_attempt}/{max_attempts}]: "
