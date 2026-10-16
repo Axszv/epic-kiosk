@@ -573,6 +573,25 @@ class EpicAuthorization:
             await self._save_page_debug("account_validation_timeout")
             logger.warning("⚠️ 账号验证阶段未观察到 refresh-csrf，继续依赖已有会话状态")
 
+    async def _resume_login_form(self) -> bool:
+        """Continue the visible login step after a rejected/expired challenge."""
+        for field, button_id, value in (
+            ("#password", "#sign-in", settings.EPIC_PASSWORD.get_secret_value()),
+            ("#email", "#continue", settings.EPIC_EMAIL),
+        ):
+            with suppress(Exception):
+                box = self.page.locator(field)
+                button = self.page.locator(button_id).first
+                if not await box.is_visible() or not await button.is_visible():
+                    continue
+                if await button.is_disabled():
+                    continue
+                await box.fill(value)
+                await button.click(timeout=3000, no_wait_after=True)
+                logger.warning(f"LOGIN_FORM_RESUMED:{button_id}")
+                return True
+        return False
+
     async def _login(self, login_url: str | None = None) -> tuple[bool, ErrorType] | None:
         """
         执行登录流程
@@ -703,13 +722,7 @@ class EpicAuthorization:
 
             async def retrigger_security_check():
                 """Reopen Epic/Talon security checks after a stale challenge."""
-                with suppress(Exception):
-                    password_box = self.page.locator("#password")
-                    if await password_box.is_visible(timeout=1000):
-                        await password_box.clear()
-                        await password_box.type(settings.EPIC_PASSWORD.get_secret_value())
-
-                for selector in ("#talon_error_container_login_prod button", "#sign-in"):
+                for selector in ("#talon_error_container_login_prod button",):
                     with suppress(Exception):
                         button = self.page.locator(selector).first
                         if await button.is_visible(timeout=1500):
@@ -717,30 +730,34 @@ class EpicAuthorization:
                             await button.click(timeout=3000)
                             await self.page.wait_for_timeout(3000)
                             return
+                await self._resume_login_form()
 
             async def keep_login_flow_alive():
-                """Re-submit the login form if Epic returns to the password step."""
+                """Resume either form step without competing with a visible challenge."""
+                email_resumes = 0
                 while not result_task.done():
                     await self.page.wait_for_timeout(8000)
                     if result_task.done():
                         return
                     if captcha_in_progress:
                         continue
+                    if await self._has_hcaptcha_challenge():
+                        continue
                     with suppress(Exception):
-                        password_box = self.page.locator("#password")
-                        sign_in_button = self.page.locator("#sign-in").first
-                        if (
-                            await password_box.is_visible(timeout=1000)
-                            and await sign_in_button.is_visible(timeout=1000)
-                        ):
-                            logger.debug("检测到仍停留在密码页，重新提交登录")
-                            await password_box.clear()
-                            await password_box.type(settings.EPIC_PASSWORD.get_secret_value())
-                            await sign_in_button.click(timeout=3000)
+                        if await self.page.locator("#email").is_visible():
+                            if email_resumes >= 3:
+                                self._is_login_success_signal.put_nowait(
+                                    {"error": True, "code": "email_captcha_resume_exhausted"}
+                                )
+                                return
+                            if await self._resume_login_form():
+                                email_resumes += 1
+                        else:
+                            await self._resume_login_form()
 
             async def handle_captcha():
                 """Handle every hCaptcha round until Epic accepts the login."""
-                nonlocal captcha_success, captcha_in_progress
+                nonlocal agent, captcha_success, captcha_in_progress
                 email_transaction_retries = 0
                 captcha_attempt = 0
 
@@ -831,10 +848,13 @@ class EpicAuthorization:
                         logger.info(f"处理登录 hCaptcha [{captcha_attempt}/12]")
                         captcha_in_progress = True
                         captcha_round_failed = False
-                        await asyncio.wait_for(
+                        challenge_result = await asyncio.wait_for(
                             agent.wait_for_challenge(),
                             timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
                         )
+                        signal = getattr(challenge_result, "value", challenge_result)
+                        captcha_round_failed = signal != "success"
+                        logger.warning(f"LOGIN_CAPTCHA_RESULT:{signal}")
                     except Exception as e:
                         captcha_round_failed = True
                         logger.warning(f"登录 hCaptcha 处理异常 [{captcha_attempt}/12]: {e}")
@@ -848,6 +868,7 @@ class EpicAuthorization:
                             return
                         continue
                     if captcha_round_failed:
+                        agent = replace_login_hcaptcha_agent(self.page)
                         await retrigger_security_check()
                     elif not await self._has_hcaptcha_challenge():
                         captcha_success = True

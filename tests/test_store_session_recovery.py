@@ -3,6 +3,7 @@ import asyncio
 import sys
 import types
 import unittest
+from contextlib import suppress
 from enum import Enum
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -110,6 +111,33 @@ class StoreSessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             first=types.SimpleNamespace(is_visible=AsyncMock(return_value=True))
         ))
         self.assertTrue(await store_signed_out(self.page))
+
+    async def test_rejected_challenge_can_resume_email_instead_of_waiting_for_password(self):
+        nodes = {}
+        for selector in ("#email", "#password", "#continue", "#sign-in"):
+            node = types.SimpleNamespace(
+                is_visible=AsyncMock(return_value=selector in {"#email", "#continue"}),
+                is_disabled=AsyncMock(return_value=False), fill=AsyncMock(), click=AsyncMock(),
+            )
+            node.first = node
+            nodes[selector] = node
+        self.page.locator = lambda selector: nodes[selector]
+        resume = load_function(ROOT / "app/services/epic_authorization_service.py", "_resume_login_form", {
+            "suppress": suppress, "logger": MagicMock(),
+            "settings": types.SimpleNamespace(
+                EPIC_EMAIL="test@example.com",
+                EPIC_PASSWORD=types.SimpleNamespace(get_secret_value=lambda: "test-password"),
+            ),
+        }, "EpicAuthorization")
+        self.assertTrue(await resume(types.SimpleNamespace(page=self.page)))
+        nodes["#email"].fill.assert_awaited_once_with("test@example.com")
+        nodes["#continue"].click.assert_awaited_once()
+        nodes["#password"].fill.assert_not_awaited()
+
+        nodes["#continue"].is_disabled.return_value = True
+        nodes["#continue"].click.reset_mock()
+        self.assertFalse(await resume(types.SimpleNamespace(page=self.page)))
+        nodes["#continue"].click.assert_not_awaited()
 
     def test_login_url_supports_both_store_generations(self):
         for url in (
