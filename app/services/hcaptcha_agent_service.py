@@ -605,26 +605,10 @@ class EpicAgentV(AgentV):
         self._captcha_payload_queue.put_nowait(latest)
         logger.debug(f"Discarded {discarded} stale hCaptcha payload(s)")
 
-    async def _get_nested_challenge_frame_locator(self):
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            candidates = [
-                frame
-                for frame in self.page.frames
-                if "hcaptcha.com/captcha/" in frame.url
-                and "frame=challenge" in frame.url
-            ]
-            for frame in candidates:
-                with suppress(Exception):
-                    if await frame.locator("body").is_visible(timeout=500):
-                        return frame
-            if candidates:
-                return candidates[0]
-            await self.page.wait_for_timeout(250)
-        logger.error("Cannot find a nested hCaptcha challenge frame")
-        return None
-
-    async def _has_visible_challenge_frame(self) -> bool:
+    async def _find_visible_challenge_frame(self):
+        viewport = self.page.viewport_size
+        if not viewport:
+            viewport = await self.page.evaluate("({width: innerWidth, height: innerHeight})")
         for frame in self.page.frames:
             if (
                 "hcaptcha.com/captcha/" not in frame.url
@@ -632,10 +616,43 @@ class EpicAgentV(AgentV):
             ):
                 continue
             with suppress(Exception):
+                owner = await frame.frame_element()
+                if not await owner.evaluate("""el => {
+                    for (let node = el; node; node = node.parentElement) {
+                        const style = getComputedStyle(node);
+                        if (style.display === 'none' || style.visibility === 'hidden' ||
+                            Number(style.opacity) === 0) return false;
+                    }
+                    return true;
+                }"""):
+                    continue
+                box = await owner.bounding_box()
+                if not box or box["width"] <= 1 or box["height"] <= 1:
+                    continue
+                if (
+                    box["x"] + box["width"] <= 0
+                    or box["y"] + box["height"] <= 0
+                    or box["x"] >= viewport["width"]
+                    or box["y"] >= viewport["height"]
+                ):
+                    continue
                 challenge_view = frame.locator(".challenge-view")
                 if await challenge_view.is_visible(timeout=250):
-                    return True
-        return False
+                    return frame
+        return None
+
+    async def _get_nested_challenge_frame_locator(self):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            frame = await self._find_visible_challenge_frame()
+            if frame is not None:
+                return frame
+            await self.page.wait_for_timeout(250)
+        logger.error("Cannot find a visible nested hCaptcha challenge frame")
+        return None
+
+    async def _has_visible_challenge_frame(self) -> bool:
+        return await self._find_visible_challenge_frame() is not None
 
     async def wait_for_challenge_start(self, timeout_seconds: float = 15) -> bool:
         """Wait for a fresh checkout challenge payload or visible challenge frame."""

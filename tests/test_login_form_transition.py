@@ -92,6 +92,18 @@ class LoginFormTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.nodes["#password"].fill.assert_not_awaited()
         self.auth._save_page_debug.assert_awaited_once()
 
+    async def test_real_password_transition_wins_over_unreadable_captcha_response(self):
+        self.auth._has_hcaptcha_challenge.return_value = True
+
+        async def solve():
+            self.nodes["#sign-in"].is_visible.return_value = True
+            return "failure"
+
+        self.agent.wait_for_challenge.side_effect = solve
+        self.assertTrue(await self.auth._solve_pre_password_hcaptcha(self.agent))
+        self.assertTrue(await self.auth._password_form_ready())
+        self.auth._save_page_debug.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

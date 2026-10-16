@@ -368,6 +368,10 @@ class EpicAuthorization:
                 signal = getattr(result, "value", result)
                 logger.warning(f"EMAIL_CAPTCHA_RESULT:{signal}")
                 if signal != "success":
+                    # Some encrypted pass responses cannot be inspected by
+                    # the solver. The actual Epic form transition still wins.
+                    if await self._password_form_ready():
+                        return True
                     break
             except Exception as err:
                 logger.warning(f"邮箱步骤 hCaptcha 处理异常 [{attempt}/3]: {err}")
@@ -383,6 +387,13 @@ class EpicAuthorization:
     async def _save_page_debug(self, label: str):
         """Save the current page state for GitHub Actions artifacts."""
         with suppress(Exception):
+            logger.warning(
+                f"LOGIN_PAGE_STATE:{label}:"
+                f"password_form={await self._password_form_ready()}:"
+                f"continue={await self.page.locator('#continue').is_visible()}:"
+                f"challenge={await self._has_hcaptcha_challenge()}:"
+                f"cloudflare={await self._has_cloudflare_security_check()}"
+            )
             RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
             safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label)
             debug_info = {

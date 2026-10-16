@@ -58,7 +58,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("self._hsw_lock = asyncio.Lock()", source)
         self.assertIn("if document_key == self._hsw_document_key:", source)
         self.assertIn("_get_nested_challenge_frame_locator", source)
-        self.assertIn('"frame=challenge" in frame.url', source)
+        self.assertIn('"frame=challenge" not in frame.url', source)
         self.assertIn("HSW payload was not decoded", source)
         self.assertIn("prepare_for_new_challenge", source)
         self.assertIn("_keep_latest_payload", source)
@@ -186,6 +186,30 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         payload.body.assert_not_awaited()
         self.assertEqual(agent._captcha_payload_queue.qsize(), 1)
         self.assertIsNone(agent._captcha_payload_queue.get_nowait())
+
+    def test_frame_selection_ignores_hidden_and_offscreen_challenges(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+
+        def frame(x, opacity_visible=True):
+            owner = types.SimpleNamespace(
+                bounding_box=AsyncMock(return_value={"x": x, "y": 100, "width": 500, "height": 470}),
+                evaluate=AsyncMock(return_value=opacity_visible),
+            )
+            return types.SimpleNamespace(
+                url="https://newassets.hcaptcha.com/captcha/test?frame=challenge",
+                frame_element=AsyncMock(return_value=owner),
+                locator=MagicMock(return_value=types.SimpleNamespace(is_visible=AsyncMock(return_value=True))),
+            )
+
+        offscreen, hidden, active = frame(-9999), frame(100, False), frame(100)
+        agent.page = types.SimpleNamespace(
+            viewport_size={"width": 1920, "height": 1080},
+            frames=[offscreen, hidden, active],
+        )
+        self.assertIs(asyncio.run(agent._find_visible_challenge_frame()), active)
+        agent.page.frames = [offscreen, hidden]
+        self.assertIsNone(asyncio.run(agent._find_visible_challenge_frame()))
 
     def test_checkout_resets_agent_before_submitting_order(self):
         source = (ROOT / "app/services/epic_games_service.py").read_text(
