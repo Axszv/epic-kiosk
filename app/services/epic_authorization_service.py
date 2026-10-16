@@ -300,33 +300,51 @@ class EpicAuthorization:
             return {"status": 200, "body": body_text[:1000]}
         return None
 
-    async def _solve_pre_password_hcaptcha(self, agent: AgentV) -> bool:
-        # Epic can insert an email_exists_prod hCaptcha between the email and
-        # password steps. Wait briefly for either state before proceeding.
-        for _ in range(20):
-            if await self._has_hcaptcha_challenge():
-                break
-            with suppress(Exception):
-                if await self.page.locator("#password").is_visible(timeout=250):
-                    return True
-            await self.page.wait_for_timeout(500)
-        else:
-            return True
+    async def _password_form_ready(self) -> bool:
+        # The email form includes an off-screen #password for autofill.
+        # Playwright considers it visible despite its transparent ancestor.
+        # Only the real password step has a Sign in submit button.
+        with suppress(Exception):
+            return (
+                await self.page.locator("#sign-in").is_visible()
+                and await self.page.locator("#password").is_visible()
+            )
+        return False
 
-        for attempt in range(1, 4):
+    async def _solve_pre_password_hcaptcha(self, agent: AgentV) -> bool:
+        deadline = time.monotonic() + settings.LOGIN_RESULT_TIMEOUT_SECONDS
+        attempt = 0
+        while time.monotonic() < deadline:
+            # Leave rejection signals for the caller's bounded recovery.
+            if not self._email_transaction_failure_signal.empty():
+                return True
+            if self._has_refresh_csrf_session() or await self._password_form_ready():
+                return True
+            if not await self._has_hcaptcha_challenge():
+                await self.page.wait_for_timeout(500)
+                continue
+            attempt += 1
+            if attempt > 3:
+                break
             logger.info(f"处理邮箱步骤 hCaptcha [{attempt}/3]")
             try:
-                await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     agent.wait_for_challenge(),
-                    timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
+                    timeout=min(
+                        max(settings.EXECUTION_TIMEOUT, 120) + 30,
+                        max(0.1, deadline - time.monotonic()),
+                    ),
                 )
+                signal = getattr(result, "value", result)
+                logger.warning(f"EMAIL_CAPTCHA_RESULT:{signal}")
+                if signal != "success":
+                    break
             except Exception as err:
                 logger.warning(f"邮箱步骤 hCaptcha 处理异常 [{attempt}/3]: {err}")
-
+                break
+            # A solved challenge is not an accepted email transaction. Wait
+            # for Epic to render Sign in or return its rejection response.
             await self.page.wait_for_timeout(2000)
-            if not await self._has_hcaptcha_challenge():
-                logger.success("✅ 邮箱步骤 hCaptcha 已通过")
-                return True
 
         await self._save_page_debug("login_email_hcaptcha_failed")
         logger.error("❌ 邮箱步骤 hCaptcha 未通过")
@@ -633,6 +651,7 @@ class EpicAuthorization:
         # 用于记录验证码处理是否成功
         captcha_success = False
         captcha_in_progress = False
+        form_lock = asyncio.Lock()
         captcha_task = None
         keepalive_task = None
 
@@ -728,6 +747,9 @@ class EpicAuthorization:
 
             # 3. 输入密码
             logger.warning("LOGIN_STAGE:wait_password")
+            if self._has_refresh_csrf_session():
+                return (True, ErrorType.SUCCESS)
+            await self.page.locator("#sign-in").wait_for(state="visible", timeout=60000)
             password_input = self.page.locator("#password")
             await password_input.wait_for(state="visible", timeout=60000)
             await password_input.clear()
@@ -758,12 +780,19 @@ class EpicAuthorization:
                     await self.page.wait_for_timeout(8000)
                     if result_task.done():
                         return
-                    if captcha_in_progress:
+                    if captcha_in_progress or form_lock.locked():
                         continue
-                    if await self._has_hcaptcha_challenge():
-                        continue
-                    with suppress(Exception):
-                        if await self.page.locator("#email").is_visible():
+                    async with form_lock:
+                        if (
+                            result_task.done()
+                            or captcha_in_progress
+                            or not self._email_transaction_failure_signal.empty()
+                            or await self._has_hcaptcha_challenge()
+                        ):
+                            continue
+                        if await self._password_form_ready():
+                            await self._resume_login_form()
+                        elif await self.page.locator("#continue").is_visible():
                             if email_resumes >= 3:
                                 self._is_login_success_signal.put_nowait(
                                     {"error": True, "code": "email_captcha_resume_exhausted"}
@@ -771,8 +800,6 @@ class EpicAuthorization:
                                 return
                             if await self._resume_login_form():
                                 email_resumes += 1
-                        else:
-                            await self._resume_login_form()
 
             async def handle_captcha():
                 """Handle every hCaptcha round until Epic accepts the login."""
@@ -781,6 +808,10 @@ class EpicAuthorization:
                 captcha_attempt = 0
 
                 async def recover_email_transaction(rejection) -> bool:
+                    async with form_lock:
+                        return await restart_email_transaction(rejection)
+
+                async def restart_email_transaction(rejection) -> bool:
                     nonlocal agent, email_transaction_retries, captcha_success
                     email_transaction_retries += 1
                     if email_transaction_retries > 3:
@@ -925,6 +956,8 @@ class EpicAuthorization:
                         elif "account_locked" in error_code:
                             logger.error("❌ 账号已被锁定")
                             return (False, ErrorType.ACCOUNT_LOCKED)
+                        elif error_code == "cloudflare_blocked":
+                            return (False, ErrorType.CLOUDFLARE_BLOCKED)
                         elif "captcha" in error_code or "csrf_token_invalid" in error_code:
                             logger.error(f"❌ 登录验证码事务失败: {error_code}")
                             return (False, ErrorType.CAPTCHA_FAILED)
@@ -961,6 +994,8 @@ class EpicAuthorization:
                     elif "account_locked" in error_code:
                         logger.error("❌ 账号已被锁定")
                         return (False, ErrorType.ACCOUNT_LOCKED)
+                    elif error_code == "cloudflare_blocked":
+                        return (False, ErrorType.CLOUDFLARE_BLOCKED)
                     elif "captcha" in error_code or "csrf_token_invalid" in error_code:
                         logger.error(f"❌ 登录验证码事务失败: {error_code}")
                         return (False, ErrorType.CAPTCHA_FAILED)
