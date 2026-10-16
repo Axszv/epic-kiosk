@@ -35,6 +35,10 @@ on:
         description: "Use headless browser mode (false uses the existing Xvfb display)."
         required: false
         default: "true"
+      captcha_visual_only:
+        description: "Diagnose challenges without injecting payload-decoding scripts."
+        required: false
+        default: "false"
       confirm_delay_ms:
         description: "Delay the first confirm-order request so the Talon hCaptcha callback can settle."
         required: false
@@ -85,6 +89,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       EPIC_BROWSER_ENGINE: ${{ github.event.inputs.browser_engine || 'camoufox' }}
       EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'true' }}
+      HCAPTCHA_VISUAL_ONLY: ${{ github.event.inputs.captcha_visual_only || 'false' }}
 
     steps:
       - name: Checkout

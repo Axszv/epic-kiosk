@@ -6,6 +6,7 @@
 @Desc    :
 """
 import asyncio
+import base64
 import hashlib
 import json
 import time
@@ -111,6 +112,35 @@ def diagnostic_value_fingerprint(value) -> dict[str, int | str]:
         "length": len(value),
         "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()[:12],
     }
+
+
+def captcha_value_diagnostic(value, solved_token: str = "") -> dict:
+    """Compare wrapped tokens without logging tokens or decoded values."""
+    summary = {"type": type(value).__name__, **diagnostic_value_fingerprint(value)}
+    candidate = value if isinstance(value, str) else json.dumps(value)
+    summary["hcaptcha_match"] = "not_observable"
+    encoding = "plain"
+    for _ in range(3):
+        if solved_token and solved_token in candidate:
+            summary["hcaptcha_match"] = encoding
+        with suppress(Exception):
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                summary["fields"] = {
+                    str(key)[:64]: {"type": type(item).__name__, **diagnostic_value_fingerprint(item)}
+                    for key, item in list(parsed.items())[:12]
+                }
+                break
+        if len(candidate) > 65536:
+            break
+        try:
+            candidate = base64.b64decode(
+                candidate + "=" * (-len(candidate) % 4), altchars=b"-_", validate=True,
+            ).decode("utf-8")
+            encoding = "base64"
+        except (ValueError, UnicodeError):
+            break
+    return summary
 
 
 def summarize_epic_request_secrets(value, path: str = "") -> dict[str, dict]:
@@ -478,8 +508,10 @@ class EpicAuthorization:
                 error_code = str(payload.get("errorCode") or "")
             with suppress(Exception):
                 request_payload = json.loads(r.request.post_data or "{}")
+                solved = get_login_hcaptcha_agent(self.page).cr_list
+                solved_token = str(solved[-1].generated_pass_UUID or "") if solved else ""
                 request_captcha = {
-                    key: {"type": type(value).__name__, **diagnostic_value_fingerprint(value)}
+                    key: captcha_value_diagnostic(value, solved_token)
                     for key, value in request_payload.items()
                     if "captcha" in key.casefold()
                 }

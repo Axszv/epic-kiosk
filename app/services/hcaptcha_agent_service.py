@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import os
 import time
 from contextlib import suppress
 from typing import Any
@@ -102,6 +103,7 @@ class EpicAgentV(AgentV):
     HCAPTCHA_DRAG_CANVAS_TOP = 135
 
     def __init__(self, *args, **kwargs):
+        self._decode_payloads = os.getenv("HCAPTCHA_VISUAL_ONLY", "false").lower() != "true"
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
         super().__init__(*args, **kwargs)
@@ -771,6 +773,20 @@ class EpicAgentV(AgentV):
         return ChallengeSignal.EXECUTION_TIMEOUT
 
     async def _task_handler(self, response):
+        if not getattr(self, "_decode_payloads", True):
+            if response.url.endswith("/hsw.js"):
+                print("HCAPTCHA_HSW:visual_only", flush=True)
+                return
+            if (
+                "/getcaptcha/" in response.url
+                and response.headers.get("content-type", "").split(";", 1)[0] != "application/json"
+            ):
+                # Let the site's own scripts process its challenge. Upstream
+                # can classify the visible task when no decoded payload exists.
+                self._captcha_payload = None
+                self._captcha_payload_queue.put_nowait(None)
+                self._keep_latest_payload()
+                return
         if "/checkcaptcha/" in response.url:
             print(f"HCAPTCHA_CHECK_RESPONSE:{response.status}", flush=True)
         if (

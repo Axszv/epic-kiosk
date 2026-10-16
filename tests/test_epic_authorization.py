@@ -1,7 +1,9 @@
 import ast
+import base64
 import hashlib
 import json
 import unittest
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -24,6 +26,7 @@ def load_detectors():
         "is_recoverable_epic_captcha_error",
         "sanitize_epic_response_payload",
         "diagnostic_value_fingerprint",
+        "captcha_value_diagnostic",
         "summarize_epic_request_secrets",
     }
     for node in tree.body:
@@ -34,7 +37,7 @@ def load_detectors():
         elif isinstance(node, ast.FunctionDef) and node.name in wanted:
             selected.append(node)
     module = ast.Module(body=selected, type_ignores=[])
-    namespace = {"hashlib": hashlib, "json": json}
+    namespace = {"hashlib": hashlib, "json": json, "base64": base64, "suppress": suppress}
     exec(compile(module, str(AUTHORIZATION_SOURCE), "exec"), namespace)
     return (
         namespace["is_cloudflare_security_check"],
@@ -44,6 +47,7 @@ def load_detectors():
         namespace["sanitize_epic_response_payload"],
         namespace["diagnostic_value_fingerprint"],
         namespace["summarize_epic_request_secrets"],
+        namespace["captcha_value_diagnostic"],
     )
 
 
@@ -55,6 +59,7 @@ def load_detectors():
     sanitize_epic_response_payload,
     diagnostic_value_fingerprint,
     summarize_epic_request_secrets,
+    captcha_value_diagnostic,
 ) = load_detectors()
 
 
@@ -177,6 +182,23 @@ class EpicEmailTransactionTests(unittest.TestCase):
 
 
 class EpicResponseDiagnosticTests(unittest.TestCase):
+    def test_wrapped_captcha_diagnostic_matches_without_exposing_secret_values(self):
+        token = "hcaptcha-private-value"
+        wrapped = base64.b64encode(json.dumps({
+            "token": token, "sensitiveMetadata": "private-user-data",
+        }).encode()).decode()
+        result = captcha_value_diagnostic(wrapped, token)
+        self.assertEqual(result["hcaptcha_match"], "base64")
+        self.assertEqual(result["fields"]["token"]["sha256"], diagnostic_value_fingerprint(token)["sha256"])
+        self.assertNotIn(token, json.dumps(result))
+        self.assertNotIn("private-user-data", json.dumps(result))
+
+    def test_opaque_captcha_diagnostic_does_not_claim_a_token_mismatch(self):
+        self.assertEqual(
+            captcha_value_diagnostic("opaque signed.payload", "solved-value")["hcaptcha_match"],
+            "not_observable",
+        )
+
     def test_redacts_nested_credentials_and_captcha_values(self):
         payload = {
             "errorCode": "errors.com.epicgames.purchase.invalid_captcha",

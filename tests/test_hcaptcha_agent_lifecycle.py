@@ -167,6 +167,26 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         loader.assert_awaited_once_with(agent.page, response.url)
         agent.page.evaluate.assert_any_await("hsw script")
 
+    def test_visual_mode_does_not_inject_or_decode_scripts_in_the_login_page(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent.page = types.SimpleNamespace(evaluate=AsyncMock())
+        agent._decode_payloads = False
+        agent._captcha_payload_queue = asyncio.Queue()
+        hsw = types.SimpleNamespace(url="https://hcaptcha.com/hsw.js")
+        payload = types.SimpleNamespace(
+            url="https://hcaptcha.com/getcaptcha/site",
+            headers={"content-type": "application/octet-stream"}, body=AsyncMock(),
+        )
+        with patch.object(module, "load_hsw_script", new=AsyncMock()) as loader:
+            asyncio.run(agent._task_handler(hsw))
+            asyncio.run(agent._task_handler(payload))
+        loader.assert_not_awaited()
+        agent.page.evaluate.assert_not_awaited()
+        payload.body.assert_not_awaited()
+        self.assertEqual(agent._captcha_payload_queue.qsize(), 1)
+        self.assertIsNone(agent._captcha_payload_queue.get_nowait())
+
     def test_checkout_resets_agent_before_submitting_order(self):
         source = (ROOT / "app/services/epic_games_service.py").read_text(
             encoding="utf-8"
