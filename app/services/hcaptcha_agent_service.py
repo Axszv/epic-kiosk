@@ -836,24 +836,24 @@ def get_hcaptcha_agent(page: Page) -> AgentV:
 
 
 def get_login_hcaptcha_agent(page: Page) -> AgentV:
-    """Return the upstream agent used by Epic's login transaction."""
+    """Use the multi-page, stale-DOM recovery shared by Epic challenges."""
     agent = _AGENTS.get(page)
     if agent is None:
-        agent = AgentV(page=page, agent_config=settings)
+        agent = EpicAgentV(page=page, agent_config=settings)
         _AGENTS[page] = agent
-        logger.debug("Created the upstream hCaptcha agent for Epic login")
+        logger.debug("Created the multi-round hCaptcha agent for Epic login")
     return agent
 
 
 def replace_login_hcaptcha_agent(page: Page) -> AgentV:
-    """Reset upstream hCaptcha state after Epic restarts a login transaction."""
+    """Reset hCaptcha state after Epic restarts a login transaction."""
     previous = _AGENTS.pop(page, None)
     if previous is not None:
         _detach_hcaptcha_agent(page, previous)
 
-    agent = AgentV(page=page, agent_config=settings)
+    agent = EpicAgentV(page=page, agent_config=settings)
     _AGENTS[page] = agent
-    logger.debug("Replaced upstream hCaptcha agent for a fresh Epic login transaction")
+    logger.debug("Replaced multi-round hCaptcha agent for a fresh Epic login transaction")
     return agent
 
 

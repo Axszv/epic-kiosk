@@ -453,6 +453,22 @@ class EpicAuthorization:
             body_text = ""
             with suppress(Exception):
                 body_text = await r.text()
+            error_code = ""
+            request_captcha = {}
+            with suppress(Exception):
+                payload = json.loads(body_text)
+                error_code = str(payload.get("errorCode") or "")
+            with suppress(Exception):
+                request_payload = json.loads(r.request.post_data or "{}")
+                request_captcha = {
+                    key: diagnostic_value_fingerprint(value)
+                    for key, value in request_payload.items()
+                    if "captcha" in key.casefold()
+                }
+            logger.warning(
+                f"EPIC_EMAIL_RESPONSE:status={r.status}:error={error_code}:"
+                f"captcha={json.dumps(request_captcha, ensure_ascii=False)}"
+            )
             logger.debug(
                 f"📡 邮箱校验 API 响应: {r.url} | 状态码: {r.status} | "
                 f"响应: {body_text[:500]}"
@@ -622,6 +638,7 @@ class EpicAuthorization:
 
         try:
             point_url = login_url or "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
+            logger.warning("LOGIN_STAGE:open_login")
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
             if login_url and await self._store_session_ready():
@@ -668,6 +685,7 @@ class EpicAuthorization:
                 return (True, ErrorType.SUCCESS)
 
             for email_attempt in range(1, 5):
+                logger.warning(f"LOGIN_STAGE:submit_email:attempt={email_attempt}")
                 await email_input.clear()
                 await email_input.type(settings.EPIC_EMAIL)
 
@@ -709,6 +727,7 @@ class EpicAuthorization:
                 await email_input.wait_for(state="visible", timeout=60000)
 
             # 3. 输入密码
+            logger.warning("LOGIN_STAGE:wait_password")
             password_input = self.page.locator("#password")
             await password_input.wait_for(state="visible", timeout=60000)
             await password_input.clear()
@@ -883,6 +902,7 @@ class EpicAuthorization:
             captcha_task = asyncio.create_task(handle_captcha())
             keepalive_task = asyncio.create_task(keep_login_flow_alive())
             with suppress(Exception):
+                logger.warning("LOGIN_STAGE:submit_password")
                 await self.page.click("#sign-in", timeout=5000)
 
             # 第一阶段：15秒内快速检测密码错误
