@@ -20,13 +20,12 @@ from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from browserforge.fingerprints import Screen
-from camoufox import AsyncCamoufox
 from loguru import logger
 from playwright.async_api import ViewportSize
 from pytz import timezone
 
 from services.epic_authorization_service import EpicAuthorization, ErrorType
+from services.browser_service import claim_browser
 from services.epic_games_service import EpicAgent, EpicGames, GameCollectResult
 from services.epic_mobile_service import collect_mobile_offers, load_mobile_offers
 from settings import LOG_DIR, RECORD_DIR
@@ -101,16 +100,10 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
             proxy_config["password"] = parsed.password
         logger.info(f"🌐 使用代理: {parsed.hostname}:{parsed.port}")
 
-    # Configure browser with anti-detection features
-    async with AsyncCamoufox(
-        persistent_context=True,
-        user_data_dir=settings.user_data_dir,
-        screen=Screen(max_width=1920, max_height=1080, min_height=1080, min_width=1920),
-        humanize=0.2,
+    async with claim_browser(
+        settings.user_data_dir,
         headless=headless,
         proxy=proxy_config,
-        # Avoid Camoufox/Juggler response-body failures on compressed hCaptcha scripts.
-        extra_http_headers={"Accept-Encoding": "identity"},
     ) as browser:
         # Initialize or reuse existing browser page
         page = browser.pages[0] if browser.pages else await browser.new_page()

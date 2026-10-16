@@ -479,7 +479,7 @@ class EpicAuthorization:
             with suppress(Exception):
                 request_payload = json.loads(r.request.post_data or "{}")
                 request_captcha = {
-                    key: diagnostic_value_fingerprint(value)
+                    key: {"type": type(value).__name__, **diagnostic_value_fingerprint(value)}
                     for key, value in request_payload.items()
                     if "captcha" in key.casefold()
                 }

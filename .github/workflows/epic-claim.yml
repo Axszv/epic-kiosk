@@ -27,6 +27,10 @@ on:
         description: "Use a temporary uncached browser profile for a manual diagnostic run."
         required: false
         default: "false"
+      browser_engine:
+        description: "Browser for a manual compatibility diagnostic (camoufox or chromium)."
+        required: false
+        default: "camoufox"
       confirm_delay_ms:
         description: "Delay the first confirm-order request so the Talon hCaptcha callback can settle."
         required: false
@@ -75,6 +79,7 @@ jobs:
       CHECKOUT_CONFIRM_DELAY_MS: ${{ github.event.inputs.confirm_delay_ms || '0' }}
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
       PYTHONUNBUFFERED: "1"
+      EPIC_BROWSER_ENGINE: ${{ github.event.inputs.browser_engine || 'camoufox' }}
 
     steps:
       - name: Checkout
@@ -130,6 +135,7 @@ jobs:
             pyyaml
 
       - name: Install Camoufox browser
+        if: env.EPIC_BROWSER_ENGINE == 'camoufox'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -145,6 +151,10 @@ jobs:
             python scripts/install_camoufox_browser.py
           fi
           test -f "${CAMOUFOX_UBO_DIR}/manifest.json"
+
+      - name: Install Chromium browser
+        if: env.EPIC_BROWSER_ENGINE == 'chromium'
+        run: python -m playwright install --with-deps chromium
 
       - name: Restore browser state
         uses: actions/cache/restore@v4
