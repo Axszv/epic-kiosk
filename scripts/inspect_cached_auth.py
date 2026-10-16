@@ -7,9 +7,9 @@ from urllib.parse import urlsplit
 
 
 root = Path("app/volumes")
-for path in root.rglob("runtime.log"):
+for path in root.rglob("runtime-2026-10-16*.log"):
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if "2026-10-16 12:" not in line:
+        if "2026-10-16 20:" not in line:
             continue
         if "邮箱校验 API 响应" in line and "响应: " in line:
             raw = line.split("响应: ", 1)[1]
