@@ -1,5 +1,6 @@
 """Print credential-free login diagnostics from a selected Actions cache."""
 
+import base64
 import json
 import re
 from pathlib import Path
@@ -12,11 +13,12 @@ for path in root.rglob("runtime-2026-10-16*.log"):
         if "2026-10-16 20:" not in line:
             continue
         if "邮箱校验 API 响应" in line and "响应: " in line:
-            raw = line.split("响应: ", 1)[1]
+            raw = line.rsplit("响应: ", 1)[1]
             try:
                 payload = json.loads(raw)
             except ValueError:
-                print("EMAIL_RESPONSE:non_json")
+                fields = dict(re.findall(r'"(errorCode|errorMessage|numericErrorCode)"\s*:\s*"([^"\r\n]*)"', raw))
+                print("EMAIL_RESPONSE:" + re.sub(r"[\w.+-]+@[\w.-]+", "[email]", json.dumps(fields)))
                 continue
             if isinstance(payload, dict):
                 safe = {key: payload[key] for key in ("errorCode", "errorMessage", "numericErrorCode") if key in payload}
@@ -44,3 +46,8 @@ for path in sorted(root.rglob("login*timeout.json")):
             "captcha": "h_captcha_challenge_" in source,
             "incorrect_response": "Incorrect response" in source,
         }))
+    screenshot = path.with_suffix(".png")
+    if screenshot.exists() and path.name == "login_result_timeout.json":
+        encoded = base64.b64encode(screenshot.read_bytes()).decode("ascii")
+        for offset in range(0, len(encoded), 4000):
+            print("AUTH_SCREENSHOT:" + encoded[offset:offset + 4000])
