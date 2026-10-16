@@ -65,6 +65,14 @@ class BrowserServiceTests(unittest.IsolatedAsyncioTestCase):
         self.launch.assert_not_awaited()
         self.assertEqual(self.camoufox_options, {})
 
+    async def test_display_mode_override_reaches_browser_launch(self):
+        with patch.dict(os.environ, {
+            "EPIC_BROWSER_ENGINE": "camoufox", "EPIC_BROWSER_HEADLESS": "false",
+        }):
+            async with self.claim_browser("profiles/account", headless=True):
+                pass
+        self.assertFalse(self.camoufox_options["headless"])
+
 
 if __name__ == "__main__":
     unittest.main()

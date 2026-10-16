@@ -13,7 +13,8 @@ from playwright.async_api import async_playwright
 @asynccontextmanager
 async def claim_browser(user_data_dir, *, headless=True, proxy=None):
     engine = os.getenv("EPIC_BROWSER_ENGINE", "camoufox").strip().lower()
-    logger.warning(f"BROWSER_ENGINE:{engine}")
+    headless = os.getenv("EPIC_BROWSER_HEADLESS", str(headless)).lower() == "true"
+    logger.warning(f"BROWSER_ENGINE:{engine}:headless={headless}")
     if engine == "chromium":
         # Chromium cannot read a Firefox profile. Keep both caches intact.
         profile = Path(user_data_dir)

@@ -31,6 +31,10 @@ on:
         description: "Browser for a manual compatibility diagnostic (camoufox or chromium)."
         required: false
         default: "camoufox"
+      browser_headless:
+        description: "Use headless browser mode (false uses the existing Xvfb display)."
+        required: false
+        default: "true"
       confirm_delay_ms:
         description: "Delay the first confirm-order request so the Talon hCaptcha callback can settle."
         required: false
@@ -80,6 +84,7 @@ jobs:
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
       PYTHONUNBUFFERED: "1"
       EPIC_BROWSER_ENGINE: ${{ github.event.inputs.browser_engine || 'camoufox' }}
+      EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'true' }}
 
     steps:
       - name: Checkout
