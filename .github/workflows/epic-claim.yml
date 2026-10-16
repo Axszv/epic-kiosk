@@ -3,6 +3,10 @@ name: Epic Kiosk Claim
 on:
   workflow_dispatch:
     inputs:
+      inspect_auth_state:
+        description: "Inspect the previous diagnostic cache without logging in."
+        required: false
+        default: "false"
       account_limit:
         description: "Limit accounts for a manual debug run. Leave empty to run all."
         required: false
@@ -48,7 +52,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  inspect:
+    if: github.event.inputs.inspect_auth_state == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: app/volumes
+          key: epic-state-v2-38898054285-1
+          fail-on-cache-miss: true
+      - run: python scripts/inspect_cached_auth.py
   claim:
+    if: github.event.inputs.inspect_auth_state != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 330
 
