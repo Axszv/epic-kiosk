@@ -60,6 +60,13 @@ class CsrfRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.auth._email_transaction_failure_signal.put_nowait(rejection)
         self.assertEqual(await self.auth._take_email_transaction_failure(), self.csrf)
 
+    async def test_non_csrf_errors_keep_the_latest_rejection(self):
+        latest = dict(self.captcha, source="login")
+        for rejection in [self.captcha, latest]:
+            self.auth._email_transaction_failure_signal.put_nowait(rejection)
+        self.auth._password_form_ready.return_value = True
+        self.assertEqual(await self.auth._take_email_transaction_failure(), latest)
+
     async def test_successful_native_email_retry_wins_over_transient_csrf(self):
         self.auth._email_transaction_failure_signal.put_nowait(self.csrf)
         self.auth._password_form_ready.return_value = True

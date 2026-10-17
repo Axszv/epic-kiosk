@@ -357,7 +357,7 @@ class EpicAuthorization:
             candidate = self._email_transaction_failure_signal.get_nowait()
             # Epic's Axios retries a CSRF 409 with the same captcha payload.
             # Preserve that cause when the follow-up is only captcha_invalid.
-            if rejection is None or "csrf_token_invalid" in epic_transaction_error_code(candidate):
+            if rejection is None or "csrf_token_invalid" not in epic_transaction_error_code(rejection):
                 rejection = candidate
         if rejection:
             if rejection.get("source") == "email" and await self._password_form_ready():
