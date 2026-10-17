@@ -253,6 +253,35 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in self.agent._click_image_points.await_args_list], frames)
         self.assertEqual(arm.click_by_mouse.await_count, 2)
 
+    async def test_closed_point_frame_preserves_a_pass_arriving_during_inference(self):
+        arm = self.agent.robotic_arm
+        arm.refresh_challenge = AsyncMock(side_effect=ValueError("Frame detached"))
+
+        async def answer_after_frame_closes(job_type):
+            self.agent._captcha_response_queue.put_nowait(types.SimpleNamespace(is_pass=True))
+            raise TimeoutError("Locator.bounding_box timed out")
+
+        self.agent._select_image_local_points_impl = answer_after_frame_closes
+
+        async def upstream_dispatch():
+            try:
+                return await arm.challenge_image_label_select("image_label_multi_select")
+            except Exception:
+                await arm.refresh_challenge()
+
+        self.agent._solve_captcha = upstream_dispatch
+        result = await self.agent.wait_for_challenge()
+        self.assertEqual(result, Signal.SUCCESS)
+        arm.refresh_challenge.assert_not_awaited()
+        self.agent._cache_validated_captcha_response.assert_called_once()
+
+    async def test_closed_point_frame_without_result_returns_failure_without_refresh(self):
+        self.agent._select_image_local_points_impl = AsyncMock(
+            side_effect=TimeoutError("Locator.bounding_box timed out"),
+        )
+        result = await self.agent.robotic_arm.challenge_image_label_select("image_label_multi_select")
+        self.assertEqual(result, Signal.FAILURE)
+
     async def test_repeated_invalid_answer_is_failure_without_a_click_or_submit(self):
         arm = self.agent.robotic_arm
         arm.signal_crumb_count = 1

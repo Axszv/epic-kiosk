@@ -226,6 +226,15 @@ class EpicAgentV(AgentV):
     async def _select_image_local_points(self, job_type):
         try:
             return await self._select_image_local_points_impl(job_type)
+        except PlaywrightTimeoutError:
+            # The challenge may expire while the model is answering. Returning
+            # through the upstream dispatcher avoids its unconditional refresh
+            # of a detached frame. Let a queued result or replacement round win.
+            logger.warning("hCaptcha point challenge changed during inference")
+            if (not self._captcha_response_queue.empty()
+                    or not self._captcha_payload_queue.empty()):
+                return None
+            return ChallengeSignal.FAILURE
         except InvalidChallengeCoordinates as err:
             # Upstream catches every Exception and blindly refreshes, which can
             # itself fail on a closed iframe and hide our validation failure.
