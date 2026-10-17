@@ -106,6 +106,7 @@ class EpicAgentV(AgentV):
     HCAPTCHA_CHALLENGE_VIEW_HEIGHT = 470
     HCAPTCHA_DRAG_CANVAS_LEFT = 10
     HCAPTCHA_DRAG_CANVAS_TOP = 135
+    POINT_IMAGE_SIZE = 1000
 
     def __init__(self, *args, **kwargs):
         self._decode_payloads = os.getenv("HCAPTCHA_VISUAL_ONLY", "false").lower() != "true"
@@ -140,26 +141,43 @@ class EpicAgentV(AgentV):
     async def _capture_point_image(self, frame, cache_key, crumb_id):
         # Keep the two model images pixel-aligned. Upstream's matplotlib plot
         # adds margins and page-coordinate axes to a differently sized canvas.
-        from PIL import Image, ImageDraw
+        from PIL import Image, ImageDraw, ImageFont
 
         self._challenge_page_index = crumb_id
         print(f"HCAPTCHA_PAGE:{crumb_id + 1}", flush=True)
         cache_key.mkdir(parents=True, exist_ok=True)
+        native = cache_key / f"{cache_key.name}_{crumb_id}_native.png"
         raw = cache_key / f"{cache_key.name}_{crumb_id}_challenge_view.png"
         grid = cache_key / f"{cache_key.name}_{crumb_id}_spatial_helper.png"
-        await frame.locator(".challenge-view").screenshot(path=raw, type="png", scale="css")
-        with Image.open(raw) as original:
-            size = original.size
-            overlay = original.convert("RGB")
+        await frame.locator(".challenge-view").screenshot(path=native, type="png", scale="css")
+        with Image.open(native) as original:
+            native_size = original.size
+            # Flash sometimes returns normalized 0..1000 coordinates despite
+            # the pixel prompt. Make both conventions identical in its inputs.
+            size = (self.POINT_IMAGE_SIZE, self.POINT_IMAGE_SIZE)
+            overlay = original.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+        overlay.save(raw)
         draw = ImageDraw.Draw(overlay)
+        font = ImageFont.load_default(size=18)
         width, height = size
-        for x in range(50, width, 50):
+        for x in range(100, width, 100):
             draw.line((x, 0, x, height - 1), fill=(135, 135, 135), width=1)
-            draw.text((x + 2, 2), str(x), fill="black", stroke_width=1, stroke_fill="white")
-        for y in range(50, height, 50):
+            draw.text((x + 2, 2), str(x), font=font, fill="black", stroke_width=1, stroke_fill="white")
+        for y in range(100, height, 100):
             draw.line((0, y, width - 1, y), fill=(135, 135, 135), width=1)
-            draw.text((2, y + 2), str(y), fill="black", stroke_width=1, stroke_fill="white")
+            draw.text((2, y + 2), str(y), font=font, fill="black", stroke_width=1, stroke_fill="white")
         overlay.save(grid)
+        print(f"HCAPTCHA_IMAGE:{raw.name}:source={native_size}:input={size}", flush=True)
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            # Only puzzle images go into the existing Actions artifact, never
+            # the dependency's raw payload/token cache.
+            import shutil
+            from settings import RUNTIME_DIR
+
+            with suppress(Exception):
+                RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+                for source in (native, raw, grid):
+                    shutil.copyfile(source, RUNTIME_DIR / source.name)
         return raw, grid, size
 
     @staticmethod
@@ -222,7 +240,7 @@ class EpicAgentV(AgentV):
                 "of either image, x increases rightwards, y increases downwards. "
                 f"Every point must satisfy 0 <= x < {width} and 0 <= y < {height}. "
                 "The grid labels are these same pixel coordinates, with no image margins. "
-                "Do not use browser/page coordinates or a 0-1000 normalized scale. "
+                "Do not use browser/page coordinates. "
                 "Select the centers of the answer objects, not the instruction examples. "
                 'Each point must have two integer fields, for example {"x":125,"y":240}. '
                 "Never put a coordinate pair in the x field."

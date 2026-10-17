@@ -1,6 +1,8 @@
 import asyncio
 import importlib.util
+import os
 import sys
+import tempfile
 import types
 import unittest
 from enum import Enum
@@ -146,6 +148,26 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.kwargs["position"] for call in view.click.await_args_list], [
             {"x": 500, "y": 470}, {"x": 50, "y": 100},
         ])
+
+    async def test_model_images_share_the_normalized_pixel_coordinate_system(self):
+        from PIL import Image
+
+        async def screenshot(*, path, **kwargs):
+            with Image.new("RGB", (500, 470), "red") as native:
+                native.save(path)
+        frame = types.SimpleNamespace(locator=MagicMock(return_value=types.SimpleNamespace(
+            screenshot=AsyncMock(side_effect=screenshot),
+        )))
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
+            raw, grid, size = await self.agent._capture_point_image(frame, Path(folder), 0)
+            self.assertEqual(size, (1000, 1000))
+            for path in (raw, grid):
+                with Image.open(path) as supplied:
+                    self.assertEqual(supplied.size, (1000, 1000))
+                    self.assertEqual(supplied.getpixel((555, 555)), (255, 0, 0))
+            self.assertEqual(self.agent._local_point_positions([
+                types.SimpleNamespace(x=786, y=694),
+            ], size), [(0.786, 0.694)])
 
     async def test_any_invalid_point_prevents_all_clicks(self):
         view = types.SimpleNamespace(click=AsyncMock())
