@@ -92,6 +92,32 @@ class LoginFormTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.nodes["#password"].fill.assert_not_awaited()
         self.auth._save_page_debug.assert_awaited_once()
 
+    async def test_epic_rejection_survives_solver_exception_after_frame_closes(self):
+        self.auth._has_hcaptcha_challenge.return_value = True
+        rejection = {"status": 409, "code": "csrf_token_invalid"}
+
+        async def solve():
+            self.auth._email_transaction_failure_signal.put_nowait(rejection)
+            raise AttributeError("Frame is gone")
+
+        self.agent.wait_for_challenge.side_effect = solve
+        self.assertTrue(await self.auth._solve_pre_password_hcaptcha(self.agent))
+        self.assertIs(self.auth._email_transaction_failure_signal.get_nowait(), rejection)
+        self.nodes["#password"].fill.assert_not_awaited()
+        self.auth._save_page_debug.assert_not_awaited()
+
+    async def test_epic_rejection_survives_solver_failure_signal(self):
+        self.auth._has_hcaptcha_challenge.return_value = True
+
+        async def solve():
+            self.auth._email_transaction_failure_signal.put_nowait({"status": 400})
+            return "failure"
+
+        self.agent.wait_for_challenge.side_effect = solve
+        self.assertTrue(await self.auth._solve_pre_password_hcaptcha(self.agent))
+        self.assertFalse(self.auth._email_transaction_failure_signal.empty())
+        self.nodes["#password"].fill.assert_not_awaited()
+
     async def test_real_password_transition_wins_over_unreadable_captcha_response(self):
         self.auth._has_hcaptcha_challenge.return_value = True
 

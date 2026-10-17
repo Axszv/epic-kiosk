@@ -423,13 +423,22 @@ class EpicAuthorization:
                 signal = getattr(result, "value", result)
                 logger.warning(f"EMAIL_CAPTCHA_RESULT:{signal}")
                 if signal != "success":
+                    if not self._email_transaction_failure_signal.empty():
+                        return True
                     # Some encrypted pass responses cannot be inspected by
                     # the solver. The actual Epic form transition still wins.
                     if await self._password_form_ready():
                         return True
                     break
             except Exception as err:
-                logger.warning(f"邮箱步骤 hCaptcha 处理异常 [{attempt}/3]: {err}")
+                # A response may arrive while the solver is awaiting a frame
+                # that Epic has already removed. Preserve its rejection for
+                # the caller's bounded recovery rather than masking it.
+                if not self._email_transaction_failure_signal.empty():
+                    return True
+                if self._has_refresh_csrf_session() or await self._password_form_ready():
+                    return True
+                logger.warning(f"邮箱步骤 hCaptcha 处理异常 [{attempt}/3]: {type(err).__name__}")
                 break
             # A solved challenge is not an accepted email transaction. Wait
             # for Epic to render Sign in or return its rejection response.
