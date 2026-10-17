@@ -52,6 +52,8 @@ workflow 会将运行日志、页面截图和 `github_actions_summary.json` 上�
 
 对于 dae 原来使用的 VLESS/TLS/WebSocket 节点，保存完整节点 URL 即可。Actions 会下载官方固定版本 Xray 并校验 SHA-256，在 runner 的 `127.0.0.1` 启动 HTTP 代理；节点的连接地址、TLS SNI、WebSocket Host 和路径分别保留。TLS 证书验证保持开启，不支持的协议参数会明确拒绝。节点配置只写入权限受限的临时目录，启动后删除，任务结束时停止代理进程；不会上传配置或客户端日志。
 
+还可同时设置 `proxy_check_only=true`，仅检查代理连接和访问 Cloudflare/Amazon 两个公开检测端点时的出口一致性。每个端点取两次样本，只记录样本数量、出口数量及是否一致，不记录 IP。此模式不安装浏览器、不登录 Epic、不调用模型，也不改浏览器缓存或发送领取通知。不同站点的出口不一致只能说明该节点不提供统一出口，不能单凭这一结果断定 Epic 拒绝验证码的原因。
+
 验收仍需电脑端和移动端的实际 `DESKTOP_RESULT` / `MOBILE_RESULT` 入库证据；登录成功和验证码通过均不足以通过验收。
 
 ## 移动端周免

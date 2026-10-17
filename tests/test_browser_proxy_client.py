@@ -96,5 +96,33 @@ class ProxyPreparationTests(unittest.TestCase):
         process.wait.assert_called_once()
 
 
+class EgressDiagnosticTests(unittest.TestCase):
+    def check(self, bodies):
+        opener = Mock()
+        opener.open.side_effect = [io.BytesIO(body) if isinstance(body, bytes) else body for body in bodies]
+        with patch.object(client, "build_opener", return_value=opener):
+            return client.egress_diagnostic(client.LOCAL_PROXY)
+
+    def test_detects_different_origins_with_stable_individual_egress(self):
+        result = self.check([b"ip=203.0.113.1\n", b"198.51.100.1", b"ip=203.0.113.1\n", b"198.51.100.1"])
+        self.assertEqual(result["completed_samples"], 4)
+        self.assertEqual(result["distinct_egress_count"], 2)
+        self.assertTrue(all(result["stable_per_origin"].values()))
+        self.assertFalse(result["same_egress_across_origins"])
+        self.assertNotIn("203.0.113.1", json.dumps(result))
+        self.assertNotIn("198.51.100.1", json.dumps(result))
+
+    def test_detects_changing_egress_on_the_same_origin(self):
+        result = self.check([b"ip=203.0.113.1", b"203.0.113.1", b"ip=203.0.113.2", b"203.0.113.1"])
+        self.assertFalse(result["stable_per_origin"]["cloudflare"])
+        self.assertTrue(result["stable_per_origin"]["amazon"])
+
+    def test_incomplete_samples_do_not_claim_consistent_egress(self):
+        result = self.check([b"invalid", b"203.0.113.1", OSError("private detail"), b"203.0.113.1"])
+        self.assertEqual(result["completed_samples"], 2)
+        self.assertIsNone(result["same_egress_across_origins"])
+        self.assertEqual(result["failures"]["cloudflare"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

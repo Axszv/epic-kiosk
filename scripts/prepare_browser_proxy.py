@@ -6,6 +6,7 @@ PID are exported to later steps; no client log or configuration is uploaded.
 
 import hashlib
 import io
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,10 @@ XRAY_URL = f"https://github.com/XTLS/Xray-core/releases/download/v{XRAY_VERSION}
 PROXY_PORT = 17891
 LOCAL_PROXY = f"http://127.0.0.1:{PROXY_PORT}"
 EPIC_PREFLIGHT = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
+EGRESS_TARGETS = {
+    "cloudflare": "https://www.cloudflare.com/cdn-cgi/trace",
+    "amazon": "https://checkip.amazonaws.com/",
+}
 
 
 def vless_config(value: str) -> dict:
@@ -120,6 +125,33 @@ def preflight(proxy: str) -> int:
         return error.code
 
 
+def egress_diagnostic(proxy: str) -> dict:
+    """Compare two public origins without logging or exporting IP addresses."""
+    opener = build_opener(ProxyHandler({"https": proxy, "http": proxy}))
+    samples = {name: [] for name in EGRESS_TARGETS}
+    failures = {name: 0 for name in EGRESS_TARGETS}
+    for _ in range(2):
+        for name, url in EGRESS_TARGETS.items():
+            try:
+                with opener.open(url, timeout=15) as response:
+                    body = response.read(8192).decode("utf-8").strip()
+                if name == "cloudflare":
+                    body = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)["ip"]
+                samples[name].append(str(ipaddress.ip_address(body)))
+            except Exception:
+                failures[name] += 1
+    all_samples = [sample for values in samples.values() for sample in values]
+    complete = len(all_samples) == 4
+    return {
+        "completed_samples": len(all_samples),
+        "failures": failures,
+        "distinct_egress_count": len(set(all_samples)),
+        "stable_per_origin": {name: len(values) == 2 and len(set(values)) == 1
+                              for name, values in samples.items()},
+        "same_egress_across_origins": len(set(all_samples)) == 1 if complete else None,
+    }
+
+
 def main() -> int:
     value = os.environ.get("EPIC_BROWSER_PROXY", "").strip()
     if not value or not os.environ.get("GITHUB_ENV"):
@@ -161,6 +193,10 @@ def main() -> int:
             if status in {502, 503, 504}:
                 raise RuntimeError("Proxy upstream unavailable")
             print(f"BROWSER_PROXY_PREFLIGHT:epic_http_status={status}", flush=True)
+        if os.environ.get("EPIC_PROXY_EGRESS_CHECK", "false").lower() == "true":
+            stage = "egress_check"
+            diagnostic = egress_diagnostic(value)
+            print(f"BROWSER_PROXY_EGRESS:{json.dumps(diagnostic, sort_keys=True)}", flush=True)
         stage = "export"
         with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
             env.write(f"EPIC_BROWSER_PROXY={value}\n")

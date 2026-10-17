@@ -39,6 +39,10 @@ on:
         description: "Use the EPIC_BROWSER_PROXY secret for a manual network comparison."
         required: false
         default: "false"
+      proxy_check_only:
+        description: "Only check the enabled proxy's connectivity and egress consistency; do not sign in."
+        required: false
+        default: "false"
       captcha_visual_only:
         description: "Diagnose challenges without injecting payload-decoding scripts."
         required: false
@@ -99,7 +103,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate proxy check inputs
+        if: github.event.inputs.proxy_check_only == 'true'
+        env:
+          PROXY_ENABLED: ${{ github.event.inputs.use_browser_proxy || 'false' }}
+        run: |
+          if [ "$PROXY_ENABLED" != "true" ]; then
+            echo "::error::proxy_check_only requires use_browser_proxy=true"
+            exit 1
+          fi
+
       - name: Install system packages
+        if: github.event.inputs.proxy_check_only != 'true'
         run: |
           # GitHub-hosted Ubuntu occasionally points the runner at a stalled
           # regional mirror. Use the public archive mirror for this ephemeral job.
@@ -128,6 +143,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
+        if: github.event.inputs.proxy_check_only != 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install \
@@ -149,7 +165,7 @@ jobs:
             pyyaml
 
       - name: Install Camoufox browser
-        if: env.EPIC_BROWSER_ENGINE == 'camoufox'
+        if: env.EPIC_BROWSER_ENGINE == 'camoufox' && github.event.inputs.proxy_check_only != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -167,10 +183,11 @@ jobs:
           test -f "${CAMOUFOX_UBO_DIR}/manifest.json"
 
       - name: Install Chromium browser
-        if: env.EPIC_BROWSER_ENGINE == 'chromium'
+        if: env.EPIC_BROWSER_ENGINE == 'chromium' && github.event.inputs.proxy_check_only != 'true'
         run: python -m playwright install --with-deps chromium
 
       - name: Restore browser state
+        if: github.event.inputs.proxy_check_only != 'true'
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
@@ -182,9 +199,11 @@ jobs:
         if: github.event.inputs.use_browser_proxy == 'true'
         env:
           EPIC_BROWSER_PROXY: ${{ secrets.EPIC_BROWSER_PROXY }}
+          EPIC_PROXY_EGRESS_CHECK: ${{ github.event.inputs.proxy_check_only || 'false' }}
         run: python scripts/prepare_browser_proxy.py
 
       - name: Run Epic claim
+        if: github.event.inputs.proxy_check_only != 'true'
         env:
           EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
@@ -206,14 +225,14 @@ jobs:
           fi
 
       - name: Save browser state
-        if: always()
+        if: always() && github.event.inputs.proxy_check_only != 'true'
         uses: actions/cache/save@v4
         with:
           path: app/volumes
           key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload logs
-        if: always()
+        if: always() && github.event.inputs.proxy_check_only != 'true'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -227,7 +246,7 @@ jobs:
           retention-days: 7
 
       - name: Send ServerChan notification
-        if: always()
+        if: always() && github.event.inputs.proxy_check_only != 'true'
         continue-on-error: true
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
