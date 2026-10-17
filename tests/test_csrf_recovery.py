@@ -17,7 +17,12 @@ SOURCE = Path(__file__).resolve().parents[1] / "app/services/epic_authorization_
 tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
 selected = []
 for node in tree.body:
-    if isinstance(node, ast.FunctionDef) and node.name in {
+    if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == "EPIC_EMAIL_TRANSACTION_ERROR_MARKERS"
+        for target in node.targets
+    ):
+        selected.append(node)
+    elif isinstance(node, ast.FunctionDef) and node.name in {
         "epic_transaction_error_code", "diagnostic_value_fingerprint", "csrf_request_diagnostic",
         "is_epic_email_transaction_failure",
         "auth_diagnostic_endpoint",
@@ -33,6 +38,7 @@ namespace = dict(
     suppress=suppress, hashlib=hashlib, json=json, unquote=unquote, urlsplit=urlsplit, Enum=Enum,
     asyncio=asyncio, AgentV=object, logger=Mock(), PlaywrightTimeoutError=TimeoutError,
     get_login_hcaptcha_agent=lambda page: object(),
+    replace_login_hcaptcha_agent=lambda page: object(),
     settings=SimpleNamespace(EPIC_EMAIL="test@example.com"),
     expect=lambda node: SimpleNamespace(to_be_enabled=AsyncMock()),
 )
@@ -79,21 +85,49 @@ class CsrfRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.auth._password_form_ready.return_value = True
         self.assertEqual(await self.auth._take_email_transaction_failure(), rejection)
 
-    async def test_email_csrf_exits_before_solving_another_challenge(self):
-        self.auth._email_transaction_failure_signal.put_nowait(self.csrf)
-        self.auth._email_transaction_failure_signal.put_nowait(self.captcha)
+    def configure_login_page(self):
         node = SimpleNamespace(wait_for=AsyncMock(), get_attribute=AsyncMock(return_value=None),
                                clear=AsyncMock(), type=AsyncMock(), click=AsyncMock())
         self.auth.page = SimpleNamespace(goto=AsyncMock(), wait_for_timeout=AsyncMock(),
                                          locator=Mock(return_value=node))
         self.auth._has_refresh_csrf_session = lambda: False
         self.auth._wait_for_cloudflare_auto_pass = AsyncMock(return_value=True)
-        self.auth._solve_pre_password_hcaptcha = AsyncMock(return_value=True)
+        self.auth._save_page_debug = AsyncMock()
+        return node
+
+    async def test_email_csrf_recovers_once_without_resetting_cookies(self):
+        node = self.configure_login_page()
+        self.auth._email_transaction_failure_signal.put_nowait(self.csrf)
+        self.auth._email_transaction_failure_signal.put_nowait(self.captcha)
+        attempts = 0
+
+        async def solve(agent):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                self.auth._has_refresh_csrf_session = lambda: True
+            return True
+
+        self.auth._solve_pre_password_hcaptcha = AsyncMock(side_effect=solve)
+        result = await self.auth._login()
+        self.assertEqual(result, (True, namespace["ErrorType"].SUCCESS))
+        self.assertEqual(self.auth.page.goto.await_count, 2)
+        self.assertEqual(self.auth._solve_pre_password_hcaptcha.await_count, 2)
+        self.assertEqual(node.click.await_count, 2)
+
+    async def test_repeated_csrf_stops_after_one_same_session_recovery(self):
+        self.configure_login_page()
+
+        async def solve(agent):
+            self.auth._email_transaction_failure_signal.put_nowait(self.csrf)
+            self.auth._email_transaction_failure_signal.put_nowait(self.captcha)
+            return True
+
+        self.auth._solve_pre_password_hcaptcha = AsyncMock(side_effect=solve)
         result = await self.auth._login()
         self.assertEqual(result, (False, namespace["ErrorType"].COOKIE_INVALID))
-        self.auth.page.goto.assert_awaited_once()
-        self.auth._solve_pre_password_hcaptcha.assert_awaited_once()
-        node.click.assert_awaited_once()
+        self.assertEqual(self.auth.page.goto.await_count, 2)
+        self.assertEqual(self.auth._solve_pre_password_hcaptcha.await_count, 2)
 
 
 class CsrfDiagnosticTests(unittest.TestCase):

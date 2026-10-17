@@ -822,6 +822,7 @@ class EpicAuthorization:
                 logger.success("✅ 会话已建立，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
 
+            csrf_recoveries = 0
             for email_attempt in range(1, 5):
                 logger.warning(f"LOGIN_STAGE:submit_email:attempt={email_attempt}")
                 await email_input.clear()
@@ -848,8 +849,15 @@ class EpicAuthorization:
                 if not rejection:
                     break
                 if "csrf_token_invalid" in epic_transaction_error_code(rejection):
-                    logger.error("Epic rejected the CSRF session; stop captcha retries and request a fresh profile")
-                    return (False, ErrorType.COOKIE_INVALID)
+                    if csrf_recoveries or email_attempt == 4:
+                        logger.error("Epic rejected CSRF again after same-session recovery")
+                        return (False, ErrorType.COOKIE_INVALID)
+                    csrf_recoveries += 1
+                    # Epic rotates XSRF in its 409 response. Preserve that
+                    # cookie, reload the form and obtain a new challenge.
+                    # Clearing the profile recreates concurrent anonymous
+                    # bootstrap requests; replaying the old captcha also fails.
+                    logger.warning("LOGIN_CSRF_RECOVERY:reload_with_current_cookies:attempt=1/1")
                 if email_attempt == 4:
                     await self._save_page_debug("email_transaction_rejected_final")
                     logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务")
