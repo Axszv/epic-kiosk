@@ -25,7 +25,7 @@ from playwright.async_api import ViewportSize
 from pytz import timezone
 
 from services.epic_authorization_service import EpicAuthorization, ErrorType
-from services.browser_service import claim_browser
+from services.browser_service import browser_proxy_config, claim_browser
 from services.epic_games_service import EpicAgent, EpicGames, GameCollectResult
 from services.epic_mobile_service import collect_mobile_offers, load_mobile_offers
 from settings import LOG_DIR, RECORD_DIR
@@ -86,19 +86,9 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
     # 🌐 代理配置：从环境变量读取（支持 WARP 等 HTTP 代理）
     # 格式: HTTP_PROXY=http://host:port
     # ============================================================
-    proxy_config = None
-    http_proxy = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
-    if http_proxy:
-        from urllib.parse import urlparse
-        parsed = urlparse(http_proxy)
-        proxy_config = {
-            "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
-        }
-        if parsed.username:
-            proxy_config["username"] = parsed.username
-        if parsed.password:
-            proxy_config["password"] = parsed.password
-        logger.info(f"🌐 使用代理: {parsed.hostname}:{parsed.port}")
+    proxy_config = browser_proxy_config()
+    if proxy_config:
+        logger.info("BROWSER_PROXY:enabled")
 
     async with claim_browser(
         settings.user_data_dir,

@@ -3,12 +3,37 @@
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from camoufox import AsyncCamoufox
 from camoufox.addons import DefaultAddons
 from camoufox.fingerprints import Screen
 from loguru import logger
 from playwright.async_api import async_playwright
+
+
+def browser_proxy_config():
+    """Keep an explicit browser-only proxy separate from model API traffic."""
+    value = (os.getenv("EPIC_BROWSER_PROXY") or os.getenv("HTTP_PROXY")
+             or os.getenv("HTTPS_PROXY"))
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        defaults = {"http": 80, "https": 443, "socks5": 1080}
+        if parsed.scheme not in defaults or not parsed.hostname:
+            raise ValueError
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        result = {"server": f"{parsed.scheme}://{host}:{parsed.port or defaults[parsed.scheme]}"}
+        if parsed.username:
+            result["username"] = unquote(parsed.username)
+        if parsed.password:
+            result["password"] = unquote(parsed.password)
+        return result
+    except ValueError:
+        raise ValueError("Invalid browser proxy URL; expected http, https or socks5 with a host") from None
 
 
 @asynccontextmanager

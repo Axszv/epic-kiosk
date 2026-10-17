@@ -35,6 +35,10 @@ on:
         description: "Use headless browser mode (false uses the existing Xvfb display)."
         required: false
         default: "true"
+      use_browser_proxy:
+        description: "Use the EPIC_BROWSER_PROXY secret for a manual network comparison."
+        required: false
+        default: "false"
       captcha_visual_only:
         description: "Diagnose challenges without injecting payload-decoding scripts."
         required: false
@@ -176,11 +180,18 @@ jobs:
 
       - name: Run Epic claim
         env:
+          EPIC_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy == 'true' && secrets.EPIC_BROWSER_PROXY || '' }}
+          EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
-        run: python scripts/github_actions_claim_once.py
+        run: |
+          if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
+            echo "::error::EPIC_BROWSER_PROXY secret is required for this network comparison"
+            exit 1
+          fi
+          python scripts/github_actions_claim_once.py
 
       - name: Save browser state
         if: always()

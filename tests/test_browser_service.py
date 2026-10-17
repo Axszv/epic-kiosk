@@ -5,6 +5,7 @@ import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import unquote, urlsplit
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "app/services/browser_service.py"
@@ -28,15 +29,41 @@ class BrowserServiceTests(unittest.IsolatedAsyncioTestCase):
             yield self.browser
 
         tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
-        node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef))
+        nodes = [n for n in tree.body if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))]
         namespace = {
             "os": os, "Path": Path, "asynccontextmanager": asynccontextmanager,
             "logger": MagicMock(), "async_playwright": playwright_context,
             "AsyncCamoufox": camoufox_context, "Screen": MagicMock(),
             "DefaultAddons": types.SimpleNamespace(UBO="ubo"),
+            "unquote": unquote, "urlsplit": urlsplit,
         }
-        exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), namespace)
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"), namespace)
         self.claim_browser = namespace["claim_browser"]
+        self.proxy_config = namespace["browser_proxy_config"]
+
+    def test_browser_proxy_precedence_and_escaped_credentials(self):
+        with patch.dict(os.environ, {
+            "EPIC_BROWSER_PROXY": "https://name%40host:secret%3Avalue@proxy.example",
+            "HTTPS_PROXY": "http://old.example:3128",
+        }, clear=True):
+            self.assertEqual(self.proxy_config(), {
+                "server": "https://proxy.example:443", "username": "name@host",
+                "password": "secret:value",
+            })
+            self.assertEqual(os.environ["HTTPS_PROXY"], "http://old.example:3128")
+
+    def test_browser_proxy_defaults_and_ipv6(self):
+        with patch.dict(os.environ, {"HTTP_PROXY": "socks5://[::1]"}, clear=True):
+            self.assertEqual(self.proxy_config(), {"server": "socks5://[::1]:1080"})
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(self.proxy_config())
+
+    def test_invalid_proxy_error_does_not_echo_credentials(self):
+        for value in ("private-secret", "http://name:private-secret@host:bad", "file:///private-secret"):
+            with patch.dict(os.environ, {"EPIC_BROWSER_PROXY": value}, clear=True):
+                with self.assertRaises(ValueError) as error:
+                    self.proxy_config()
+                self.assertNotIn("private-secret", str(error.exception))
 
     async def test_default_keeps_the_existing_camoufox_profile_and_options(self):
         with patch.dict(os.environ, {}, clear=True):
