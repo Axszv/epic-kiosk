@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "scripts/prepare_browser_proxy.py"
@@ -41,6 +42,24 @@ class VlessConfigTests(unittest.TestCase):
                     client.vless_config(node)
                 self.assertNotIn(UUID, str(error.exception))
                 self.assertNotIn("private-credential", str(error.exception))
+
+    def test_worker_pin_preserves_transport_and_existing_path_options(self):
+        original = client.vless_config(NODE)
+        pinned = client.vless_config(NODE, "8.8.8.8")
+        stream = pinned["outbounds"][0]["streamSettings"]
+        path = urlsplit(stream["wsSettings"]["path"])
+        self.assertEqual(path.path, "/relay")
+        self.assertEqual(parse_qs(path.query), {"ed": ["2048"], "proxyip": ["8.8.8.8"]})
+        stream["wsSettings"]["path"] = "/relay?ed=2048"
+        self.assertEqual(pinned, original)
+
+    def test_worker_pin_replaces_duplicate_query_values_and_rejects_private_targets(self):
+        node = NODE.replace("ed%3D2048", "proxyip%3D1.1.1.1%26proxyip%3D9.9.9.9")
+        path = client.vless_config(node, "8.8.8.8")["outbounds"][0]["streamSettings"]["wsSettings"]["path"]
+        self.assertEqual(parse_qs(urlsplit(path).query), {"proxyip": ["8.8.8.8"]})
+        for address in ("127.0.0.1", "10.0.0.1", "::1", "proxy.example", "8.8.8.8&secret=value"):
+            with self.assertRaises(ValueError):
+                client.vless_config(NODE, address)
 
     def test_checksum_mismatch_cannot_install_a_binary(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -104,24 +123,33 @@ class EgressDiagnosticTests(unittest.TestCase):
             return client.egress_diagnostic(client.LOCAL_PROXY)
 
     def test_detects_different_origins_with_stable_individual_egress(self):
-        result = self.check([b"ip=203.0.113.1\n", b"198.51.100.1", b"ip=203.0.113.1\n", b"198.51.100.1"])
-        self.assertEqual(result["completed_samples"], 4)
+        result = self.check([b"ip=203.0.113.1\n", b"198.51.100.1", b"ip=203.0.113.1", b"ip=203.0.113.1"] * 2)
+        self.assertEqual(result["completed_samples"], 8)
         self.assertEqual(result["distinct_egress_count"], 2)
         self.assertTrue(all(result["stable_per_origin"].values()))
         self.assertFalse(result["same_egress_across_origins"])
+        self.assertTrue(result["same_egress_epic_hcaptcha"])
         self.assertNotIn("203.0.113.1", json.dumps(result))
         self.assertNotIn("198.51.100.1", json.dumps(result))
 
     def test_detects_changing_egress_on_the_same_origin(self):
-        result = self.check([b"ip=203.0.113.1", b"203.0.113.1", b"ip=203.0.113.2", b"203.0.113.1"])
+        result = self.check([b"ip=203.0.113.1", b"203.0.113.1", b"ip=203.0.113.1", b"ip=203.0.113.1",
+                             b"ip=203.0.113.2", b"203.0.113.1", b"ip=203.0.113.1", b"ip=203.0.113.1"])
         self.assertFalse(result["stable_per_origin"]["cloudflare"])
         self.assertTrue(result["stable_per_origin"]["amazon"])
 
     def test_incomplete_samples_do_not_claim_consistent_egress(self):
-        result = self.check([b"invalid", b"203.0.113.1", OSError("private detail"), b"203.0.113.1"])
+        result = self.check([b"invalid", b"203.0.113.1", b"HTML error", OSError("private detail")] * 2)
         self.assertEqual(result["completed_samples"], 2)
         self.assertIsNone(result["same_egress_across_origins"])
+        self.assertIsNone(result["same_egress_epic_hcaptcha"])
         self.assertEqual(result["failures"]["cloudflare"], 2)
+
+    def test_epic_and_hcaptcha_mismatch_is_detected_even_when_each_is_stable(self):
+        result = self.check([b"ip=203.0.113.1", b"203.0.113.1", b"ip=203.0.113.1", b"ip=203.0.113.2"] * 2)
+        self.assertTrue(result["stable_per_origin"]["epic"])
+        self.assertTrue(result["stable_per_origin"]["hcaptcha"])
+        self.assertFalse(result["same_egress_epic_hcaptcha"])
 
 
 if __name__ == "__main__":

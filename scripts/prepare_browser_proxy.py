@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 from uuid import UUID
 from zipfile import ZipFile
@@ -31,10 +31,12 @@ EPIC_PREFLIGHT = "https://store-site-backend-static.ak.epicgames.com/freeGamesPr
 EGRESS_TARGETS = {
     "cloudflare": "https://www.cloudflare.com/cdn-cgi/trace",
     "amazon": "https://checkip.amazonaws.com/",
+    "epic": "https://www.epicgames.com/cdn-cgi/trace",
+    "hcaptcha": "https://api2.hcaptcha.com/cdn-cgi/trace",
 }
 
 
-def vless_config(value: str) -> dict:
+def vless_config(value: str, worker_proxyip: str = "") -> dict:
     """Support the transport actually used by the saved dae epic_cf node."""
     try:
         parsed = urlsplit(value.strip())
@@ -60,6 +62,17 @@ def vless_config(value: str) -> dict:
         if query.get("alpn"):
             tls["alpn"] = query["alpn"].split(",")
         ws = {"path": query.get("path") or "/"}
+        if worker_proxyip:
+            address = ipaddress.ip_address(worker_proxyip)
+            if not address.is_global:
+                raise ValueError
+            path = urlsplit(ws["path"])
+            if path.scheme or path.netloc or path.fragment:
+                raise ValueError
+            parameters = [(key, item) for key, item in parse_qsl(path.query, keep_blank_values=True)
+                          if key != "proxyip"]
+            parameters.append(("proxyip", address.compressed))
+            ws["path"] = urlunsplit(("", "", path.path or "/", urlencode(parameters), ""))
         if query.get("host"):
             ws["headers"] = {"Host": query["host"]}
         return {
@@ -126,7 +139,11 @@ def preflight(proxy: str) -> int:
 
 
 def egress_diagnostic(proxy: str) -> dict:
-    """Compare two public origins without logging or exporting IP addresses."""
+    """Compare public trace endpoints without logging or exporting IPs.
+
+    Workers can route Cloudflare destinations through PROXYIP while other
+    hosts use Workers' own TCP egress. Measure Epic/hCaptcha separately.
+    """
     opener = build_opener(ProxyHandler({"https": proxy, "http": proxy}))
     samples = {name: [] for name in EGRESS_TARGETS}
     failures = {name: 0 for name in EGRESS_TARGETS}
@@ -135,20 +152,24 @@ def egress_diagnostic(proxy: str) -> dict:
             try:
                 with opener.open(url, timeout=15) as response:
                     body = response.read(8192).decode("utf-8").strip()
-                if name == "cloudflare":
+                if name != "amazon":
                     body = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)["ip"]
                 samples[name].append(str(ipaddress.ip_address(body)))
             except Exception:
                 failures[name] += 1
     all_samples = [sample for values in samples.values() for sample in values]
-    complete = len(all_samples) == 4
+    expected = 2 * len(EGRESS_TARGETS)
+    complete = len(all_samples) == expected
+    auth_samples = samples["epic"] + samples["hcaptcha"]
     return {
+        "expected_samples": expected,
         "completed_samples": len(all_samples),
         "failures": failures,
         "distinct_egress_count": len(set(all_samples)),
         "stable_per_origin": {name: len(values) == 2 and len(set(values)) == 1
                               for name, values in samples.items()},
         "same_egress_across_origins": len(set(all_samples)) == 1 if complete else None,
+        "same_egress_epic_hcaptcha": len(set(auth_samples)) == 1 if len(auth_samples) == 4 else None,
     }
 
 
@@ -162,8 +183,13 @@ def main() -> int:
     stage = "configuration"
     try:
         scheme = urlsplit(value).scheme.lower()
+        worker_proxyip = os.environ.get("EPIC_WORKER_PROXYIP", "").strip()
+        if worker_proxyip and scheme != "vless":
+            raise ValueError("Worker PROXYIP override requires a VLESS node")
         if scheme == "vless":
-            config = vless_config(value)
+            config = vless_config(value, worker_proxyip)
+            if worker_proxyip:
+                print("BROWSER_PROXY_WORKER:single_proxyip_override", flush=True)
             if not sys.platform.startswith("linux"):
                 raise RuntimeError("The pinned proxy client requires a Linux runner")
             directory = Path(tempfile.mkdtemp(prefix="epic-browser-proxy-", dir=os.environ.get("RUNNER_TEMP")))
