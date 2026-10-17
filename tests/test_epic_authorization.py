@@ -163,13 +163,13 @@ class EpicEmailTransactionTests(unittest.TestCase):
     def test_does_not_match_successful_email_response(self):
         self.assertFalse(is_epic_email_transaction_failure(200, '{"exists":true}'))
 
-    def test_recovers_login_captcha_and_csrf_rejections(self):
+    def test_only_captcha_rejections_retry_the_same_session(self):
         self.assertTrue(
             is_recoverable_epic_captcha_error(
                 "errors.com.epicgames.accountportal.captcha_invalid"
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             is_recoverable_epic_captcha_error(
                 "errors.com.epicgames.accountportal.csrf_token_invalid"
             )

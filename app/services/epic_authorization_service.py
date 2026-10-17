@@ -12,6 +12,7 @@ import json
 import time
 from contextlib import suppress
 from enum import Enum
+from urllib.parse import unquote
 
 from hcaptcha_challenger.agent import AgentV
 from loguru import logger
@@ -79,7 +80,41 @@ def is_epic_email_transaction_failure(status: int, body_text: str = "") -> bool:
 def is_recoverable_epic_captcha_error(error_code: str) -> bool:
     """Return whether Epic asks the browser to restart its captcha transaction."""
     normalized = (error_code or "").casefold()
-    return "captcha_invalid" in normalized or "csrf_token_invalid" in normalized
+    return "captcha_invalid" in normalized
+
+
+def epic_transaction_error_code(rejection: dict) -> str:
+    if rejection.get("code"):
+        return str(rejection["code"])
+    with suppress(ValueError, TypeError, AttributeError):
+        return str(json.loads(rejection.get("body", "")).get("errorCode") or "")
+    return ""
+
+
+def csrf_request_diagnostic(headers: dict, response_headers: list) -> dict:
+    """Compare native Axios XSRF headers/cookies without exposing their values."""
+    headers = {name.lower(): value for name, value in headers.items()}
+    header = headers.get("x-xsrf-token", "")
+    cookies = []
+    for item in headers.get("cookie", "").split(";"):
+        name, _, value = item.strip().partition("=")
+        if name == "XSRF-TOKEN":
+            cookies.append(unquote(value))
+    updated = []
+    for item in response_headers:
+        if item.get("name", "").lower() != "set-cookie":
+            continue
+        name, _, value = item.get("value", "").split(";", 1)[0].partition("=")
+        if name == "XSRF-TOKEN":
+            updated.append(diagnostic_value_fingerprint(unquote(value)))
+    return {
+        "header_present": bool(header),
+        "header": diagnostic_value_fingerprint(header) if header else None,
+        "cookie_count": len(cookies),
+        "header_matches_cookie": bool(header) and header in cookies,
+        "cookies": [diagnostic_value_fingerprint(value) for value in cookies],
+        "response_cookies": updated,
+    }
 
 
 def sanitize_epic_response_payload(value, *, max_string_length: int = 1000):
@@ -319,8 +354,15 @@ class EpicAuthorization:
     async def _take_email_transaction_failure(self):
         rejection = None
         while not self._email_transaction_failure_signal.empty():
-            rejection = self._email_transaction_failure_signal.get_nowait()
+            candidate = self._email_transaction_failure_signal.get_nowait()
+            # Epic's Axios retries a CSRF 409 with the same captcha payload.
+            # Preserve that cause when the follow-up is only captcha_invalid.
+            if rejection is None or "csrf_token_invalid" in epic_transaction_error_code(candidate):
+                rejection = candidate
         if rejection:
+            if rejection.get("source") == "email" and await self._password_form_ready():
+                # Native retry can succeed; an accepted form transition wins.
+                return None
             return rejection
 
         body_text = ""
@@ -530,6 +572,11 @@ class EpicAuthorization:
                 f"EPIC_EMAIL_RESPONSE:status={r.status}:error={error_code}:"
                 f"captcha={json.dumps(request_captcha, ensure_ascii=False)}"
             )
+            with suppress(Exception):
+                csrf = csrf_request_diagnostic(
+                    await r.request.all_headers(), await r.headers_array()
+                )
+                logger.warning(f"EPIC_CSRF_DIAGNOSTIC:status={r.status}:{json.dumps(csrf)}")
             logger.debug(
                 f"📡 邮箱校验 API 响应: {r.url} | 状态码: {r.status} | "
                 f"响应: {body_text[:500]}"
@@ -539,7 +586,7 @@ class EpicAuthorization:
                     f"Epic 拒绝邮箱/hCaptcha 事务，准备在当前浏览器中恢复: HTTP {r.status}"
                 )
                 self._email_transaction_failure_signal.put_nowait(
-                    {"status": r.status, "body": body_text[:1000]}
+                    {"status": r.status, "body": body_text[:1000], "code": error_code, "source": "email"}
                 )
             return
 
@@ -550,6 +597,11 @@ class EpicAuthorization:
             logger.debug(f"📡 API 响应: {r.url} | 状态码: {r.status}")
 
             if "/id/api/login" in r.url:
+                with suppress(Exception):
+                    csrf = csrf_request_diagnostic(
+                        await r.request.all_headers(), await r.headers_array()
+                    )
+                    logger.warning(f"EPIC_CSRF_DIAGNOSTIC:status={r.status}:{json.dumps(csrf)}")
                 # 记录完整的登录 API 响应
                 logger.debug(f"🔍 登录 API 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)}")
                 if result.get("errorCode"):
@@ -771,6 +823,9 @@ class EpicAuthorization:
                 rejection = await self._take_email_transaction_failure()
                 if not rejection:
                     break
+                if "csrf_token_invalid" in epic_transaction_error_code(rejection):
+                    logger.error("Epic rejected the CSRF session; stop captcha retries and request a fresh profile")
+                    return (False, ErrorType.COOKIE_INVALID)
                 if email_attempt == 4:
                     await self._save_page_debug("email_transaction_rejected_final")
                     logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务")
@@ -856,6 +911,11 @@ class EpicAuthorization:
 
                 async def restart_email_transaction(rejection) -> bool:
                     nonlocal agent, email_transaction_retries, captcha_success
+                    if "csrf_token_invalid" in epic_transaction_error_code(rejection):
+                        self._is_login_success_signal.put_nowait(
+                            {"error": True, "code": epic_transaction_error_code(rejection)}
+                        )
+                        return False
                     email_transaction_retries += 1
                     if email_transaction_retries > 3:
                         logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务，停止本次登录")
@@ -1001,7 +1061,9 @@ class EpicAuthorization:
                             return (False, ErrorType.ACCOUNT_LOCKED)
                         elif error_code == "cloudflare_blocked":
                             return (False, ErrorType.CLOUDFLARE_BLOCKED)
-                        elif "captcha" in error_code or "csrf_token_invalid" in error_code:
+                        elif "csrf_token_invalid" in error_code:
+                            return (False, ErrorType.COOKIE_INVALID)
+                        elif "captcha" in error_code:
                             logger.error(f"❌ 登录验证码事务失败: {error_code}")
                             return (False, ErrorType.CAPTCHA_FAILED)
                         else:
@@ -1039,7 +1101,9 @@ class EpicAuthorization:
                         return (False, ErrorType.ACCOUNT_LOCKED)
                     elif error_code == "cloudflare_blocked":
                         return (False, ErrorType.CLOUDFLARE_BLOCKED)
-                    elif "captcha" in error_code or "csrf_token_invalid" in error_code:
+                    elif "csrf_token_invalid" in error_code:
+                        return (False, ErrorType.COOKIE_INVALID)
+                    elif "captcha" in error_code:
                         logger.error(f"❌ 登录验证码事务失败: {error_code}")
                         return (False, ErrorType.CAPTCHA_FAILED)
                     else:
