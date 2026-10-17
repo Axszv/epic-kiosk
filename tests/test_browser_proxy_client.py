@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
+from urllib.error import HTTPError, URLError
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "scripts/prepare_browser_proxy.py"
@@ -67,6 +68,53 @@ class VlessConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "checksum"):
                     client.install_xray(Path(directory))
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+
+class PreflightTests(unittest.TestCase):
+    def check(self, replies):
+        opener = Mock()
+        opener.open.side_effect = replies
+        output = io.StringIO()
+        with patch.object(client, "build_opener", return_value=opener), \
+                patch.object(client.time, "sleep") as sleep, \
+                contextlib.redirect_stdout(output):
+            try:
+                value = client.preflight(client.LOCAL_PROXY)
+            except Exception as error:
+                value = error
+        self.assertNotIn(NODE, output.getvalue())
+        self.assertNotIn(UUID, output.getvalue())
+        return value, opener.open.call_count, sleep.call_args_list, output.getvalue()
+
+    def response(self, status):
+        response = io.BytesIO(b"ok")
+        response.status = status
+        return response
+
+    def test_transient_disconnect_retries_then_accepts_success(self):
+        result, count, sleeps, output = self.check([URLError(NODE), self.response(200)])
+        self.assertEqual((result, count), (200, 2))
+        self.assertEqual(sleeps[0].args, (2,))
+        self.assertIn("retry=2/3:reason=URLError", output)
+
+    def test_persistent_failure_stops_after_three_attempts(self):
+        result, count, sleeps, _ = self.check([URLError(NODE)] * 3)
+        self.assertIsInstance(result, URLError)
+        self.assertEqual(count, 3)
+        self.assertEqual([call.args for call in sleeps], [(2,), (4,)])
+
+    def test_authentication_failure_is_not_retried(self):
+        result, count, sleeps, _ = self.check([HTTPError(NODE,407,"private",{},None)])
+        self.assertIsInstance(result, RuntimeError)
+        self.assertEqual(count, 1)
+        self.assertEqual(sleeps, [])
+
+    def test_upstream_unavailable_retries_but_site_verification_returns(self):
+        result, count, _, _ = self.check([
+            HTTPError(NODE,503,"private",{},None),
+            HTTPError(NODE,403,"verification",{},None),
+        ])
+        self.assertEqual((result, count), (403, 2))
 
 
 class ProxyPreparationTests(unittest.TestCase):

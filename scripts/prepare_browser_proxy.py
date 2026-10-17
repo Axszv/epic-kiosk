@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 from uuid import UUID
@@ -129,13 +129,27 @@ def preflight(proxy: str) -> int:
     # No account credentials are sent. HTTP errors still prove that TLS to
     # Epic completed; the browser handles any site verification separately.
     opener = build_opener(ProxyHandler({"https": proxy, "http": proxy}))
-    try:
-        with opener.open(EPIC_PREFLIGHT, timeout=30) as response:
-            return response.status
-    except HTTPError as error:
-        if error.code == 407:
-            raise RuntimeError("Proxy authentication rejected") from None
-        return error.code
+    for attempt in range(1, 4):
+        status = None
+        try:
+            with opener.open(EPIC_PREFLIGHT, timeout=30) as response:
+                status = response.status
+        except HTTPError as error:
+            if error.code == 407:
+                raise RuntimeError("Proxy authentication rejected") from None
+            status = error.code
+        except (URLError, TimeoutError, OSError) as error:
+            if attempt == 3:
+                raise
+            # Client exceptions may contain a credential-bearing URL.
+            reason = type(error).__name__
+        if status is not None:
+            if status not in {502, 503, 504} or attempt == 3:
+                return status
+            reason = f"HTTP_{status}"
+        print(f"BROWSER_PROXY_PREFLIGHT:retry={attempt + 1}/3:reason={reason}", flush=True)
+        time.sleep(2 * attempt)
+    raise RuntimeError("Proxy preflight exhausted")
 
 
 def egress_diagnostic(proxy: str) -> dict:
