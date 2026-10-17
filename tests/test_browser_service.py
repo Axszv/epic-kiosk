@@ -43,6 +43,7 @@ class BrowserServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(browser, self.browser)
         self.assertEqual(self.camoufox_options["user_data_dir"], "profiles/account")
         self.assertFalse(self.camoufox_options["headless"])
+        self.assertNotIn("extra_http_headers", self.camoufox_options)
         self.launch.assert_not_awaited()
 
     async def test_chromium_profile_is_separate_and_closed_after_error(self):

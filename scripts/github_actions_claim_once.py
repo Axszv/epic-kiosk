@@ -338,7 +338,7 @@ def run_account(
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(
-        ["xvfb-run", "-a", sys.executable, "app/deploy.py"],
+        ["xvfb-run", "-a", "-s", "-screen 0 1920x1080x24", sys.executable, "app/deploy.py"],
         env=env,
         text=True,
         stdout=subprocess.PIPE,

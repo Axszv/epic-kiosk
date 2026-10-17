@@ -40,6 +40,5 @@ async def claim_browser(user_data_dir, *, headless=True, proxy=None):
         humanize=0.2,
         headless=headless,
         proxy=proxy,
-        extra_http_headers={"Accept-Encoding": "identity"},
     ) as browser:
         yield browser
