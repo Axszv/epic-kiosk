@@ -4,8 +4,8 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from browserforge.fingerprints import Screen
 from camoufox import AsyncCamoufox
+from camoufox.fingerprints import Screen
 from loguru import logger
 from playwright.async_api import async_playwright
 
