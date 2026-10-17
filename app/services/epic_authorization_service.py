@@ -12,7 +12,7 @@ import json
 import time
 from contextlib import suppress
 from enum import Enum
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from hcaptcha_challenger.agent import AgentV
 from loguru import logger
@@ -115,6 +115,19 @@ def csrf_request_diagnostic(headers: dict, response_headers: list) -> dict:
         "cookies": [diagnostic_value_fingerprint(value) for value in cookies],
         "response_cookies": updated,
     }
+
+
+def auth_diagnostic_endpoint(url: str) -> str:
+    """Allow only fixed auth paths; query strings and token paths stay private."""
+    parsed = urlsplit(url)
+    if parsed.hostname not in {"www.epicgames.com", "accounts.epicgames.com"}:
+        return ""
+    if parsed.path in {
+        "/id/login", "/id/authorize", "/id/api/analytics", "/id/api/authenticate",
+        "/id/api/location", "/id/api/email/exists", "/id/api/login",
+    }:
+        return parsed.path
+    return ""
 
 
 def sanitize_epic_response_payload(value, *, max_string_length: int = 1000):
@@ -472,6 +485,17 @@ class EpicAuthorization:
             )
 
     async def _on_response_anything(self, r: Response):
+        endpoint = auth_diagnostic_endpoint(r.url)
+        if endpoint:
+            with suppress(Exception):
+                csrf = csrf_request_diagnostic(
+                    await r.request.all_headers(), await r.headers_array()
+                )
+                logger.warning(
+                    f"EPIC_AUTH_CSRF:method={r.request.method}:path={endpoint}:"
+                    f"status={r.status}:started={r.request.timing.get('startTime')}:"
+                    f"{json.dumps(csrf)}"
+                )
         if r.request.method != "POST":
             return
 
@@ -1441,7 +1465,10 @@ class EpicAuthorization:
                 return ErrorType.SUCCESS
 
             # 执行登录
-            login_result = await self._login()
+            # Start with the Store's client/redirect context, just as the
+            # signed-out checkout recovery does. A bare /id/login creates an
+            # account-portal session that still needs a second Store login.
+            login_result = await self._login(login_url=STORE_LOGIN_URL)
             if login_result:
                 success, error_type = login_result
                 if success:

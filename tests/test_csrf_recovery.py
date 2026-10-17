@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "app/services/epic_authorization_service.py"
@@ -20,6 +20,7 @@ for node in tree.body:
     if isinstance(node, ast.FunctionDef) and node.name in {
         "epic_transaction_error_code", "diagnostic_value_fingerprint", "csrf_request_diagnostic",
         "is_epic_email_transaction_failure",
+        "auth_diagnostic_endpoint",
     }:
         selected.append(node)
     elif isinstance(node, ast.ClassDef) and node.name == "ErrorType":
@@ -29,7 +30,7 @@ for node in tree.body:
                      and method.name in {"_take_email_transaction_failure", "_login"}]
         selected.append(node)
 namespace = dict(
-    suppress=suppress, hashlib=hashlib, json=json, unquote=unquote, Enum=Enum,
+    suppress=suppress, hashlib=hashlib, json=json, unquote=unquote, urlsplit=urlsplit, Enum=Enum,
     asyncio=asyncio, AgentV=object, logger=Mock(), PlaywrightTimeoutError=TimeoutError,
     get_login_hcaptcha_agent=lambda page: object(),
     settings=SimpleNamespace(EPIC_EMAIL="test@example.com"),
@@ -96,6 +97,13 @@ class CsrfRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CsrfDiagnosticTests(unittest.TestCase):
+    def test_auth_endpoint_excludes_tokens_and_unrelated_hosts(self):
+        endpoint = namespace["auth_diagnostic_endpoint"]
+        self.assertEqual(endpoint("https://www.epicgames.com/id/login?state=private"), "/id/login")
+        self.assertEqual(endpoint("https://www.epicgames.com/id/api/authenticate"), "/id/api/authenticate")
+        self.assertEqual(endpoint("https://www.epicgames.com/id/api/exchange/private"), "")
+        self.assertEqual(endpoint("https://unrelated.example/id/api/login"), "")
+
     def test_compares_decoded_cookie_and_omits_secrets(self):
         result = diagnostic(
             {"X-XSRF-TOKEN": "csrf/value", "Cookie": "other=private; XSRF-TOKEN=csrf%2Fvalue"},
