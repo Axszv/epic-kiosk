@@ -44,6 +44,19 @@ def extract_chat_completion_text(result: dict) -> str:
     return ""
 
 
+def gemini_system_instruction_text(instruction: Any) -> str | None:
+    """Preserve Gemini's string and Content/Part forms in chat completions."""
+    if isinstance(instruction, str):
+        return instruction or None
+    if instruction is None:
+        return None
+    parts = getattr(instruction, "parts", None)
+    if parts is None:
+        parts = instruction if isinstance(instruction, (list, tuple)) else [instruction]
+    texts = [part if isinstance(part, str) else getattr(part, "text", None) for part in parts]
+    return "\n".join(text for text in texts if isinstance(text, str) and text) or None
+
+
 def captcha_output_budget(requested_max_tokens: int, minimum: int = 8192) -> int:
     """Keep captcha reasoning from consuming the entire completion budget."""
     return max(requested_max_tokens, minimum)
@@ -323,7 +336,7 @@ def _apply_openai_compatible_patch():
 
                                 image_parts.append({
                                     "type": "image_url",
-                                    "image_url": {"url": data_url}
+                                    "image_url": {"url": data_url, "detail": "high"}
                                 })
 
                         # 处理 file_data（来自 upload 的文件）
@@ -337,16 +350,11 @@ def _apply_openai_compatible_patch():
                             combined_text = "\n".join(text_parts)
                             msg_content.append({"type": "text", "text": combined_text})
                         msg_content.extend(image_parts)
+                        role = getattr(content, "role", None) or "user"
                         messages.append({
-                            "role": "user",
-                            "content": msg_content if len(msg_content) > 1 else (msg_content[0] if msg_content else "")
+                            "role": "assistant" if role == "model" else role,
+                            "content": msg_content,
                         })
-
-                elif hasattr(content, 'role') and hasattr(content, 'parts'):
-                    role = 'assistant' if content.role == 'model' else content.role
-                    text = " ".join([p.text for p in content.parts if hasattr(p, 'text')])
-                    if text:
-                        messages.append({"role": role, "content": text})
 
             return messages, has_images
 
@@ -658,13 +666,9 @@ JSON Schema:
                     logger.debug(f"📋 检测到 response_schema: {response_schema.__name__ if hasattr(response_schema, '__name__') else response_schema}")
 
                 # 提取 system_instruction
-                system_instruction = None
-                if hasattr(config, 'system_instruction'):
-                    if hasattr(config.system_instruction, 'parts'):
-                        for part in config.system_instruction.parts:
-                            if hasattr(part, 'text'):
-                                system_instruction = part.text
-                                break
+                system_instruction = gemini_system_instruction_text(
+                    getattr(config, 'system_instruction', None)
+                )
 
                 # 调用 OpenAI API
                 result = await _call_openai_api(
