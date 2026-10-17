@@ -6,17 +6,20 @@
 @Desc    :
 """
 import asyncio
+import base64
 import hashlib
 import json
 import time
 from contextlib import suppress
 from enum import Enum
+from urllib.parse import unquote, urlsplit
 
 from hcaptcha_challenger.agent import AgentV
 from loguru import logger
 from playwright.async_api import expect, Page, Response, TimeoutError as PlaywrightTimeoutError
 
 from settings import RUNTIME_DIR, settings
+from services.epic_store_page import STORE_LOGIN_URL, store_signed_out
 from services.hcaptcha_agent_service import (
     get_login_hcaptcha_agent,
     replace_login_hcaptcha_agent,
@@ -77,7 +80,54 @@ def is_epic_email_transaction_failure(status: int, body_text: str = "") -> bool:
 def is_recoverable_epic_captcha_error(error_code: str) -> bool:
     """Return whether Epic asks the browser to restart its captcha transaction."""
     normalized = (error_code or "").casefold()
-    return "captcha_invalid" in normalized or "csrf_token_invalid" in normalized
+    return "captcha_invalid" in normalized
+
+
+def epic_transaction_error_code(rejection: dict) -> str:
+    if rejection.get("code"):
+        return str(rejection["code"])
+    with suppress(ValueError, TypeError, AttributeError):
+        return str(json.loads(rejection.get("body", "")).get("errorCode") or "")
+    return ""
+
+
+def csrf_request_diagnostic(headers: dict, response_headers: list) -> dict:
+    """Compare native Axios XSRF headers/cookies without exposing their values."""
+    headers = {name.lower(): value for name, value in headers.items()}
+    header = headers.get("x-xsrf-token", "")
+    cookies = []
+    for item in headers.get("cookie", "").split(";"):
+        name, _, value = item.strip().partition("=")
+        if name == "XSRF-TOKEN":
+            cookies.append(unquote(value))
+    updated = []
+    for item in response_headers:
+        if item.get("name", "").lower() != "set-cookie":
+            continue
+        name, _, value = item.get("value", "").split(";", 1)[0].partition("=")
+        if name == "XSRF-TOKEN":
+            updated.append(diagnostic_value_fingerprint(unquote(value)))
+    return {
+        "header_present": bool(header),
+        "header": diagnostic_value_fingerprint(header) if header else None,
+        "cookie_count": len(cookies),
+        "header_matches_cookie": bool(header) and header in cookies,
+        "cookies": [diagnostic_value_fingerprint(value) for value in cookies],
+        "response_cookies": updated,
+    }
+
+
+def auth_diagnostic_endpoint(url: str) -> str:
+    """Allow only fixed auth paths; query strings and token paths stay private."""
+    parsed = urlsplit(url)
+    if parsed.hostname not in {"www.epicgames.com", "accounts.epicgames.com"}:
+        return ""
+    if parsed.path in {
+        "/id/login", "/id/authorize", "/id/api/analytics", "/id/api/authenticate",
+        "/id/api/location", "/id/api/email/exists", "/id/api/login",
+    }:
+        return parsed.path
+    return ""
 
 
 def sanitize_epic_response_payload(value, *, max_string_length: int = 1000):
@@ -110,6 +160,35 @@ def diagnostic_value_fingerprint(value) -> dict[str, int | str]:
         "length": len(value),
         "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()[:12],
     }
+
+
+def captcha_value_diagnostic(value, solved_token: str = "") -> dict:
+    """Compare wrapped tokens without logging tokens or decoded values."""
+    summary = {"type": type(value).__name__, **diagnostic_value_fingerprint(value)}
+    candidate = value if isinstance(value, str) else json.dumps(value)
+    summary["hcaptcha_match"] = "not_observable"
+    encoding = "plain"
+    for _ in range(3):
+        if solved_token and solved_token in candidate:
+            summary["hcaptcha_match"] = encoding
+        with suppress(Exception):
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                summary["fields"] = {
+                    str(key)[:64]: {"type": type(item).__name__, **diagnostic_value_fingerprint(item)}
+                    for key, item in list(parsed.items())[:12]
+                }
+                break
+        if len(candidate) > 65536:
+            break
+        try:
+            candidate = base64.b64decode(
+                candidate + "=" * (-len(candidate) % 4), altchars=b"-_", validate=True,
+            ).decode("utf-8")
+            encoding = "base64"
+        except (ValueError, UnicodeError):
+            break
+    return summary
 
 
 def summarize_epic_request_secrets(value, path: str = "") -> dict[str, dict]:
@@ -288,8 +367,15 @@ class EpicAuthorization:
     async def _take_email_transaction_failure(self):
         rejection = None
         while not self._email_transaction_failure_signal.empty():
-            rejection = self._email_transaction_failure_signal.get_nowait()
+            candidate = self._email_transaction_failure_signal.get_nowait()
+            # Epic's Axios retries a CSRF 409 with the same captcha payload.
+            # Preserve that cause when the follow-up is only captcha_invalid.
+            if rejection is None or "csrf_token_invalid" not in epic_transaction_error_code(rejection):
+                rejection = candidate
         if rejection:
+            if rejection.get("source") == "email" and await self._password_form_ready():
+                # Native retry can succeed; an accepted form transition wins.
+                return None
             return rejection
 
         body_text = ""
@@ -299,33 +385,64 @@ class EpicAuthorization:
             return {"status": 200, "body": body_text[:1000]}
         return None
 
-    async def _solve_pre_password_hcaptcha(self, agent: AgentV) -> bool:
-        # Epic can insert an email_exists_prod hCaptcha between the email and
-        # password steps. Wait briefly for either state before proceeding.
-        for _ in range(20):
-            if await self._has_hcaptcha_challenge():
-                break
-            with suppress(Exception):
-                if await self.page.locator("#password").is_visible(timeout=250):
-                    return True
-            await self.page.wait_for_timeout(500)
-        else:
-            return True
+    async def _password_form_ready(self) -> bool:
+        # The email form includes an off-screen #password for autofill.
+        # Playwright considers it visible despite its transparent ancestor.
+        # Only the real password step has a Sign in submit button.
+        with suppress(Exception):
+            return (
+                await self.page.locator("#sign-in").is_visible()
+                and await self.page.locator("#password").is_visible()
+            )
+        return False
 
-        for attempt in range(1, 4):
+    async def _solve_pre_password_hcaptcha(self, agent: AgentV) -> bool:
+        deadline = time.monotonic() + settings.LOGIN_RESULT_TIMEOUT_SECONDS
+        attempt = 0
+        while time.monotonic() < deadline:
+            # Leave rejection signals for the caller's bounded recovery.
+            if not self._email_transaction_failure_signal.empty():
+                return True
+            if self._has_refresh_csrf_session() or await self._password_form_ready():
+                return True
+            if not await self._has_hcaptcha_challenge():
+                await self.page.wait_for_timeout(500)
+                continue
+            attempt += 1
+            if attempt > 3:
+                break
             logger.info(f"处理邮箱步骤 hCaptcha [{attempt}/3]")
             try:
-                await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     agent.wait_for_challenge(),
-                    timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
+                    timeout=min(
+                        max(settings.EXECUTION_TIMEOUT, 120) + 30,
+                        max(0.1, deadline - time.monotonic()),
+                    ),
                 )
+                signal = getattr(result, "value", result)
+                logger.warning(f"EMAIL_CAPTCHA_RESULT:{signal}")
+                if signal != "success":
+                    if not self._email_transaction_failure_signal.empty():
+                        return True
+                    # Some encrypted pass responses cannot be inspected by
+                    # the solver. The actual Epic form transition still wins.
+                    if await self._password_form_ready():
+                        return True
+                    break
             except Exception as err:
-                logger.warning(f"邮箱步骤 hCaptcha 处理异常 [{attempt}/3]: {err}")
-
+                # A response may arrive while the solver is awaiting a frame
+                # that Epic has already removed. Preserve its rejection for
+                # the caller's bounded recovery rather than masking it.
+                if not self._email_transaction_failure_signal.empty():
+                    return True
+                if self._has_refresh_csrf_session() or await self._password_form_ready():
+                    return True
+                logger.warning(f"邮箱步骤 hCaptcha 处理异常 [{attempt}/3]: {type(err).__name__}")
+                break
+            # A solved challenge is not an accepted email transaction. Wait
+            # for Epic to render Sign in or return its rejection response.
             await self.page.wait_for_timeout(2000)
-            if not await self._has_hcaptcha_challenge():
-                logger.success("✅ 邮箱步骤 hCaptcha 已通过")
-                return True
 
         await self._save_page_debug("login_email_hcaptcha_failed")
         logger.error("❌ 邮箱步骤 hCaptcha 未通过")
@@ -334,6 +451,13 @@ class EpicAuthorization:
     async def _save_page_debug(self, label: str):
         """Save the current page state for GitHub Actions artifacts."""
         with suppress(Exception):
+            logger.warning(
+                f"LOGIN_PAGE_STATE:{label}:"
+                f"password_form={await self._password_form_ready()}:"
+                f"continue={await self.page.locator('#continue').is_visible()}:"
+                f"challenge={await self._has_hcaptcha_challenge()}:"
+                f"cloudflare={await self._has_cloudflare_security_check()}"
+            )
             RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
             safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label)
             debug_info = {
@@ -370,6 +494,17 @@ class EpicAuthorization:
             )
 
     async def _on_response_anything(self, r: Response):
+        endpoint = auth_diagnostic_endpoint(r.url)
+        if endpoint:
+            with suppress(Exception):
+                csrf = csrf_request_diagnostic(
+                    await r.request.all_headers(), await r.headers_array()
+                )
+                logger.warning(
+                    f"EPIC_AUTH_CSRF:method={r.request.method}:path={endpoint}:"
+                    f"status={r.status}:started={r.request.timing.get('startTime')}:"
+                    f"{json.dumps(csrf)}"
+                )
         if r.request.method != "POST":
             return
 
@@ -452,28 +587,59 @@ class EpicAuthorization:
             body_text = ""
             with suppress(Exception):
                 body_text = await r.text()
+            error_code = ""
+            request_captcha = {}
+            with suppress(Exception):
+                payload = json.loads(body_text)
+                error_code = str(payload.get("errorCode") or "")
+            with suppress(Exception):
+                request_payload = json.loads(r.request.post_data or "{}")
+                solved = get_login_hcaptcha_agent(self.page).cr_list
+                solved_token = str(solved[-1].generated_pass_UUID or "") if solved else ""
+                request_captcha = {
+                    key: captcha_value_diagnostic(value, solved_token)
+                    for key, value in request_payload.items()
+                    if "captcha" in key.casefold()
+                }
+            logger.warning(
+                f"EPIC_EMAIL_RESPONSE:status={r.status}:error={error_code}:"
+                f"captcha={json.dumps(request_captcha, ensure_ascii=False)}"
+            )
+            with suppress(Exception):
+                csrf = csrf_request_diagnostic(
+                    await r.request.all_headers(), await r.headers_array()
+                )
+                logger.warning(f"EPIC_CSRF_DIAGNOSTIC:status={r.status}:{json.dumps(csrf)}")
             logger.debug(
-                f"📡 邮箱校验 API 响应: {r.url} | 状态码: {r.status} | "
-                f"响应: {body_text[:500]}"
+                f"📡 邮箱校验 API 响应: 状态码={r.status} | errorCode={error_code}"
             )
             if is_epic_email_transaction_failure(r.status, body_text):
                 logger.warning(
                     f"Epic 拒绝邮箱/hCaptcha 事务，准备在当前浏览器中恢复: HTTP {r.status}"
                 )
                 self._email_transaction_failure_signal.put_nowait(
-                    {"status": r.status, "body": body_text[:1000]}
+                    {"status": r.status, "body": body_text[:1000], "code": error_code, "source": "email"}
                 )
             return
 
         with suppress(Exception):
             result = await r.json()
 
-            # 记录所有 POST 响应的 URL，便于调试
-            logger.debug(f"📡 API 响应: {r.url} | 状态码: {r.status}")
+            # Third-party POST URLs can contain captcha tokens in the path.
+            # Only fixed first-party endpoint names belong in diagnostics.
+            if endpoint:
+                logger.debug(f"📡 API 响应: {endpoint} | 状态码: {r.status}")
 
             if "/id/api/login" in r.url:
-                # 记录完整的登录 API 响应
-                logger.debug(f"🔍 登录 API 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                with suppress(Exception):
+                    csrf = csrf_request_diagnostic(
+                        await r.request.all_headers(), await r.headers_array()
+                    )
+                    logger.warning(f"EPIC_CSRF_DIAGNOSTIC:status={r.status}:{json.dumps(csrf)}")
+                logger.debug(
+                    f"LOGIN_API_RESULT:status={r.status}:"
+                    f"error={result.get('errorCode', '')}:account_present={bool(result.get('accountId'))}"
+                )
                 if result.get("errorCode"):
                     # 记录错误码并通知登录失败
                     self._login_error_code = result.get("errorCode")
@@ -491,15 +657,13 @@ class EpicAuthorization:
                             }
                         )
                         return
-                    # 记录完整的错误信息
                     logger.error(f"❌ 登录失败: errorCode={self._login_error_code}, message={error_msg}")
-                    logger.error(f"❌ 完整错误响应: {json.dumps(result, ensure_ascii=False)}")
                     # 放入失败信号，中断等待
                     self._is_login_success_signal.put_nowait({"error": True, "code": self._login_error_code, "full_response": result})
                 else:
                     # 登录成功，记录 accountId
                     if result.get("accountId"):
-                        logger.success(f"✅ 登录 API 返回成功: accountId={result.get('accountId')}")
+                        logger.success("✅ 登录 API 返回成功: account_present=True")
                         self._is_login_success_signal.put_nowait(result)
             elif "/id/api/analytics" in r.url and result.get("accountId"):
                 self._is_login_success_signal.put_nowait(result)
@@ -572,7 +736,26 @@ class EpicAuthorization:
             await self._save_page_debug("account_validation_timeout")
             logger.warning("⚠️ 账号验证阶段未观察到 refresh-csrf，继续依赖已有会话状态")
 
-    async def _login(self) -> tuple[bool, ErrorType] | None:
+    async def _resume_login_form(self) -> bool:
+        """Continue the visible login step after a rejected/expired challenge."""
+        for field, button_id, value in (
+            ("#password", "#sign-in", settings.EPIC_PASSWORD.get_secret_value()),
+            ("#email", "#continue", settings.EPIC_EMAIL),
+        ):
+            with suppress(Exception):
+                box = self.page.locator(field)
+                button = self.page.locator(button_id).first
+                if not await box.is_visible() or not await button.is_visible():
+                    continue
+                if await button.is_disabled():
+                    continue
+                await box.fill(value)
+                await button.click(timeout=3000, no_wait_after=True)
+                logger.warning(f"LOGIN_FORM_RESUMED:{button_id}")
+                return True
+        return False
+
+    async def _login(self, login_url: str | None = None) -> tuple[bool, ErrorType] | None:
         """
         执行登录流程
 
@@ -597,13 +780,18 @@ class EpicAuthorization:
         # 用于记录验证码处理是否成功
         captcha_success = False
         captcha_in_progress = False
+        form_lock = asyncio.Lock()
         captcha_task = None
         keepalive_task = None
 
         try:
-            point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
+            point_url = login_url or "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
+            logger.warning("LOGIN_STAGE:open_login")
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
+            if login_url and await self._store_session_ready():
+                logger.success("✅ Store login callback restored the existing session")
+                return (True, ErrorType.SUCCESS)
             if self._has_refresh_csrf_session():
                 logger.success("✅ 检测到已有 refresh-csrf 会话，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
@@ -644,7 +832,9 @@ class EpicAuthorization:
                 logger.success("✅ 会话已建立，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
 
+            csrf_recoveries = 0
             for email_attempt in range(1, 5):
+                logger.warning(f"LOGIN_STAGE:submit_email:attempt={email_attempt}")
                 await email_input.clear()
                 await email_input.type(settings.EPIC_EMAIL)
 
@@ -668,6 +858,16 @@ class EpicAuthorization:
                 rejection = await self._take_email_transaction_failure()
                 if not rejection:
                     break
+                if "csrf_token_invalid" in epic_transaction_error_code(rejection):
+                    if csrf_recoveries or email_attempt == 4:
+                        logger.error("Epic rejected CSRF again after same-session recovery")
+                        return (False, ErrorType.COOKIE_INVALID)
+                    csrf_recoveries += 1
+                    # Epic rotates XSRF in its 409 response. Preserve that
+                    # cookie, reload the form and obtain a new challenge.
+                    # Clearing the profile recreates concurrent anonymous
+                    # bootstrap requests; replaying the old captcha also fails.
+                    logger.warning("LOGIN_CSRF_RECOVERY:reload_with_current_cookies:attempt=1/1")
                 if email_attempt == 4:
                     await self._save_page_debug("email_transaction_rejected_final")
                     logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务")
@@ -686,6 +886,10 @@ class EpicAuthorization:
                 await email_input.wait_for(state="visible", timeout=60000)
 
             # 3. 输入密码
+            logger.warning("LOGIN_STAGE:wait_password")
+            if self._has_refresh_csrf_session():
+                return (True, ErrorType.SUCCESS)
+            await self.page.locator("#sign-in").wait_for(state="visible", timeout=60000)
             password_input = self.page.locator("#password")
             await password_input.wait_for(state="visible", timeout=60000)
             await password_input.clear()
@@ -699,13 +903,7 @@ class EpicAuthorization:
 
             async def retrigger_security_check():
                 """Reopen Epic/Talon security checks after a stale challenge."""
-                with suppress(Exception):
-                    password_box = self.page.locator("#password")
-                    if await password_box.is_visible(timeout=1000):
-                        await password_box.clear()
-                        await password_box.type(settings.EPIC_PASSWORD.get_secret_value())
-
-                for selector in ("#talon_error_container_login_prod button", "#sign-in"):
+                for selector in ("#talon_error_container_login_prod button",):
                     with suppress(Exception):
                         button = self.page.locator(selector).first
                         if await button.is_visible(timeout=1500):
@@ -713,35 +911,53 @@ class EpicAuthorization:
                             await button.click(timeout=3000)
                             await self.page.wait_for_timeout(3000)
                             return
+                await self._resume_login_form()
 
             async def keep_login_flow_alive():
-                """Re-submit the login form if Epic returns to the password step."""
+                """Resume either form step without competing with a visible challenge."""
+                email_resumes = 0
                 while not result_task.done():
                     await self.page.wait_for_timeout(8000)
                     if result_task.done():
                         return
-                    if captcha_in_progress:
+                    if captcha_in_progress or form_lock.locked():
                         continue
-                    with suppress(Exception):
-                        password_box = self.page.locator("#password")
-                        sign_in_button = self.page.locator("#sign-in").first
+                    async with form_lock:
                         if (
-                            await password_box.is_visible(timeout=1000)
-                            and await sign_in_button.is_visible(timeout=1000)
+                            result_task.done()
+                            or captcha_in_progress
+                            or not self._email_transaction_failure_signal.empty()
+                            or await self._has_hcaptcha_challenge()
                         ):
-                            logger.debug("检测到仍停留在密码页，重新提交登录")
-                            await password_box.clear()
-                            await password_box.type(settings.EPIC_PASSWORD.get_secret_value())
-                            await sign_in_button.click(timeout=3000)
+                            continue
+                        if await self._password_form_ready():
+                            await self._resume_login_form()
+                        elif await self.page.locator("#continue").is_visible():
+                            if email_resumes >= 3:
+                                self._is_login_success_signal.put_nowait(
+                                    {"error": True, "code": "email_captcha_resume_exhausted"}
+                                )
+                                return
+                            if await self._resume_login_form():
+                                email_resumes += 1
 
             async def handle_captcha():
                 """Handle every hCaptcha round until Epic accepts the login."""
-                nonlocal captcha_success, captcha_in_progress
+                nonlocal agent, captcha_success, captcha_in_progress
                 email_transaction_retries = 0
                 captcha_attempt = 0
 
                 async def recover_email_transaction(rejection) -> bool:
+                    async with form_lock:
+                        return await restart_email_transaction(rejection)
+
+                async def restart_email_transaction(rejection) -> bool:
                     nonlocal agent, email_transaction_retries, captcha_success
+                    if "csrf_token_invalid" in epic_transaction_error_code(rejection):
+                        self._is_login_success_signal.put_nowait(
+                            {"error": True, "code": epic_transaction_error_code(rejection)}
+                        )
+                        return False
                     email_transaction_retries += 1
                     if email_transaction_retries > 3:
                         logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务，停止本次登录")
@@ -827,10 +1043,13 @@ class EpicAuthorization:
                         logger.info(f"处理登录 hCaptcha [{captcha_attempt}/12]")
                         captcha_in_progress = True
                         captcha_round_failed = False
-                        await asyncio.wait_for(
+                        challenge_result = await asyncio.wait_for(
                             agent.wait_for_challenge(),
                             timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
                         )
+                        signal = getattr(challenge_result, "value", challenge_result)
+                        captcha_round_failed = signal != "success"
+                        logger.warning(f"LOGIN_CAPTCHA_RESULT:{signal}")
                     except Exception as e:
                         captcha_round_failed = True
                         logger.warning(f"登录 hCaptcha 处理异常 [{captcha_attempt}/12]: {e}")
@@ -844,6 +1063,7 @@ class EpicAuthorization:
                             return
                         continue
                     if captcha_round_failed:
+                        agent = replace_login_hcaptcha_agent(self.page)
                         await retrigger_security_check()
                     elif not await self._has_hcaptcha_challenge():
                         captcha_success = True
@@ -858,6 +1078,7 @@ class EpicAuthorization:
             captcha_task = asyncio.create_task(handle_captcha())
             keepalive_task = asyncio.create_task(keep_login_flow_alive())
             with suppress(Exception):
+                logger.warning("LOGIN_STAGE:submit_password")
                 await self.page.click("#sign-in", timeout=5000)
 
             # 第一阶段：15秒内快速检测密码错误
@@ -880,7 +1101,11 @@ class EpicAuthorization:
                         elif "account_locked" in error_code:
                             logger.error("❌ 账号已被锁定")
                             return (False, ErrorType.ACCOUNT_LOCKED)
-                        elif "captcha" in error_code or "csrf_token_invalid" in error_code:
+                        elif error_code == "cloudflare_blocked":
+                            return (False, ErrorType.CLOUDFLARE_BLOCKED)
+                        elif "csrf_token_invalid" in error_code:
+                            return (False, ErrorType.COOKIE_INVALID)
+                        elif "captcha" in error_code:
                             logger.error(f"❌ 登录验证码事务失败: {error_code}")
                             return (False, ErrorType.CAPTCHA_FAILED)
                         else:
@@ -916,7 +1141,11 @@ class EpicAuthorization:
                     elif "account_locked" in error_code:
                         logger.error("❌ 账号已被锁定")
                         return (False, ErrorType.ACCOUNT_LOCKED)
-                    elif "captcha" in error_code or "csrf_token_invalid" in error_code:
+                    elif error_code == "cloudflare_blocked":
+                        return (False, ErrorType.CLOUDFLARE_BLOCKED)
+                    elif "csrf_token_invalid" in error_code:
+                        return (False, ErrorType.COOKIE_INVALID)
+                    elif "captcha" in error_code:
                         logger.error(f"❌ 登录验证码事务失败: {error_code}")
                         return (False, ErrorType.CAPTCHA_FAILED)
                     else:
@@ -1125,6 +1354,48 @@ class EpicAuthorization:
             logger.error(f"❌ 处理 EULA 页面异常: {e}")
             return (False, ErrorType.EULA_FAILED)
 
+    async def _store_session_ready(self) -> bool:
+        if not self.page.url.startswith("https://store.epicgames.com/"):
+            return False
+        if await store_signed_out(self.page):
+            return False
+        with suppress(Exception):
+            status = await self.page.locator("egs-navigation").get_attribute(
+                "isloggedin", timeout=3000
+            )
+            return status == "true"
+        return False
+
+    async def reauthenticate_store(self) -> ErrorType:
+        """Rebuild the Store session once, preserving the browser profile."""
+        self._refresh_csrf_seen = False
+        for queue in (
+            self._is_login_success_signal,
+            self._is_refresh_csrf_signal,
+            self._email_transaction_failure_signal,
+        ):
+            while not queue.empty():
+                queue.get_nowait()
+        self._login_error_code = None
+        result = await self._login(login_url=STORE_LOGIN_URL)
+        if not result:
+            return ErrorType.UNKNOWN
+        success, error_type = result
+        if not success:
+            return error_type
+
+        # A successful account login/refresh-csrf alone does not establish the
+        # redesigned Store's session. Complete its own redirect/callback flow.
+        if not await self._store_session_ready():
+            await self.page.goto(STORE_LOGIN_URL, wait_until="domcontentloaded")
+        for _ in range(10):
+            if await self._store_session_ready():
+                logger.success("✅ Store session recovery verified")
+                return ErrorType.SUCCESS
+            await self.page.wait_for_timeout(1000)
+        await self._save_page_debug("store_session_recovery_failed")
+        return ErrorType.COOKIE_INVALID
+
     async def invoke(self) -> ErrorType:
         """
         执行 Epic 登录认证流程
@@ -1212,7 +1483,10 @@ class EpicAuthorization:
                 return ErrorType.SUCCESS
 
             # 执行登录
-            login_result = await self._login()
+            # Start with the Store's client/redirect context, just as the
+            # signed-out checkout recovery does. A bare /id/login creates an
+            # account-portal session that still needs a second Store login.
+            login_result = await self._login(login_url=STORE_LOGIN_URL)
             if login_result:
                 success, error_type = login_result
                 if success:

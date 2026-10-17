@@ -1,5 +1,8 @@
 import unittest
-from typing import Any
+import ast
+import base64
+from types import SimpleNamespace
+from typing import Any, List
 from pathlib import Path
 
 
@@ -44,6 +47,39 @@ def load_helpers():
 
 
 class OpenAICompatibilityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tree = ast.parse(SETTINGS_SOURCE.read_text(encoding="utf-8"))
+        wanted = {"_convert_gemini_to_openai", "gemini_system_instruction_text"}
+        nodes = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in wanted]
+        namespace = {"Any": Any, "List": List, "base64": base64}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SETTINGS_SOURCE), "exec"), namespace)
+        cls.convert_messages = staticmethod(namespace["_convert_gemini_to_openai"])
+        cls.system_text = staticmethod(namespace["gemini_system_instruction_text"])
+
+    def test_single_image_remains_a_valid_content_array(self):
+        image = SimpleNamespace(inline_data=SimpleNamespace(data=b"image-bytes", mime_type="image/png"))
+        messages, has_images = self.convert_messages([SimpleNamespace(role="user", parts=[image])], "flash")
+        self.assertTrue(has_images)
+        self.assertIsInstance(messages[0]["content"], list)
+        block = messages[0]["content"][0]
+        self.assertEqual(block["type"], "image_url")
+        self.assertEqual(block["image_url"]["detail"], "high")
+        self.assertEqual(base64.b64decode(block["image_url"]["url"].split(",")[1]), b"image-bytes")
+
+    def test_string_system_instruction_is_not_lost(self):
+        self.assertEqual(self.system_text("Use image-local coordinates"), "Use image-local coordinates")
+        content = SimpleNamespace(parts=[SimpleNamespace(text="Inspect all objects"), SimpleNamespace(text="Then answer")])
+        self.assertEqual(self.system_text(content), "Inspect all objects\nThen answer")
+        self.assertIsNone(self.system_text(None))
+
+    def test_model_content_keeps_assistant_role(self):
+        messages, has_images = self.convert_messages([
+            SimpleNamespace(role="model", parts=[SimpleNamespace(text="previous answer")]),
+        ], "flash")
+        self.assertFalse(has_images)
+        self.assertEqual(messages, [{"role": "assistant", "content": [{"type": "text", "text": "previous answer"}]}])
+
     def test_extracts_string_content(self):
         result = {"choices": [{"message": {"content": "answer"}}]}
         self.assertEqual(extract_chat_completion_text(result), "answer")

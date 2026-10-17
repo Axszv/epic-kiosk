@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from contextlib import suppress
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
 from loguru import logger
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from services.epic_games_service import EpicGames, REGION_UNAVAILABLE_MARKERS
+from services.epic_store_page import is_login_url, product_cta, store_signed_out
 from settings import RUNTIME_DIR
 
 
@@ -75,22 +75,6 @@ async def button_texts(page) -> list[str]:
             if cleaned:
                 texts.append(cleaned)
     return texts
-
-
-async def product_cta(page):
-    cta = page.locator("//button[@data-testid='purchase-cta-button']").first
-    with suppress(Exception):
-        if await cta.is_visible(timeout=5000):
-            return cta
-
-    fallback = page.locator(
-        "button",
-        has_text=re.compile(r"^(Get|Install|Claim|In Library|Owned)$", re.I),
-    ).first
-    with suppress(Exception):
-        if await fallback.is_visible(timeout=5000):
-            return fallback
-    return None
 
 
 async def wait_for_mobile_ownership(page, attempts: int = 3) -> dict | None:
@@ -182,6 +166,11 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         emit_result(result)
         return result
 
+    if await store_signed_out(page):
+        result["status"] = "login_required"
+        emit_result(result)
+        return result
+
     cta = await product_cta(page)
     if cta is None:
         result["status"] = "no_purchase_cta"
@@ -214,15 +203,11 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
     result["attempted_claim"] = True
     await cta.click()
     with suppress(PlaywrightTimeoutError):
-        await page.wait_for_url(re.compile(r".*epicgames\.com/id/login.*"), timeout=15000)
+        await page.wait_for_url(is_login_url, timeout=15000)
     await page.wait_for_timeout(3000)
     await save_debug_page(page, f"mobile_after_cta_{suffix}")
 
-    parsed_after_click = urlparse(page.url)
-    if (
-        "epicgames.com" in parsed_after_click.netloc
-        and parsed_after_click.path.startswith("/id/login")
-    ):
+    if is_login_url(page.url):
         result["status"] = "login_required"
         result["purchase_intent_created"] = "purchaseIntentId=" in unquote(page.url)
         emit_result(result)
@@ -276,8 +261,7 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
                 f"order_history_error:{type(err).__name__}"
             )
 
-    parsed_final = urlparse(page.url)
-    if "epicgames.com" in parsed_final.netloc and parsed_final.path.startswith("/id/login"):
+    if is_login_url(page.url):
         result["status"] = "login_required"
     elif any(marker in final_text.lower() for marker in REGION_UNAVAILABLE_MARKERS):
         result["status"] = "region_unavailable"

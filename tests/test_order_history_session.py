@@ -153,7 +153,11 @@ class OrderHistorySessionTests(unittest.TestCase):
             types.SimpleNamespace(title=title, url="https://example.com/" + title)
             for title in ("First", "Second")
         ]
-        with patch.object(epic_games_service, "emit_desktop_result") as emit:
+        with (
+            patch.object(epic_games_service, "emit_desktop_result") as emit,
+            patch.object(epic_games_service, "store_signed_out", new=AsyncMock(return_value=False)),
+            patch.object(epic_games_service, "product_cta", new=AsyncMock(side_effect=[None, purchase_button])),
+        ):
             asyncio.run(agent.add_promotion_to_cart(page, promotions))
 
         self.assertEqual(

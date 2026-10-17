@@ -27,6 +27,30 @@ on:
         description: "Use a temporary uncached browser profile for a manual diagnostic run."
         required: false
         default: "false"
+      browser_engine:
+        description: "Browser for a manual compatibility diagnostic (camoufox or chromium)."
+        required: false
+        default: "camoufox"
+      browser_headless:
+        description: "Use headless browser mode (false uses the existing Xvfb display)."
+        required: false
+        default: "true"
+      use_browser_proxy:
+        description: "Use the EPIC_BROWSER_PROXY secret for a manual network comparison."
+        required: false
+        default: "false"
+      proxy_check_only:
+        description: "Only check the enabled proxy's connectivity and egress consistency; do not sign in."
+        required: false
+        default: "false"
+      worker_proxyip:
+        description: "Optional public IP to pin the edgetunnel Worker's reverse-proxy target for this run."
+        required: false
+        default: ""
+      captcha_visual_only:
+        description: "Diagnose challenges without injecting payload-decoding scripts."
+        required: false
+        default: "false"
       confirm_delay_ms:
         description: "Delay the first confirm-order request so the Talon hCaptcha callback can settle."
         required: false
@@ -75,12 +99,26 @@ jobs:
       CHECKOUT_CONFIRM_DELAY_MS: ${{ github.event.inputs.confirm_delay_ms || '0' }}
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
       PYTHONUNBUFFERED: "1"
+      EPIC_BROWSER_ENGINE: ${{ github.event.inputs.browser_engine || 'camoufox' }}
+      EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'true' }}
+      HCAPTCHA_VISUAL_ONLY: ${{ github.event.inputs.captcha_visual_only || 'false' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate proxy inputs
+        if: github.event.inputs.proxy_check_only == 'true' || github.event.inputs.worker_proxyip != ''
+        env:
+          PROXY_ENABLED: ${{ github.event.inputs.use_browser_proxy || 'false' }}
+        run: |
+          if [ "$PROXY_ENABLED" != "true" ]; then
+            echo "::error::Proxy diagnostics and Worker overrides require use_browser_proxy=true"
+            exit 1
+          fi
+
       - name: Install system packages
+        if: github.event.inputs.proxy_check_only != 'true'
         run: |
           # GitHub-hosted Ubuntu occasionally points the runner at a stalled
           # regional mirror. Use the public archive mirror for this ephemeral job.
@@ -109,6 +147,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
+        if: github.event.inputs.proxy_check_only != 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install \
@@ -116,7 +155,7 @@ jobs:
             pydantic-settings \
             "celery[redis]" \
             "hcaptcha-challenger[camoufox]>=0.18.13" \
-            "camoufox==0.4.11" \
+            "camoufox[geoip]==0.5.8" \
             "playwright==1.60.0" \
             openai \
             redis \
@@ -130,6 +169,7 @@ jobs:
             pyyaml
 
       - name: Install Camoufox browser
+        if: env.EPIC_BROWSER_ENGINE == 'camoufox' && github.event.inputs.proxy_check_only != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -146,7 +186,12 @@ jobs:
           fi
           test -f "${CAMOUFOX_UBO_DIR}/manifest.json"
 
+      - name: Install Chromium browser
+        if: env.EPIC_BROWSER_ENGINE == 'chromium' && github.event.inputs.proxy_check_only != 'true'
+        run: python -m playwright install --with-deps chromium
+
       - name: Restore browser state
+        if: github.event.inputs.proxy_check_only != 'true'
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
@@ -154,23 +199,45 @@ jobs:
           restore-keys: |
             epic-state-v2-
 
-      - name: Run Epic claim
+      - name: Prepare browser proxy
+        if: github.event.inputs.use_browser_proxy == 'true'
         env:
+          EPIC_BROWSER_PROXY: ${{ secrets.EPIC_BROWSER_PROXY }}
+          EPIC_PROXY_EGRESS_CHECK: ${{ github.event.inputs.proxy_check_only || 'false' }}
+          EPIC_WORKER_PROXYIP: ${{ github.event.inputs.worker_proxyip || '' }}
+        run: python scripts/prepare_browser_proxy.py
+
+      - name: Run Epic claim
+        if: github.event.inputs.proxy_check_only != 'true'
+        env:
+          EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
-        run: python scripts/github_actions_claim_once.py
+        run: |
+          if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
+            echo "::error::EPIC_BROWSER_PROXY secret is required for this network comparison"
+            exit 1
+          fi
+          python scripts/github_actions_claim_once.py
+
+      - name: Stop browser proxy
+        if: always()
+        run: |
+          if [[ "${EPIC_BROWSER_PROXY_PID:-}" =~ ^[0-9]+$ ]]; then
+            kill "$EPIC_BROWSER_PROXY_PID" 2>/dev/null || true
+          fi
 
       - name: Save browser state
-        if: always()
+        if: always() && github.event.inputs.proxy_check_only != 'true'
         uses: actions/cache/save@v4
         with:
           path: app/volumes
           key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload logs
-        if: always()
+        if: always() && github.event.inputs.proxy_check_only != 'true'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -184,7 +251,7 @@ jobs:
           retention-days: 7
 
       - name: Send ServerChan notification
-        if: always()
+        if: always() && github.event.inputs.proxy_check_only != 'true'
         continue-on-error: true
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
