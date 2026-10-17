@@ -100,6 +100,8 @@ RETRY_BACKOFF_SECONDS = {
 
 def should_refresh_account_profile(attempt_result: dict) -> bool:
     """Refresh only profiles proven to contain a blocked or invalid session."""
+    if not uses_cached_account_profile():
+        return False
     return any(
         marker.get("kind") == "ERROR_TYPE"
         and marker.get("value") in PROFILE_REFRESH_ERROR_TYPES
@@ -117,10 +119,24 @@ def account_retry_delay(attempt_result: dict) -> int:
     return max((RETRY_BACKOFF_SECONDS.get(value, 0) for value in values), default=0)
 
 
+def uses_cached_account_profile() -> bool:
+    fresh = os.getenv("EPIC_FRESH_PROFILE", "false").strip().casefold()
+    return fresh not in {"1", "true", "yes", "on"} and not os.getenv("EPIC_USER_DATA_DIR")
+
+
 def refresh_account_profile(email: str, user_data_root: Path | None = None) -> bool:
     """Remove one failed account profile so the next attempt starts clean."""
+    if not uses_cached_account_profile():
+        return False
     root = (user_data_root or Path("app/volumes/user_data")).resolve()
-    profile = root.joinpath(email).resolve()
+    engine = os.getenv("EPIC_BROWSER_ENGINE", "camoufox").strip().lower()
+    if engine not in {"camoufox", "chromium"}:
+        raise ValueError("Unknown browser engine; refusing to reset a profile")
+    name = email + ("-chromium" if engine == "chromium" else "")
+    candidate = root.joinpath(name)
+    if candidate.is_symlink():
+        raise ValueError("Refusing to reset a symlinked account profile")
+    profile = candidate.resolve()
     if profile.parent != root:
         raise ValueError("Account profile path escaped the user data directory")
     if not profile.exists():

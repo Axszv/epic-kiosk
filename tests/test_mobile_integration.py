@@ -5,6 +5,7 @@ import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -173,6 +174,38 @@ class DesktopEvidenceTests(unittest.TestCase):
 
 
 class ProfileRefreshTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(claim_once.os.environ, {
+            "EPIC_FRESH_PROFILE": "false", "EPIC_USER_DATA_DIR": "",
+            "EPIC_BROWSER_ENGINE": "camoufox",
+        })
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_temporary_profile_failure_preserves_cached_profile(self):
+        result = {"error_markers": [{"kind": "ERROR_TYPE", "value": "cookie_invalid"}]}
+        for override in ({"EPIC_FRESH_PROFILE": "true"}, {"EPIC_USER_DATA_DIR": "custom-profile"}):
+            with self.subTest(override=override), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                cached = root / "account1@example.com"
+                cached.mkdir()
+                with patch.dict(claim_once.os.environ, override):
+                    self.assertFalse(claim_once.should_refresh_account_profile(result))
+                    self.assertFalse(claim_once.refresh_account_profile("account1@example.com", root))
+                self.assertTrue(cached.exists())
+
+    def test_chromium_failure_only_resets_chromium_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            firefox = root / "account1@example.com"
+            chromium = root / "account1@example.com-chromium"
+            firefox.mkdir()
+            chromium.mkdir()
+            with patch.dict(claim_once.os.environ, {"EPIC_BROWSER_ENGINE": "chromium"}):
+                self.assertTrue(claim_once.refresh_account_profile("account1@example.com", root))
+            self.assertTrue(firefox.exists())
+            self.assertFalse(chromium.exists())
+
     def test_preserves_profile_for_cloudflare_block(self):
         result = {
             "error_markers": [
