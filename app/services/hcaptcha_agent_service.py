@@ -196,6 +196,16 @@ class EpicAgentV(AgentV):
             await self.page.wait_for_timeout(500)
 
     async def _select_image_local_points(self, job_type):
+        try:
+            return await self._select_image_local_points_impl(job_type)
+        except InvalidChallengeCoordinates as err:
+            # Upstream catches every Exception and blindly refreshes, which can
+            # itself fail on a closed iframe and hide our validation failure.
+            # Its dispatcher forwards return values unchanged.
+            logger.error(f"hCaptcha answer was not clicked: {err}")
+            return ChallengeSignal.FAILURE
+
+    async def _select_image_local_points_impl(self, job_type):
         arm = self.robotic_arm
         crumb_count = await arm.check_crumb_count()
         cache_key = self.config.create_cache_key(arm.captcha_payload)
@@ -830,18 +840,17 @@ class EpicAgentV(AgentV):
             )
             remaining = deadline - time.monotonic()
             try:
-                await asyncio.wait_for(
+                round_result = await asyncio.wait_for(
                     self._solve_captcha(),
                     timeout=min(self.config.EXECUTION_TIMEOUT, remaining),
                 )
+                if round_result == ChallengeSignal.FAILURE:
+                    return ChallengeSignal.FAILURE
             except asyncio.TimeoutError:
                 logger.error(
                     f"Challenge execution timed out after {self.config.EXECUTION_TIMEOUT}s"
                 )
                 return ChallengeSignal.EXECUTION_TIMEOUT
-            except InvalidChallengeCoordinates as err:
-                logger.error(f"hCaptcha answer was not clicked: {err}")
-                return ChallengeSignal.FAILURE
             except PlaywrightTimeoutError as err:
                 # hCaptcha can close or replace the challenge DOM after the
                 # payload was queued. Upstream then waits 30 seconds for a

@@ -195,13 +195,22 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
             points=[types.SimpleNamespace(x=295, y=530)], log_message="invalid",
         ))
         arm._spatial_point_reasoner.cache_response = MagicMock()
-        self.agent._solve_captcha = lambda: arm.challenge_image_label_select("image_label_multi_select")
+        arm.refresh_challenge = AsyncMock(side_effect=ValueError("Element is not visible or does not exist"))
+        async def upstream_dispatch():
+            # The real upstream dispatcher catches all Exceptions, then tries
+            # to refresh the frame. A rejected answer must not enter that path.
+            try:
+                return await arm.challenge_image_label_select("image_label_multi_select")
+            except Exception:
+                await arm.refresh_challenge()
+        self.agent._solve_captcha = upstream_dispatch
 
         result = await self.agent.wait_for_challenge()
 
         self.assertEqual(result, Signal.FAILURE)
         self.agent._click_image_points.assert_not_awaited()
         arm.click_by_mouse.assert_not_awaited()
+        arm.refresh_challenge.assert_not_awaited()
 
 
 if __name__ == "__main__":
