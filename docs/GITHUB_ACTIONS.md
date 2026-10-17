@@ -50,6 +50,8 @@ workflow 会将运行日志、页面截图和 `github_actions_summary.json` 上�
 
 先用 `gh secret set EPIC_BROWSER_PROXY --repo OWNER/REPO` 交互式保存代理地址，再在手动运行中设置 `use_browser_proxy=true`。该选项缺省为 `false`，不改变现有定时任务的出口；启用但没有 Secret 时会明确失败。代理只传给 Epic 浏览器，模型 API 保持原有连接配置。不要把代理密码填进 workflow 输入或提交到仓库。
 
+Camoufox 使用代理时会通过同一代理查询出口，并用 GeoIP 数据同步时区、语言和 WebRTC 地址。此设置不能固定代理服务本身轮换的出口，也不能保证 Epic 接受验证码。
+
 对于 dae 原来使用的 VLESS/TLS/WebSocket 节点，保存完整节点 URL 即可。Actions 会下载官方固定版本 Xray 并校验 SHA-256，在 runner 的 `127.0.0.1` 启动 HTTP 代理；节点的连接地址、TLS SNI、WebSocket Host 和路径分别保留。TLS 证书验证保持开启，不支持的协议参数会明确拒绝。节点配置只写入权限受限的临时目录，启动后删除，任务结束时停止代理进程；不会上传配置或客户端日志。
 
 还可同时设置 `proxy_check_only=true`，仅检查代理连接和访问 Cloudflare/Amazon 两个公开检测端点时的出口一致性。每个端点取两次样本，只记录样本数量、出口数量及是否一致，不记录 IP。此模式不安装浏览器、不登录 Epic、不调用模型，也不改浏览器缓存或发送领取通知。不同站点的出口不一致只能说明该节点不提供统一出口，不能单凭这一结果断定 Epic 拒绝验证码的原因。

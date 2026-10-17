@@ -151,7 +151,7 @@ jobs:
             pydantic-settings \
             "celery[redis]" \
             "hcaptcha-challenger[camoufox]>=0.18.13" \
-            "camoufox==0.5.8" \
+            "camoufox[geoip]==0.5.8" \
             "playwright==1.60.0" \
             openai \
             redis \

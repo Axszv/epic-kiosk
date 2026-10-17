@@ -69,5 +69,8 @@ async def claim_browser(user_data_dir, *, headless=True, proxy=None):
         humanize=0.2,
         headless=headless,
         proxy=proxy,
+        # Resolve through the same proxy so timezone, locale and WebRTC use
+        # its network identity instead of the hosted runner's location/IP.
+        geoip=bool(proxy),
     ) as browser:
         yield browser
