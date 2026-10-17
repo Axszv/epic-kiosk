@@ -602,8 +602,7 @@ class EpicAuthorization:
                 )
                 logger.warning(f"EPIC_CSRF_DIAGNOSTIC:status={r.status}:{json.dumps(csrf)}")
             logger.debug(
-                f"📡 邮箱校验 API 响应: {r.url} | 状态码: {r.status} | "
-                f"响应: {body_text[:500]}"
+                f"📡 邮箱校验 API 响应: 状态码={r.status} | errorCode={error_code}"
             )
             if is_epic_email_transaction_failure(r.status, body_text):
                 logger.warning(
@@ -617,8 +616,10 @@ class EpicAuthorization:
         with suppress(Exception):
             result = await r.json()
 
-            # 记录所有 POST 响应的 URL，便于调试
-            logger.debug(f"📡 API 响应: {r.url} | 状态码: {r.status}")
+            # Third-party POST URLs can contain captcha tokens in the path.
+            # Only fixed first-party endpoint names belong in diagnostics.
+            if endpoint:
+                logger.debug(f"📡 API 响应: {endpoint} | 状态码: {r.status}")
 
             if "/id/api/login" in r.url:
                 with suppress(Exception):
@@ -626,8 +627,10 @@ class EpicAuthorization:
                         await r.request.all_headers(), await r.headers_array()
                     )
                     logger.warning(f"EPIC_CSRF_DIAGNOSTIC:status={r.status}:{json.dumps(csrf)}")
-                # 记录完整的登录 API 响应
-                logger.debug(f"🔍 登录 API 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                logger.debug(
+                    f"LOGIN_API_RESULT:status={r.status}:"
+                    f"error={result.get('errorCode', '')}:account_present={bool(result.get('accountId'))}"
+                )
                 if result.get("errorCode"):
                     # 记录错误码并通知登录失败
                     self._login_error_code = result.get("errorCode")
@@ -645,15 +648,13 @@ class EpicAuthorization:
                             }
                         )
                         return
-                    # 记录完整的错误信息
                     logger.error(f"❌ 登录失败: errorCode={self._login_error_code}, message={error_msg}")
-                    logger.error(f"❌ 完整错误响应: {json.dumps(result, ensure_ascii=False)}")
                     # 放入失败信号，中断等待
                     self._is_login_success_signal.put_nowait({"error": True, "code": self._login_error_code, "full_response": result})
                 else:
                     # 登录成功，记录 accountId
                     if result.get("accountId"):
-                        logger.success(f"✅ 登录 API 返回成功: accountId={result.get('accountId')}")
+                        logger.success("✅ 登录 API 返回成功: account_present=True")
                         self._is_login_success_signal.put_nowait(result)
             elif "/id/api/analytics" in r.url and result.get("accountId"):
                 self._is_login_success_signal.put_nowait(result)
