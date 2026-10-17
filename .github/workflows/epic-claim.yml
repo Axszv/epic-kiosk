@@ -178,9 +178,14 @@ jobs:
           restore-keys: |
             epic-state-v2-
 
+      - name: Prepare browser proxy
+        if: github.event.inputs.use_browser_proxy == 'true'
+        env:
+          EPIC_BROWSER_PROXY: ${{ secrets.EPIC_BROWSER_PROXY }}
+        run: python scripts/prepare_browser_proxy.py
+
       - name: Run Epic claim
         env:
-          EPIC_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy == 'true' && secrets.EPIC_BROWSER_PROXY || '' }}
           EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
@@ -192,6 +197,13 @@ jobs:
             exit 1
           fi
           python scripts/github_actions_claim_once.py
+
+      - name: Stop browser proxy
+        if: always()
+        run: |
+          if [[ "${EPIC_BROWSER_PROXY_PID:-}" =~ ^[0-9]+$ ]]; then
+            kill "$EPIC_BROWSER_PROXY_PID" 2>/dev/null || true
+          fi
 
       - name: Save browser state
         if: always()
