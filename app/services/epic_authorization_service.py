@@ -746,32 +746,6 @@ class EpicAuthorization:
                 return True
         return False
 
-    async def _prime_auth_csrf_session(self):
-        """Seed a fresh browser before the login app's concurrent bootstrap GETs."""
-        cookie_url = "https://www.epicgames.com/id/"
-        try:
-            cookies = await self.page.context.cookies(cookie_url)
-            if any(cookie["name"] == "XSRF-TOKEN" and cookie.get("value") for cookie in cookies):
-                logger.warning("EPIC_CSRF_BOOTSTRAP:existing_cookie")
-                return
-            # Use a native browser navigation to the same read-only endpoint
-            # the login app uses. Await its cookies before loading that app;
-            # do not replay a captcha or write a fabricated cookie/header.
-            response = await self.page.goto(
-                "https://www.epicgames.com/id/api/analytics",
-                wait_until="load", timeout=30000,
-            )
-            cookies = await self.page.context.cookies(cookie_url)
-            present = any(cookie["name"] == "XSRF-TOKEN" and cookie.get("value") for cookie in cookies)
-            logger.warning(
-                f"EPIC_CSRF_BOOTSTRAP:status={response.status if response else None}:"
-                f"cookie_present={present}"
-            )
-        except Exception as error:
-            # A blocked or unavailable bootstrap must leave the normal login
-            # path usable. Navigation exceptions can contain sensitive URLs.
-            logger.warning(f"EPIC_CSRF_BOOTSTRAP:unavailable:{type(error).__name__}")
-
     async def _login(self, login_url: str | None = None) -> tuple[bool, ErrorType] | None:
         """
         执行登录流程
@@ -803,7 +777,6 @@ class EpicAuthorization:
 
         try:
             point_url = login_url or "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
-            await self._prime_auth_csrf_session()
             logger.warning("LOGIN_STAGE:open_login")
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)

@@ -32,7 +32,7 @@ for node in tree.body:
         selected.append(node)
     elif isinstance(node, ast.ClassDef) and node.name == "EpicAuthorization":
         node.body = [method for method in node.body if isinstance(method, ast.AsyncFunctionDef)
-                     and method.name in {"_take_email_transaction_failure", "_prime_auth_csrf_session", "_login"}]
+                     and method.name in {"_take_email_transaction_failure", "_login"}]
         selected.append(node)
 namespace = dict(
     suppress=suppress, hashlib=hashlib, json=json, unquote=unquote, urlsplit=urlsplit, Enum=Enum,
@@ -89,62 +89,11 @@ class CsrfRecoveryTests(unittest.IsolatedAsyncioTestCase):
         node = SimpleNamespace(wait_for=AsyncMock(), get_attribute=AsyncMock(return_value=None),
                                clear=AsyncMock(), type=AsyncMock(), click=AsyncMock())
         self.auth.page = SimpleNamespace(goto=AsyncMock(), wait_for_timeout=AsyncMock(),
-                                         locator=Mock(return_value=node),
-                                         context=SimpleNamespace(cookies=AsyncMock(return_value=[
-                                             {"name": "XSRF-TOKEN", "value": "existing"},
-                                         ])))
+                                         locator=Mock(return_value=node))
         self.auth._has_refresh_csrf_session = lambda: False
         self.auth._wait_for_cloudflare_auto_pass = AsyncMock(return_value=True)
         self.auth._save_page_debug = AsyncMock()
         return node
-
-    async def test_fresh_browser_cookie_is_ready_before_loading_login_app(self):
-        self.configure_login_page()
-        cookies = []
-        self.auth.page.context.cookies.side_effect = lambda url: list(cookies)
-        navigations = []
-
-        async def navigate(url, **kwargs):
-            navigations.append(url)
-            if url.endswith("/id/api/analytics"):
-                self.assertFalse(cookies)
-                await asyncio.sleep(0)
-                cookies.append({"name": "XSRF-TOKEN", "value": "server-issued"})
-                return SimpleNamespace(status=200)
-            self.assertEqual(cookies[0]["value"], "server-issued")
-            self.auth._has_refresh_csrf_session = lambda: True
-
-        self.auth.page.goto.side_effect = navigate
-        result = await self.auth._login()
-        self.assertEqual(result, (True, namespace["ErrorType"].SUCCESS))
-        self.assertEqual(len(navigations), 2)
-        self.assertTrue(navigations[-1].startswith("https://www.epicgames.com/id/login?"))
-
-    async def test_existing_cookie_does_not_trigger_bootstrap_or_cookie_replacement(self):
-        self.configure_login_page()
-        await self.auth._prime_auth_csrf_session()
-        self.auth.page.goto.assert_not_awaited()
-        self.assertEqual(await self.auth.page.context.cookies(), [
-            {"name": "XSRF-TOKEN", "value": "existing"},
-        ])
-
-    async def test_bootstrap_failure_keeps_normal_login_path_and_redacts_exception(self):
-        self.configure_login_page()
-        self.auth.page.context.cookies.return_value = []
-        navigations = []
-        namespace["logger"].reset_mock()
-
-        async def navigate(url, **kwargs):
-            navigations.append(url)
-            if url.endswith("/id/api/analytics"):
-                raise TimeoutError("private-navigation-token")
-            self.auth._has_refresh_csrf_session = lambda: True
-
-        self.auth.page.goto.side_effect = navigate
-        result = await self.auth._login()
-        self.assertEqual(result, (True, namespace["ErrorType"].SUCCESS))
-        self.assertEqual(len(navigations), 2)
-        self.assertNotIn("private-navigation-token", str(namespace["logger"].mock_calls))
 
     async def test_email_csrf_recovers_once_without_resetting_cookies(self):
         node = self.configure_login_page()
