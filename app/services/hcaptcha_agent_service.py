@@ -418,12 +418,14 @@ class EpicAgentV(AgentV):
         frame = await self._get_nested_challenge_frame_locator()
         if frame is None:
             return None
+        elements = frame.locator(".challenge-view *")
         try:
-            candidates = await frame.locator(".challenge-view *").evaluate_all(
-                """elements => elements.map(element => {
+            candidates = await elements.evaluate_all(
+                """elements => elements.map((element, index) => {
                     const style = getComputedStyle(element);
                     const rect = element.getBoundingClientRect();
                     return {
+                        index,
                         tag: element.tagName.toLowerCase(),
                         x: rect.x,
                         y: rect.y,
@@ -440,7 +442,12 @@ class EpicAgentV(AgentV):
             return None
         canvas_box = self._select_drag_canvas_box(candidates or [])
         if canvas_box is not None:
-            return canvas_box
+            # DOM client rects are iframe-local; Playwright's bounding_box
+            # includes all ancestor frame offsets, as page.mouse requires.
+            with suppress(Exception):
+                page_box = await elements.nth(canvas_box["index"]).bounding_box(timeout=1000)
+                if page_box:
+                    return page_box
 
         try:
             challenge_box = await frame.locator(".challenge-view").bounding_box(timeout=1000)
@@ -621,7 +628,7 @@ class EpicAgentV(AgentV):
                             const center = {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
                             if (seen.some(item => Math.hypot(item.x - center.x, item.y - center.y) < 18)) break;
                             seen.push(center);
-                            result.push(center);
+                            result.push({index: elements.indexOf(node)});
                             break;
                         }
                     }
@@ -631,11 +638,20 @@ class EpicAgentV(AgentV):
         except Exception as err:
             logger.debug(f"Could not inspect hCaptcha Move cards: {err}")
             return []
-        return [
-            {"x": float(item["x"]), "y": float(item["y"]), "score": 2000, "reason": "move-card"}
-            for item in boxes or []
-            if isinstance(item, dict) and "x" in item and "y" in item
-        ]
+        centers = []
+        for item in boxes or []:
+            with suppress(Exception):
+                index = int(item["index"])
+                if index < 0:
+                    continue
+                box = await elements.nth(index).bounding_box(timeout=1000)
+                if box:
+                    centers.append({
+                        "x": box["x"] + box["width"] / 2,
+                        "y": box["y"] + box["height"] / 2,
+                        "score": 2000, "reason": "move-card",
+                    })
+        return centers
 
     async def _perform_drag_drop_with_dom_source(
         self,

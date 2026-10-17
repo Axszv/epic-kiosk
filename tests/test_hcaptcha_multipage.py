@@ -149,6 +149,46 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
             {"x": 500, "y": 470}, {"x": 50, "y": 100},
         ])
 
+    async def test_drag_canvas_uses_page_coordinates_in_nested_iframe(self):
+        elements = types.SimpleNamespace(
+            evaluate_all=AsyncMock(return_value=[{
+                "index": 7, "tag": "canvas", "x": 10, "y": 135, "width": 480, "height": 320,
+            }]),
+            nth=MagicMock(return_value=types.SimpleNamespace(bounding_box=AsyncMock(return_value={
+                "x": 720, "y": 435, "width": 480, "height": 320,
+            }))),
+        )
+        self.agent._get_nested_challenge_frame_locator = AsyncMock(
+            return_value=types.SimpleNamespace(locator=MagicMock(return_value=elements)),
+        )
+        self.agent.robotic_arm.captcha_payload = types.SimpleNamespace(tasklist=[
+            types.SimpleNamespace(entities=[types.SimpleNamespace(coords=[240, 160])]),
+        ])
+
+        result = await self.agent._payload_drag_source(960, 595)
+
+        self.assertEqual((result["x"], result["y"]), (960, 595))
+        elements.nth.assert_called_once_with(7)
+
+    async def test_move_card_uses_page_coordinates_before_drag_execution(self):
+        elements = types.SimpleNamespace(
+            evaluate_all=AsyncMock(return_value=[{"index": 5}]),
+            nth=MagicMock(return_value=types.SimpleNamespace(bounding_box=AsyncMock(return_value={
+                "x": 1090, "y": 345, "width": 100, "height": 104,
+            }))),
+        )
+        self.agent._get_nested_challenge_frame_locator = AsyncMock(
+            return_value=types.SimpleNamespace(locator=MagicMock(return_value=elements)),
+        )
+        self.agent._original_perform_drag_drop = AsyncMock()
+        path = types.SimpleNamespace(start_point=types.SimpleNamespace(x=1120, y=390),
+                                     end_point=types.SimpleNamespace(x=760, y=400))
+
+        await self.agent._perform_drag_drop_with_dom_source(path)
+
+        self.assertEqual((path.start_point.x, path.start_point.y), (1140, 397))
+        elements.nth.assert_called_once_with(5)
+
     async def test_model_images_share_the_normalized_pixel_coordinate_system(self):
         from PIL import Image
 
