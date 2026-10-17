@@ -130,6 +130,79 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         await self.agent._capture_challenge_page(None, "cache", 2)
         self.assertIsNone(await self.agent._payload_drag_source(340, 360))
 
+    async def test_point_clicks_use_local_scaled_positions_after_layout_changes(self):
+        view = types.SimpleNamespace(
+            bounding_box=AsyncMock(side_effect=[
+                {"x": 710, "y": 373, "width": 1000, "height": 940},
+                {"x": 30, "y": 40, "width": 250, "height": 235},
+            ]), click=AsyncMock(),
+        )
+        frame = types.SimpleNamespace(locator=MagicMock(return_value=view))
+        await self.agent._click_image_points(frame, [
+            types.SimpleNamespace(x=250, y=235),
+            types.SimpleNamespace(x=100, y=200),
+        ], (500, 470))
+        # Locator coordinates stay local despite the changed page offsets.
+        self.assertEqual([call.kwargs["position"] for call in view.click.await_args_list], [
+            {"x": 500, "y": 470}, {"x": 50, "y": 100},
+        ])
+
+    async def test_any_invalid_point_prevents_all_clicks(self):
+        view = types.SimpleNamespace(click=AsyncMock())
+        frame = types.SimpleNamespace(locator=MagicMock(return_value=view))
+        for x, y in [(295, 530), (1067, 307), (500, 200), (-1, 50), (float("nan"), 1), (1, float("inf"))]:
+            with self.subTest(point=(x, y)):
+                with self.assertRaises(self.module.InvalidChallengeCoordinates):
+                    await self.agent._click_image_points(frame, [
+                        types.SimpleNamespace(x=200, y=200), types.SimpleNamespace(x=x, y=y),
+                    ], (500, 470))
+        view.click.assert_not_awaited()
+
+    async def test_point_pages_retry_invalid_answer_before_clicking_and_submit_every_page(self):
+        arm = self.agent.robotic_arm
+        arm.signal_crumb_count = 2
+        frames = [MagicMock(), MagicMock()]
+        arm.get_challenge_frame_locator = AsyncMock(side_effect=frames)
+        arm.click_by_mouse = AsyncMock()
+        self.agent.config.create_cache_key = MagicMock(return_value=Path("cache"))
+        self.agent.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS = 0
+        self.agent._capture_point_image = AsyncMock(return_value=("raw", "grid", (500, 470)))
+        self.agent._click_image_points = AsyncMock()
+        def answer(x, y):
+            return types.SimpleNamespace(points=[types.SimpleNamespace(x=x, y=y)], log_message="points")
+        arm._spatial_point_reasoner = AsyncMock(side_effect=[
+            answer(295, 530), answer(200, 200), answer(300, 300),
+        ])
+        arm._spatial_point_reasoner.cache_response = MagicMock()
+
+        await arm.challenge_image_label_select("image_label_multi_select")
+
+        self.assertEqual(arm._spatial_point_reasoner.await_count, 3)
+        self.assertIn("previous answer was invalid", arm._spatial_point_reasoner.await_args_list[1].kwargs["auxiliary_information"])
+        self.assertEqual([call.args[0] for call in self.agent._click_image_points.await_args_list], frames)
+        self.assertEqual(arm.click_by_mouse.await_count, 2)
+
+    async def test_repeated_invalid_answer_is_failure_without_a_click_or_submit(self):
+        arm = self.agent.robotic_arm
+        arm.signal_crumb_count = 1
+        arm.get_challenge_frame_locator = AsyncMock(return_value=MagicMock())
+        arm.click_by_mouse = AsyncMock()
+        self.agent.config.create_cache_key = MagicMock(return_value=Path("cache"))
+        self.agent.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS = 0
+        self.agent._capture_point_image = AsyncMock(return_value=("raw", "grid", (500, 470)))
+        self.agent._click_image_points = AsyncMock()
+        arm._spatial_point_reasoner = AsyncMock(return_value=types.SimpleNamespace(
+            points=[types.SimpleNamespace(x=295, y=530)], log_message="invalid",
+        ))
+        arm._spatial_point_reasoner.cache_response = MagicMock()
+        self.agent._solve_captcha = lambda: arm.challenge_image_label_select("image_label_multi_select")
+
+        result = await self.agent.wait_for_challenge()
+
+        self.assertEqual(result, Signal.FAILURE)
+        self.agent._click_image_points.assert_not_awaited()
+        arm.click_by_mouse.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

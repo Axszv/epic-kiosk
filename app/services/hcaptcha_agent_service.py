@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import math
 import os
 import time
 from contextlib import suppress
@@ -77,6 +78,10 @@ of points implied by the instruction cards.
 """.strip()
 
 
+class InvalidChallengeCoordinates(ValueError):
+    """A visual answer cannot safely be clicked inside the captured image."""
+
+
 async def load_hsw_script(page: Page, url: str) -> str:
     """Load hsw.js without Camoufox/Juggler response-text decoding."""
     response = await page.context.request.get(
@@ -125,11 +130,114 @@ class EpicAgentV(AgentV):
         self.robotic_arm._perform_drag_drop = self._perform_drag_drop_with_dom_source
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
+        self.robotic_arm.challenge_image_label_select = self._select_image_local_points
 
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
         self._challenge_page_index = int(crumb_id)
         print(f"HCAPTCHA_PAGE:{self._challenge_page_index + 1}", flush=True)
         return await self._original_capture_spatial_mapping(frame, cache_key, crumb_id)
+
+    async def _capture_point_image(self, frame, cache_key, crumb_id):
+        # Keep the two model images pixel-aligned. Upstream's matplotlib plot
+        # adds margins and page-coordinate axes to a differently sized canvas.
+        from PIL import Image, ImageDraw
+
+        self._challenge_page_index = crumb_id
+        print(f"HCAPTCHA_PAGE:{crumb_id + 1}", flush=True)
+        cache_key.mkdir(parents=True, exist_ok=True)
+        raw = cache_key / f"{cache_key.name}_{crumb_id}_challenge_view.png"
+        grid = cache_key / f"{cache_key.name}_{crumb_id}_spatial_helper.png"
+        await frame.locator(".challenge-view").screenshot(path=raw, type="png", scale="css")
+        with Image.open(raw) as original:
+            size = original.size
+            overlay = original.convert("RGB")
+        draw = ImageDraw.Draw(overlay)
+        width, height = size
+        for x in range(50, width, 50):
+            draw.line((x, 0, x, height - 1), fill=(135, 135, 135), width=1)
+            draw.text((x + 2, 2), str(x), fill="black", stroke_width=1, stroke_fill="white")
+        for y in range(50, height, 50):
+            draw.line((0, y, width - 1, y), fill=(135, 135, 135), width=1)
+            draw.text((2, y + 2), str(y), fill="black", stroke_width=1, stroke_fill="white")
+        overlay.save(grid)
+        return raw, grid, size
+
+    @staticmethod
+    def _local_point_positions(points, image_size):
+        width, height = image_size
+        if width <= 0 or height <= 0 or not points:
+            raise InvalidChallengeCoordinates("Missing image dimensions or answer points")
+        positions = []
+        for point in points:
+            try:
+                x, y = float(point.x), float(point.y)
+            except (AttributeError, TypeError, ValueError) as err:
+                raise InvalidChallengeCoordinates("Non-numeric answer point") from err
+            if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < width and 0 <= y < height):
+                raise InvalidChallengeCoordinates(
+                    f"Point ({x}, {y}) is outside the {width} x {height} image"
+                )
+            positions.append((x / width, y / height))
+        return positions
+
+    async def _click_image_points(self, frame, points, image_size):
+        # Validate the entire answer before clicking anything: a partial answer
+        # must not toggle already selected objects when the model is retried.
+        positions = self._local_point_positions(points, image_size)
+        view = frame.locator(".challenge-view")
+        for x, y in positions:
+            box = await view.bounding_box(timeout=1000)
+            if not box or box["width"] <= 0 or box["height"] <= 0:
+                raise InvalidChallengeCoordinates("Challenge image is no longer visible")
+            # Locator clicks handle iframe offsets and scrolling; re-read size
+            # after inference and before each click in case the layout moved.
+            await view.click(position={"x": x * box["width"], "y": y * box["height"]},
+                             delay=180, timeout=3000)
+            await self.page.wait_for_timeout(500)
+
+    async def _select_image_local_points(self, job_type):
+        arm = self.robotic_arm
+        crumb_count = await arm.check_crumb_count()
+        cache_key = self.config.create_cache_key(arm.captcha_payload)
+        for cid in range(crumb_count):
+            frame = await arm.get_challenge_frame_locator()
+            if frame is None:
+                raise InvalidChallengeCoordinates("Challenge frame is no longer visible")
+            await self.page.wait_for_timeout(self.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS)
+            raw, grid, size = await self._capture_point_image(frame, cache_key, cid)
+            width, height = size
+            coordinate_prompt = (
+                f"Both images are exactly {width} pixels wide and {height} pixels high. "
+                "Return ONLY image-local pixel coordinates: origin (0,0) is the TOP LEFT "
+                "of either image, x increases rightwards, y increases downwards. "
+                f"Every point must satisfy 0 <= x < {width} and 0 <= y < {height}. "
+                "The grid labels are these same pixel coordinates, with no image margins. "
+                "Do not use browser/page coordinates or a 0-1000 normalized scale. "
+                "Select the centers of the answer objects, not the instruction examples. "
+                'Each point must have two integer fields, for example {"x":125,"y":240}. '
+                "Never put a coordinate pair in the x field."
+            )
+            prompt = f"{arm._match_user_prompt(job_type)}\n\n{coordinate_prompt}"
+            for attempt in range(2):
+                response = await arm._spatial_point_reasoner(
+                    challenge_screenshot=raw, grid_divisions=grid,
+                    auxiliary_information=prompt,
+                )
+                arm._spatial_point_reasoner.cache_response(
+                    path=cache_key / f"{cache_key.name}_{cid}_{attempt}_model_answer.json"
+                )
+                try:
+                    self._local_point_positions(response.points, size)
+                except InvalidChallengeCoordinates as err:
+                    logger.warning(f"Rejected hCaptcha image coordinates: {err}")
+                    if attempt:
+                        raise
+                    prompt += f"\nYour previous answer was invalid: {err}. Re-read the grid. {coordinate_prompt}"
+                    continue
+                break
+            logger.debug(f"[{cid + 1}/{crumb_count}] Local point answer: {response.log_message}")
+            await self._click_image_points(frame, response.points, size)
+            await arm.click_by_mouse(frame.locator("div.button-submit.button"))
 
     @staticmethod
     def _captcha_pass_metadata(response) -> str:
@@ -731,6 +839,9 @@ class EpicAgentV(AgentV):
                     f"Challenge execution timed out after {self.config.EXECUTION_TIMEOUT}s"
                 )
                 return ChallengeSignal.EXECUTION_TIMEOUT
+            except InvalidChallengeCoordinates as err:
+                logger.error(f"hCaptcha answer was not clicked: {err}")
+                return ChallengeSignal.FAILURE
             except PlaywrightTimeoutError as err:
                 # hCaptcha can close or replace the challenge DOM after the
                 # payload was queued. Upstream then waits 30 seconds for a
