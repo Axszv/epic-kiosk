@@ -76,6 +76,16 @@ carefully, and return one point at the visual center of every selected grid
 animal, with no extra points. The output must contain exactly the total number
 of points implied by the instruction cards.
 """.strip()
+FOOD_INGREDIENT_PROMPT = """
+The small reference picture at the TOP RIGHT shows the target dish. First
+identify that reference dish; do not use one of the large answer tiles as the
+reference. Then inspect EVERY selectable tile and select only foods that are
+ingredients of that dish. For example, a fruit salad needs fruit, not pizza,
+pasta, or a glass of drink. Different prepared meals are distractors. In your
+challenge_prompt field, briefly name the reference dish and the selected
+ingredient types so the identification is explicit. Return one point at the
+center of EACH matching tile, including repeated matching ingredients.
+""".strip()
 
 
 class InvalidChallengeCoordinates(ValueError):
@@ -298,15 +308,19 @@ class EpicAgentV(AgentV):
             return FLYING_ANIMALS_PROMPT
         if "find all animals based on the number provided" in normalized:
             return COUNTED_ANIMALS_PROMPT
+        if "ingredients" in normalized and "dish" in normalized:
+            return FOOD_INGREDIENT_PROMPT
         return None
 
     def _match_drag_user_prompt(self, job_type) -> str:
         base_prompt = self._original_match_user_prompt(job_type)
         payload = getattr(self.robotic_arm, "captcha_payload", None)
-        challenge_prompt = ""
+        # Visual-only classification stores the question on the arm rather
+        # than in a decoded payload. It needs the same task-specific guidance.
+        challenge_prompt = getattr(self.robotic_arm, "_challenge_prompt", "") or ""
         if payload is not None:
             with suppress(Exception):
-                challenge_prompt = payload.get_requester_question() or ""
+                challenge_prompt = payload.get_requester_question() or challenge_prompt
         specialized = self._specialized_visual_prompt(challenge_prompt)
         if specialized is None:
             return base_prompt

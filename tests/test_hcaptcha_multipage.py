@@ -149,6 +149,15 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
             {"x": 500, "y": 470}, {"x": 50, "y": 100},
         ])
 
+    def test_visual_only_question_receives_the_same_specialized_guidance(self):
+        self.agent.robotic_arm.captcha_payload = None
+        self.agent.robotic_arm._challenge_prompt = "Click on the ingredients that could be used to make the dish shown"
+        self.agent._original_match_user_prompt.return_value = "Base instructions"
+        prompt = self.agent._match_drag_user_prompt("image_label_multi_select")
+        self.assertIn("TOP RIGHT", prompt)
+        self.assertIn("fruit salad", prompt)
+        self.assertIn("Base instructions", prompt)
+
     async def test_drag_canvas_uses_page_coordinates_in_nested_iframe(self):
         elements = types.SimpleNamespace(
             evaluate_all=AsyncMock(return_value=[{
