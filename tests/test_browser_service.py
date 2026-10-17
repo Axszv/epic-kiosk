@@ -33,6 +33,7 @@ class BrowserServiceTests(unittest.IsolatedAsyncioTestCase):
             "os": os, "Path": Path, "asynccontextmanager": asynccontextmanager,
             "logger": MagicMock(), "async_playwright": playwright_context,
             "AsyncCamoufox": camoufox_context, "Screen": MagicMock(),
+            "DefaultAddons": types.SimpleNamespace(UBO="ubo"),
         }
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), namespace)
         self.claim_browser = namespace["claim_browser"]
@@ -44,6 +45,7 @@ class BrowserServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.camoufox_options["user_data_dir"], "profiles/account")
         self.assertFalse(self.camoufox_options["headless"])
         self.assertNotIn("extra_http_headers", self.camoufox_options)
+        self.assertEqual(self.camoufox_options["exclude_addons"], ["ubo"])
         self.launch.assert_not_awaited()
 
     async def test_chromium_profile_is_separate_and_closed_after_error(self):

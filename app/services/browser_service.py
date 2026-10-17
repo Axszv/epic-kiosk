@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from camoufox import AsyncCamoufox
+from camoufox.addons import DefaultAddons
 from camoufox.fingerprints import Screen
 from loguru import logger
 from playwright.async_api import async_playwright
@@ -37,6 +38,9 @@ async def claim_browser(user_data_dir, *, headless=True, proxy=None):
         persistent_context=True,
         user_data_dir=user_data_dir,
         screen=Screen(max_width=1920, max_height=1080, min_height=1080, min_width=1920),
+        # Match the upstream Epic compatibility patch: account/checkout
+        # scripts must not be filtered by the browser's bundled ad blocker.
+        exclude_addons=[DefaultAddons.UBO],
         humanize=0.2,
         headless=headless,
         proxy=proxy,
