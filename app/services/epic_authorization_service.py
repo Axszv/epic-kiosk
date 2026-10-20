@@ -1260,6 +1260,14 @@ class EpicAuthorization:
         for attempt in range(3):
             logger.info(f"🔄 登录尝试 [{attempt + 1}/3]")
 
+            # A Cloudflare check on the store page hides its navigation
+            # element, and the code then shows the login form even though the
+            # account session is fine. The account API answers that directly,
+            # and a valid session means the weekly claim needs no captcha.
+            if attempt == 0 and await self._account_session_is_valid():
+                logger.success("✅ Epic Games 已登录（账号会话有效）")
+                return ErrorType.SUCCESS
+
             try:
                 await self.page.goto(URL_CLAIM, wait_until="domcontentloaded")
             except Exception as e:
@@ -1323,15 +1331,6 @@ class EpicAuthorization:
 
             if status == "true":
                 logger.success("✅ Epic Games 已登录")
-                return ErrorType.SUCCESS
-
-            # The store page can miss its navigation element, for example
-            # while a Cloudflare check is still on it, even though the account
-            # session is fine. The account API answers that directly, and a
-            # valid session means the login form and its captcha are not
-            # needed at all.
-            if await self._account_session_is_valid():
-                logger.success("✅ Epic Games 已登录（账号会话有效）")
                 return ErrorType.SUCCESS
 
             # 执行登录
