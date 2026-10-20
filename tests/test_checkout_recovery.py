@@ -144,6 +144,28 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertIn('rm -rf "${CAMOUFOX_UBO_DIR}"', workflow)
         self.assertIn('test -f "${CAMOUFOX_UBO_DIR}/manifest.json"', workflow)
 
+    def test_scheduled_runs_use_the_browser_proxy_and_survive_its_outage(self):
+        workflow = WORKFLOW_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "EPIC_BROWSER_PROXY_ENABLED: ${{ github.event_name == 'schedule' "
+            "|| github.event.inputs.use_browser_proxy == 'true' }}",
+            workflow,
+        )
+        proxy_start = workflow.index("      - name: Prepare browser proxy")
+        proxy_end = workflow.index("      - name: Run Epic claim", proxy_start)
+        proxy_step = workflow[proxy_start:proxy_end]
+        self.assertIn("if: env.EPIC_BROWSER_PROXY_ENABLED == 'true'", proxy_step)
+        self.assertIn("continue-on-error: true", proxy_step)
+
+        claim_start = workflow.index("      - name: Run Epic claim")
+        claim_end = workflow.index("      - name: Stop browser proxy", claim_start)
+        claim_step = workflow[claim_start:claim_end]
+        self.assertIn("EPIC_USE_BROWSER_PROXY: ${{ env.EPIC_BROWSER_PROXY_ENABLED }}", claim_step)
+        # A missing proxy falls back to the runner instead of skipping the claim.
+        self.assertIn("::warning::No browser proxy is available", claim_step)
+        self.assertNotIn("::error::EPIC_BROWSER_PROXY secret is required", claim_step)
+
     def test_fresh_profile_diagnostic_uses_an_uncached_override(self):
         settings_source = (ROOT / "app" / "settings.py").read_text(encoding="utf-8")
         runner_source = (
