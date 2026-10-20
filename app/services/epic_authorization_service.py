@@ -278,6 +278,42 @@ class EpicAuthorization:
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
 
+    async def _install_live_xsrf_route(self) -> None:
+        """Send Epic's live XSRF cookie with the login transaction.
+
+        Epic rotates the XSRF-TOKEN cookie on every response. The account
+        portal keeps one copy from the moment it started, so a login that
+        takes a minute to solve a captcha submits a token that the server
+        already replaced. The first request is then rejected with
+        `csrf_token_invalid` and the portal retries with the same captcha,
+        which hCaptcha refuses because it was already used.
+        """
+
+        async def handler(route):
+            request = route.request
+            header = request.headers.get("x-xsrf-token", "")
+            token = ""
+            with suppress(Exception):
+                cookies = await self.page.context.cookies([request.url])
+                token = next(
+                    (
+                        str(cookie.get("value") or "")
+                        for cookie in cookies
+                        if str(cookie.get("name") or "") == "XSRF-TOKEN"
+                    ),
+                    "",
+                )
+            if not token or not header or token == header:
+                await route.continue_()
+                return
+            headers = dict(request.headers)
+            headers["x-xsrf-token"] = token
+            await route.continue_(headers=headers)
+
+        with suppress(Exception):
+            await self.page.route("**/id/api/email/exists", handler)
+            logger.debug("Login transaction now sends Epic's live XSRF cookie")
+
     async def _has_cloudflare_security_check(self) -> bool:
         title = ""
         body_text = ""
@@ -786,6 +822,10 @@ class EpicAuthorization:
 
         # 尽可能早地初始化机器人
         agent = get_login_hcaptcha_agent(self.page)
+
+        # The captcha can take a minute to solve, and Epic rotates its XSRF
+        # cookie meanwhile. Keep the login transaction on the live cookie.
+        await self._install_live_xsrf_route()
 
         # {{< SIGN IN PAGE >}}
         logger.debug("Login with Email")

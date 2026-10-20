@@ -32,7 +32,8 @@ for node in tree.body:
         selected.append(node)
     elif isinstance(node, ast.ClassDef) and node.name == "EpicAuthorization":
         node.body = [method for method in node.body if isinstance(method, ast.AsyncFunctionDef)
-                     and method.name in {"_take_email_transaction_failure", "_login"}]
+                     and method.name in {"_take_email_transaction_failure", "_login",
+                                         "_install_live_xsrf_route"}]
         selected.append(node)
 namespace = dict(
     suppress=suppress, hashlib=hashlib, json=json, unquote=unquote, urlsplit=urlsplit, Enum=Enum,
@@ -128,6 +129,49 @@ class CsrfRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, (False, namespace["ErrorType"].COOKIE_INVALID))
         self.assertEqual(self.auth.page.goto.await_count, 2)
         self.assertEqual(self.auth._solve_pre_password_hcaptcha.await_count, 2)
+
+
+class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
+    """The login transaction must carry Epic's live XSRF cookie."""
+
+    def build_page(self, cookies):
+        route = SimpleNamespace(
+            continue_=AsyncMock(),
+            request=SimpleNamespace(
+                url="https://www.epicgames.com/id/api/email/exists",
+                headers={"x-xsrf-token": "stale-value"},
+            ),
+        )
+        context = SimpleNamespace(cookies=AsyncMock(return_value=cookies))
+        return SimpleNamespace(
+            context=context,
+            route=AsyncMock(),
+            url="https://www.epicgames.com/id/login",
+        ), route
+
+    async def test_stale_header_is_replaced_with_the_live_cookie(self):
+        auth = namespace["EpicAuthorization"]()
+        page, route = self.build_page([{"name": "XSRF-TOKEN", "value": "live-value"}])
+        auth.page = page
+
+        await auth._install_live_xsrf_route()
+
+        page.route.assert_awaited_once()
+        handler = page.route.await_args.args[1]
+        await handler(route)
+        headers = route.continue_.await_args.kwargs["headers"]
+        self.assertEqual(headers["x-xsrf-token"], "live-value")
+
+    async def test_matching_header_is_left_alone(self):
+        auth = namespace["EpicAuthorization"]()
+        page, route = self.build_page([{"name": "XSRF-TOKEN", "value": "stale-value"}])
+        auth.page = page
+
+        await auth._install_live_xsrf_route()
+
+        handler = page.route.await_args.args[1]
+        await handler(route)
+        route.continue_.assert_awaited_once_with()
 
 
 class CsrfDiagnosticTests(unittest.TestCase):
