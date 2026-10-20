@@ -938,20 +938,12 @@ class EpicAgentV(AgentV):
                     logger.debug(
                         "hCaptcha challenge frame closed; waiting for the server result"
                     )
-                    closed_deadline = min(
-                        response_deadline,
-                        time.monotonic() + 10,
-                    )
-                    while time.monotonic() < closed_deadline:
-                        if not self._captcha_response_queue.empty():
-                            break
-                        await self.page.wait_for_timeout(250)
-                    else:
-                        logger.warning(
-                            "hCaptcha frame closed without a validated server response"
-                        )
-                        return ChallengeSignal.FAILURE
-                    break
+                    # hCaptcha replaces the challenge view as soon as the
+                    # answers are submitted. The validated server response
+                    # arrives after the frame is gone, so keep waiting for it
+                    # instead of failing on the closed frame.
+                    await self.page.wait_for_timeout(250)
+                    continue
                 await self.page.wait_for_timeout(250)
             else:
                 logger.error(

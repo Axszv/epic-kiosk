@@ -588,10 +588,22 @@ class EpicAuthorization:
             with suppress(Exception):
                 body_text = await r.text()
             error_code = ""
+            error_detail = ""
             request_captcha = {}
             with suppress(Exception):
                 payload = json.loads(body_text)
                 error_code = str(payload.get("errorCode") or "")
+                # Epic reports the concrete reason for a rejected transaction
+                # next to the error code. Keep it readable for the next failure
+                # without echoing any captcha material.
+                error_detail = json.dumps(
+                    {
+                        key: value
+                        for key, value in payload.items()
+                        if key not in {"captcha", "errorCode"}
+                    },
+                    ensure_ascii=False,
+                )[:600]
             with suppress(Exception):
                 request_payload = json.loads(r.request.post_data or "{}")
                 solved = get_login_hcaptcha_agent(self.page).cr_list
@@ -603,6 +615,7 @@ class EpicAuthorization:
                 }
             logger.warning(
                 f"EPIC_EMAIL_RESPONSE:status={r.status}:error={error_code}:"
+                f"detail={error_detail}:"
                 f"captcha={json.dumps(request_captcha, ensure_ascii=False)}"
             )
             with suppress(Exception):
