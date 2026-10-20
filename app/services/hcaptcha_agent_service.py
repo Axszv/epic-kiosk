@@ -141,7 +141,8 @@ class EpicAgentV(AgentV):
         self.robotic_arm._perform_drag_drop = self._perform_drag_drop_with_dom_source
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
-        self.robotic_arm.challenge_image_label_select = self._select_image_local_points
+        # Diagnostic: use the upstream library's image answering instead of
+        # the local point pipeline.
 
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
         self._challenge_page_index = int(crumb_id)
