@@ -201,6 +201,22 @@ class EpicAuthorization:
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
 
+    async def _account_session_is_valid(self) -> bool:
+        """Ask Epic's account API whether the cached session still works.
+
+        A 401 means the session expired and the login form with its captcha is
+        unavoidable. A 200 means the account is still signed in, so the store
+        can be used right away.
+        """
+        with suppress(Exception):
+            response = await self.page.context.request.get(
+                "https://accounts.epicgames.com/account/v2/payment/ajaxGetOrderHistory",
+                timeout=30000,
+            )
+            logger.info(f"ACCOUNT_SESSION_PROBE:status={response.status}")
+            return response.status == 200
+        return False
+
     async def _install_live_xsrf_route(self) -> None:
         """Send Epic's live XSRF cookie with the login transaction.
 
@@ -1300,6 +1316,15 @@ class EpicAuthorization:
 
             if status == "true":
                 logger.success("✅ Epic Games 已登录")
+                return ErrorType.SUCCESS
+
+            # The store page can miss its navigation element, for example
+            # while a Cloudflare check is still on it, even though the account
+            # session is fine. The account API answers that directly, and a
+            # valid session means the login form and its captcha are not
+            # needed at all.
+            if await self._account_session_is_valid():
+                logger.success("✅ Epic Games 已登录（账号会话有效）")
                 return ErrorType.SUCCESS
 
             # 执行登录
