@@ -21,6 +21,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
 from models import OrderItem, Order
 from models import PromotionGame
+from services.epic_store_page import product_cta
 from settings import settings, RUNTIME_DIR
 from services.hcaptcha_agent_service import (
     get_hcaptcha_agent,
@@ -869,12 +870,11 @@ class EpicGames:
         if any("/purchase" in frame.url for frame in page.frames if frame != page.main_frame):
             return False
 
-        product_cta = page.locator(
-            "button[data-testid='purchase-cta-button']"
-        ).first
+        purchase_btn = await product_cta(page, timeout=2000)
+        if purchase_btn is None:
+            return False
         try:
-            await product_cta.wait_for(state="visible", timeout=2000)
-            if await product_cta.is_disabled(timeout=1000):
+            if await purchase_btn.is_disabled(timeout=1000):
                 return False
         except Exception:
             return False
@@ -882,7 +882,7 @@ class EpicGames:
         logger.warning(
             "Purchase iframe is not open; clicking the product CTA again before checkout"
         )
-        await product_cta.click(force=True)
+        await purchase_btn.click(force=True)
         await cls._handle_device_not_supported_modal(page, timeout_ms=20000)
         await page.wait_for_timeout(2500)
         return True
@@ -918,7 +918,9 @@ class EpicGames:
             await page.wait_for_timeout(3000)
 
         with suppress(Exception):
-            purchase_btn = page.locator("//button[@data-testid='purchase-cta-button']").first
+            purchase_btn = await product_cta(page)
+            if purchase_btn is None:
+                return False
             btn_text = (await purchase_btn.text_content(timeout=5000) or "").strip().upper()
             logger.info(f"Ownership CTA for {promotion.title}: {btn_text!r}")
             if any(marker in btn_text for marker in ("IN LIBRARY", "OWNED")):
@@ -1356,11 +1358,11 @@ class EpicGames:
             # ------------------------------------------------------------
 
             # 1. 尝试找到主按钮
-            purchase_btn = page.locator("//button[@data-testid='purchase-cta-button']").first
+            purchase_btn = await product_cta(page)
 
             # 2. 检查按钮可见性
             try:
-                if not await purchase_btn.is_visible(timeout=5000):
+                if purchase_btn is None or not await purchase_btn.is_visible(timeout=5000):
                     if await self._skip_region_unavailable(page, promotion):
                         continue
                     if await self._owned_from_product_page(page, promotion):
@@ -1418,10 +1420,8 @@ class EpicGames:
                         await page.keyboard.press("Escape")
                     await page.goto(url, wait_until="load")
                     await page.wait_for_timeout(3000)
-                    purchase_btn = page.locator(
-                        "//button[@data-testid='purchase-cta-button']"
-                    ).first
-                    if not await purchase_btn.is_visible(timeout=10000):
+                    purchase_btn = await product_cta(page)
+                    if purchase_btn is None:
                         if await self._skip_region_unavailable(page, promotion):
                             verified = True
                             break
