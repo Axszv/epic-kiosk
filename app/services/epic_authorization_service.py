@@ -309,6 +309,7 @@ class EpicAuthorization:
             headers = dict(request.headers)
             headers["x-xsrf-token"] = token
             await route.continue_(headers=headers)
+            logger.warning("LOGIN_XSRF_REFRESH:stale_header_replaced")
 
         with suppress(Exception):
             await self.page.route("**/id/api/email/exists", handler)
