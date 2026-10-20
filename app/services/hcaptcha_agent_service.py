@@ -923,17 +923,18 @@ def get_hcaptcha_agent(page: Page) -> AgentV:
 def get_login_hcaptcha_agent(page: Page) -> AgentV:
     """Return the agent used by Epic's login transaction.
 
-    The login agent ends its wait after a rejected round. hCaptcha keeps the
-    whole interaction of a challenge in its plan, and Epic refuses a
-    transaction whose plan contains a wrong answer, so the caller has to
-    start a fresh challenge instead of answering the poisoned one again.
+    The login transaction uses the plain upstream agent. Epic only accepts a
+    token that the page's own hCaptcha scripts produced, and the upstream
+    agent leaves the page's scripts in charge. The project's own agent
+    replaces the page's hsw.js and answers the image grid from a screenshot
+    of its own, and Epic refuses those transactions with "Incorrect
+    response".
     """
     agent = _AGENTS.get(page)
     if agent is None:
-        agent = EpicAgentV(page=page, agent_config=settings)
-        agent.restart_on_rejected_round = True
+        agent = AgentV(page=page, agent_config=settings)
         _AGENTS[page] = agent
-        logger.debug("Created the hCaptcha agent for Epic login")
+        logger.debug("Created the upstream hCaptcha agent for Epic login")
     return agent
 
 
@@ -943,10 +944,9 @@ def replace_login_hcaptcha_agent(page: Page) -> AgentV:
     if previous is not None:
         _detach_hcaptcha_agent(page, previous)
 
-    agent = EpicAgentV(page=page, agent_config=settings)
-    agent.restart_on_rejected_round = True
+    agent = AgentV(page=page, agent_config=settings)
     _AGENTS[page] = agent
-    logger.debug("Replaced the hCaptcha agent for a fresh Epic login transaction")
+    logger.debug("Replaced the upstream hCaptcha agent for a fresh Epic login transaction")
     return agent
 
 
