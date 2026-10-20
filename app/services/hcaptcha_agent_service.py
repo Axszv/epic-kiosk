@@ -143,7 +143,27 @@ class EpicAgentV(AgentV):
         self._challenge_page_index = int(crumb_id)
         print(f"HCAPTCHA_PAGE:{self._challenge_page_index + 1}", flush=True)
         await self._wait_for_challenge_images(frame)
+        await self._save_challenge_debug(frame)
         return await self._original_capture_spatial_mapping(frame, cache_key, crumb_id)
+
+    async def _save_challenge_debug(self, frame) -> None:
+        """Save the live challenge so a blank capture can be inspected."""
+        if os.getenv("GITHUB_ACTIONS") != "true":
+            return
+        with suppress(Exception):
+            from settings import RUNTIME_DIR
+
+            RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+            name = f"hcaptcha_challenge_{int(time.time() * 1000)}"
+            (RUNTIME_DIR / f"{name}.html").write_text(
+                await frame.content(), encoding="utf-8"
+            )
+            await frame.locator(".challenge-view").screenshot(
+                path=str(RUNTIME_DIR / f"{name}_view.png"), type="png", scale="css"
+            )
+            await self.page.screenshot(
+                path=str(RUNTIME_DIR / f"{name}_page.png"), type="png", scale="css"
+            )
 
     async def _wait_for_challenge_images(self, frame, timeout_ms: int = 20000) -> bool:
         """Wait until hCaptcha's tile images are really rendered.
