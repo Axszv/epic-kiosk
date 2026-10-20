@@ -120,6 +120,12 @@ class EpicAgentV(AgentV):
 
     def __init__(self, *args, **kwargs):
         self._decode_payloads = os.getenv("HCAPTCHA_VISUAL_ONLY", "false").lower() != "true"
+        # Epic only accepts a token from a challenge the page solved itself.
+        # Replacing the page's hsw.js or answering the image grid on our own
+        # produces a token Epic refuses with "Incorrect response", so the
+        # login transaction keeps the page's own scripts.
+        self.library_solving = bool(kwargs.pop("library_solving", False))
+        self.inject_hsw = bool(kwargs.pop("inject_hsw", True))
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
         super().__init__(*args, **kwargs)
@@ -145,7 +151,8 @@ class EpicAgentV(AgentV):
         # Epic refuses a transaction whose plan holds a wrong answer, so the
         # login agent has to end its wait after a rejected round.
         self.restart_on_rejected_round = False
-        self.robotic_arm.challenge_image_label_select = self._select_image_local_points
+        if not self.library_solving:
+            self.robotic_arm.challenge_image_label_select = self._select_image_local_points
 
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
         self._challenge_page_index = int(crumb_id)
@@ -1030,6 +1037,12 @@ class EpicAgentV(AgentV):
         async with self._hsw_lock:
             if document_key == self._hsw_document_key:
                 return
+            if not self.inject_hsw:
+                # Let the page keep its own hsw.js. Epic refuses a token whose
+                # proof of work did not come from the page's own scripts.
+                self._hsw_document_key = document_key
+                logger.debug("Kept the page's own hsw.js for this challenge")
+                return
             try:
                 hsw_text = await load_hsw_script(self.page, response.url)
                 await self.page.evaluate(hsw_text)
@@ -1072,7 +1085,12 @@ def get_login_hcaptcha_agent(page: Page) -> AgentV:
     """Use the multi-page, stale-DOM recovery shared by Epic challenges."""
     agent = _AGENTS.get(page)
     if agent is None:
-        agent = EpicAgentV(page=page, agent_config=settings)
+        agent = EpicAgentV(
+            page=page,
+            agent_config=settings,
+            library_solving=True,
+            inject_hsw=False,
+        )
         agent.restart_on_rejected_round = True
         _AGENTS[page] = agent
         logger.debug("Created the multi-round hCaptcha agent for Epic login")
@@ -1085,7 +1103,12 @@ def replace_login_hcaptcha_agent(page: Page) -> AgentV:
     if previous is not None:
         _detach_hcaptcha_agent(page, previous)
 
-    agent = EpicAgentV(page=page, agent_config=settings)
+    agent = EpicAgentV(
+        page=page,
+        agent_config=settings,
+        library_solving=True,
+        inject_hsw=False,
+    )
     agent.restart_on_rejected_round = True
     _AGENTS[page] = agent
     logger.debug("Replaced multi-round hCaptcha agent for a fresh Epic login transaction")

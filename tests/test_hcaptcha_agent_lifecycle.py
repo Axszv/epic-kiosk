@@ -134,7 +134,12 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
             second = module.get_login_hcaptcha_agent(page)
         self.assertIs(first, replacement)
         self.assertIs(second, first)
-        factory.assert_called_once_with(page=page, agent_config=module.settings)
+        factory.assert_called_once_with(
+            page=page,
+            agent_config=module.settings,
+            library_solving=True,
+            inject_hsw=False,
+        )
 
     def test_legacy_checkout_agent_replaces_and_caches_the_page_agent(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
@@ -163,6 +168,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         agent.page.evaluate = AsyncMock(side_effect=[None, True])
         agent._hsw_lock = asyncio.Lock()
         agent._hsw_document_key = ""
+        agent.inject_hsw = True
         agent.page.url = "https://store.epicgames.com/p/test"
         response = types.SimpleNamespace(url="https://hcaptcha.com/hsw.js")
 
