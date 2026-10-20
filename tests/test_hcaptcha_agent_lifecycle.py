@@ -137,7 +137,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         factory.assert_called_once_with(
             page=page,
             agent_config=module.settings,
-            library_solving=True,
+            library_solving=False,
             inject_hsw=False,
         )
 

@@ -1088,7 +1088,7 @@ def get_login_hcaptcha_agent(page: Page) -> AgentV:
         agent = EpicAgentV(
             page=page,
             agent_config=settings,
-            library_solving=True,
+            library_solving=False,
             inject_hsw=False,
         )
         agent.restart_on_rejected_round = True
