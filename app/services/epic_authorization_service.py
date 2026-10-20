@@ -199,6 +199,55 @@ class EpicAuthorization:
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
 
+    async def _install_live_xsrf_route(self) -> None:
+        """Send Epic's live XSRF cookie with the login transaction.
+
+        Epic rotates the XSRF-TOKEN cookie on every response, but the account
+        portal keeps the copy it read when it started. A login that spends a
+        minute solving a captcha therefore submits a token the server already
+        replaced, gets `csrf_token_invalid`, and the portal repeats the
+        request with the same captcha. hCaptcha refuses a token it already
+        handed out, so the repeat comes back as `captcha_invalid` and the
+        login looks like a broken captcha.
+
+        The portal's repeat is dropped for the same reason: a second request
+        for the same transaction can only carry the token Epic already used.
+        """
+
+        state = {"last_body": ""}
+
+        async def handler(route):
+            request = route.request
+            header = request.headers.get("x-xsrf-token", "")
+            body = request.post_data or ""
+            if body and body == state["last_body"]:
+                logger.warning("LOGIN_XSRF_REFRESH:repeat_transaction_dropped")
+                await route.abort()
+                return
+            state["last_body"] = body
+            token = ""
+            with suppress(Exception):
+                cookies = await self.page.context.cookies([request.url])
+                token = next(
+                    (
+                        str(cookie.get("value") or "")
+                        for cookie in cookies
+                        if str(cookie.get("name") or "") == "XSRF-TOKEN"
+                    ),
+                    "",
+                )
+            if not token or not header or token == header:
+                await route.continue_()
+                return
+            headers = dict(request.headers)
+            headers["x-xsrf-token"] = token
+            await route.continue_(headers=headers)
+            logger.warning("LOGIN_XSRF_REFRESH:stale_header_replaced")
+
+        with suppress(Exception):
+            await self.page.route("**/id/api/email/exists", handler)
+            logger.debug("Login transaction now sends Epic's live XSRF cookie")
+
     async def _has_cloudflare_security_check(self) -> bool:
         title = ""
         body_text = ""
@@ -590,6 +639,10 @@ class EpicAuthorization:
 
         # 尽可能早地初始化机器人
         agent = get_login_hcaptcha_agent(self.page)
+
+        # The captcha can take a minute to solve, and Epic rotates its XSRF
+        # cookie meanwhile. Keep the login transaction on the live cookie.
+        await self._install_live_xsrf_route()
 
         # {{< SIGN IN PAGE >}}
         logger.debug("Login with Email")

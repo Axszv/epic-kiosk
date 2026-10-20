@@ -20,14 +20,13 @@ from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from browserforge.fingerprints import Screen
-from camoufox import AsyncCamoufox
 from loguru import logger
 from playwright.async_api import ViewportSize
 from pytz import timezone
 
 from services.epic_authorization_service import EpicAuthorization, ErrorType
-from services.epic_games_service import EpicAgent, GameCollectResult
+from services.browser_service import browser_proxy_config, claim_browser
+from services.epic_games_service import EpicAgent, EpicGames, GameCollectResult
 from services.epic_mobile_service import collect_mobile_offers, load_mobile_offers
 from settings import LOG_DIR, RECORD_DIR
 from settings import settings
@@ -41,6 +40,30 @@ init_log(
 
 # Default timezone for scheduling operations
 TIMEZONE = timezone("Asia/Shanghai")
+
+
+async def collect_with_session_recovery(page, auth_agent, mobile_offers):
+    """Retry collection once after an explicitly signed-out Store session."""
+    mobile_results = []
+    for attempt in range(2):
+        game_result = await EpicAgent(page).collect_epic_games()
+        login_required = game_result == GameCollectResult.COOKIE_INVALID
+        if not login_required and mobile_offers:
+            mobile_results = await collect_mobile_offers(page, mobile_offers)
+            login_required = any(
+                result.get("status") == "login_required" for result in mobile_results
+            )
+        if not login_required:
+            return game_result, mobile_results, ErrorType.SUCCESS
+        if attempt == 1:
+            return game_result, mobile_results, ErrorType.COOKIE_INVALID
+
+        logger.warning("STORE_SESSION_RECOVERY:starting:attempt=1/1")
+        auth_result = await auth_agent.reauthenticate_store()
+        if auth_result != ErrorType.SUCCESS:
+            return game_result, mobile_results, auth_result
+        EpicGames.reset_order_history_session(page)
+        logger.info("STORE_SESSION_RECOVERY:authenticated:retrying_collection")
 
 
 @logger.catch
@@ -63,30 +86,14 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
     # 🌐 代理配置：从环境变量读取（支持 WARP 等 HTTP 代理）
     # 格式: HTTP_PROXY=http://host:port
     # ============================================================
-    proxy_config = None
-    http_proxy = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
-    if http_proxy:
-        from urllib.parse import urlparse
-        parsed = urlparse(http_proxy)
-        proxy_config = {
-            "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
-        }
-        if parsed.username:
-            proxy_config["username"] = parsed.username
-        if parsed.password:
-            proxy_config["password"] = parsed.password
-        logger.info(f"🌐 使用代理: {parsed.hostname}:{parsed.port}")
+    proxy_config = browser_proxy_config()
+    if proxy_config:
+        logger.info("BROWSER_PROXY:enabled")
 
-    # Configure browser with anti-detection features
-    async with AsyncCamoufox(
-        persistent_context=True,
-        user_data_dir=settings.user_data_dir,
-        screen=Screen(max_width=1920, max_height=1080, min_height=1080, min_width=1920),
-        humanize=0.2,
+    async with claim_browser(
+        settings.user_data_dir,
         headless=headless,
         proxy=proxy_config,
-        # Avoid Camoufox/Juggler response-body failures on compressed hCaptcha scripts.
-        extra_http_headers={"Accept-Encoding": "identity"},
     ) as browser:
         # Initialize or reuse existing browser page
         page = browser.pages[0] if browser.pages else await browser.new_page()
@@ -119,13 +126,15 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
         # ============================================================
         logger.debug("Starting free games collection process")
         # 使用已认证的页面，而不是创建新页面
-        agent = EpicAgent(page)
-        game_result = await agent.collect_epic_games()
-
         mobile_offers = load_mobile_offers(os.getenv("MOBILE_OFFERS_JSON", ""))
+        game_result, mobile_results, auth_result = await collect_with_session_recovery(
+            page, auth_agent, mobile_offers
+        )
+        if auth_result != ErrorType.SUCCESS:
+            logger.error(f"❌ ERROR_TYPE:{auth_result.value}")
+            return auth_result
+
         if mobile_offers:
-            logger.info(f"MOBILE_COLLECTION_START:offers={len(mobile_offers)}")
-            mobile_results = await collect_mobile_offers(page, mobile_offers)
             successful_statuses = {
                 "already_owned",
                 "verified_owned",

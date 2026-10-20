@@ -115,6 +115,11 @@ class EpicAgentV(AgentV):
         self._challenge_page_index = 0
         self._original_capture_spatial_mapping = self.robotic_arm._capture_spatial_mapping
         self.robotic_arm._capture_spatial_mapping = self._capture_challenge_page
+        # hCaptcha can change the task type between the pages of a payload.
+        # Upstream answers every crumb of a payload with the first page's
+        # type, so answer one page per round and classify the newly rendered
+        # challenge again.
+        self.robotic_arm.check_crumb_count = self._single_crumb_count
         # Upstream executes the model's start coordinate verbatim. Visual
         # models often identify the correct target while missing the small
         # draggable tile by tens of pixels, so align the start with the actual
@@ -128,6 +133,9 @@ class EpicAgentV(AgentV):
         self._challenge_page_index = int(crumb_id)
         print(f"HCAPTCHA_PAGE:{self._challenge_page_index + 1}", flush=True)
         return await self._original_capture_spatial_mapping(frame, cache_key, crumb_id)
+
+    async def _single_crumb_count(self) -> int:
+        return 1
 
     @staticmethod
     def _captcha_pass_metadata(response) -> str:
@@ -742,20 +750,12 @@ class EpicAgentV(AgentV):
                     logger.debug(
                         "hCaptcha challenge frame closed; waiting for the server result"
                     )
-                    closed_deadline = min(
-                        response_deadline,
-                        time.monotonic() + 10,
-                    )
-                    while time.monotonic() < closed_deadline:
-                        if not self._captcha_response_queue.empty():
-                            break
-                        await self.page.wait_for_timeout(250)
-                    else:
-                        logger.warning(
-                            "hCaptcha frame closed without a validated server response"
-                        )
-                        return ChallengeSignal.FAILURE
-                    break
+                    # hCaptcha replaces the challenge view as soon as the
+                    # answers are submitted. The validated server response
+                    # arrives after the frame is gone, so keep waiting for it
+                    # instead of failing on the closed frame.
+                    await self.page.wait_for_timeout(250)
+                    continue
                 await self.page.wait_for_timeout(250)
             else:
                 logger.error(

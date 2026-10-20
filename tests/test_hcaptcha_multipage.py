@@ -48,18 +48,23 @@ class UpstreamAgent:
         for page_index in range(await self.robotic_arm.check_crumb_count()):
             await self.robotic_arm._capture_spatial_mapping(None, "cache", page_index)
             self.solved_pages.append((payload.kind, page_index))
-            if page_index + 1 == payload.pages:
-                if payload.next_payload is not None:
-                    self._captcha_payload_queue.put_nowait(payload.next_payload)
-                else:
-                    self._captcha_response_queue.put_nowait(
-                        types.SimpleNamespace(is_pass=payload.accepted)
-                    )
+            payload.remaining -= 1
+            if payload.remaining > 0:
+                # hCaptcha renders the next page of a payload as a fresh
+                # challenge, and the task type can change between pages.
+                self._captcha_payload_queue.put_nowait(payload)
+            elif payload.next_payload is not None:
+                self._captcha_payload_queue.put_nowait(payload.next_payload)
+            else:
+                self._captcha_response_queue.put_nowait(
+                    types.SimpleNamespace(is_pass=payload.accepted)
+                )
 
 
 def payload(pages=2, kind="image_label_multi_select", accepted=True, next_payload=None):
     return types.SimpleNamespace(
-        pages=pages, kind=kind, accepted=accepted, next_payload=next_payload
+        pages=pages, kind=kind, accepted=accepted, next_payload=next_payload,
+        remaining=pages,
     )
 
 
@@ -88,8 +93,13 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         result = await self.agent.wait_for_challenge()
 
         self.assertEqual(result, Signal.SUCCESS)
+        # One page per round: the second page arrives as a fresh challenge and
+        # is classified again, because the task type can change between pages.
         self.assertEqual(self.agent.solved_pages, [
-            ("image_label_multi_select", 0), ("image_label_multi_select", 1)
+            ("image_label_multi_select", 0), ("image_label_multi_select", 0)
+        ])
+        self.assertEqual(self.agent.classified_types, [
+            "image_label_multi_select", "image_label_multi_select"
         ])
         self.agent._cache_validated_captcha_response.assert_called_once()
         self.agent._retry_unanswered_challenge.assert_not_awaited()
@@ -101,7 +111,9 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         result = await self.agent.wait_for_challenge()
 
         self.assertEqual(result, Signal.SUCCESS)
-        self.assertEqual(self.agent.classified_types, ["image_label_multi_select", "image_drag_multi"])
+        self.assertEqual(self.agent.classified_types, [
+            "image_label_multi_select", "image_label_multi_select", "image_drag_multi"
+        ])
         self.assertEqual(len(self.agent.solved_pages), 3)
         self.assertEqual(self.agent._challenge_page_index, 0)
 

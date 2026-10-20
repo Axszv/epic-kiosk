@@ -27,6 +27,18 @@ on:
         description: "Use a temporary uncached browser profile for a manual diagnostic run."
         required: false
         default: "false"
+      use_browser_proxy:
+        description: "Use the EPIC_BROWSER_PROXY secret for a manual network comparison."
+        required: false
+        default: "false"
+      proxy_check_only:
+        description: "Only check the enabled proxy's connectivity and egress consistency; do not sign in."
+        required: false
+        default: "false"
+      worker_proxyip:
+        description: "Optional public IP to pin the edgetunnel Worker's reverse-proxy target for this run."
+        required: false
+        default: ""
       confirm_delay_ms:
         description: "Delay the first confirm-order request so the Talon hCaptcha callback can settle."
         required: false
@@ -75,6 +87,9 @@ jobs:
       CHECKOUT_CONFIRM_DELAY_MS: ${{ github.event.inputs.confirm_delay_ms || '0' }}
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
       PYTHONUNBUFFERED: "1"
+      # Scheduled runs always use the browser proxy when one is configured.
+      # Manual runs opt in through the use_browser_proxy input.
+      EPIC_BROWSER_PROXY_ENABLED: ${{ github.event_name == 'schedule' || github.event.inputs.use_browser_proxy == 'true' }}
 
     steps:
       - name: Checkout
@@ -154,13 +169,36 @@ jobs:
           restore-keys: |
             epic-state-v2-
 
+      - name: Prepare browser proxy
+        if: env.EPIC_BROWSER_PROXY_ENABLED == 'true'
+        # A proxy outage must not skip the weekly claim. The claim then runs
+        # with the runner's direct connection instead.
+        continue-on-error: true
+        env:
+          EPIC_BROWSER_PROXY: ${{ secrets.EPIC_BROWSER_PROXY }}
+          EPIC_PROXY_EGRESS_CHECK: ${{ github.event.inputs.proxy_check_only || 'false' }}
+          EPIC_WORKER_PROXYIP: ${{ github.event.inputs.worker_proxyip || '' }}
+        run: python scripts/prepare_browser_proxy.py
+
       - name: Run Epic claim
         env:
+          EPIC_USE_BROWSER_PROXY: ${{ env.EPIC_BROWSER_PROXY_ENABLED }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
-        run: python scripts/github_actions_claim_once.py
+        run: |
+          if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
+            echo "::warning::No browser proxy is available; continuing with the runner's direct connection"
+          fi
+          python scripts/github_actions_claim_once.py
+
+      - name: Stop browser proxy
+        if: always()
+        run: |
+          if [[ "${EPIC_BROWSER_PROXY_PID:-}" =~ ^[0-9]+$ ]]; then
+            kill "$EPIC_BROWSER_PROXY_PID" 2>/dev/null || true
+          fi
 
       - name: Save browser state
         if: always()
