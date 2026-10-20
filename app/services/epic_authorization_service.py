@@ -274,9 +274,59 @@ class EpicAuthorization:
         self._email_transaction_failure_signal = asyncio.Queue()
         self._refresh_csrf_seen = False
         self._login_error_code = None  # 存储登录错误码
+        self._login_point_url = ""
 
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
+
+    async def _install_live_xsrf_route(self) -> None:
+        """Send Epic's live XSRF cookie with the login transaction.
+
+        Epic rotates the XSRF-TOKEN cookie on every response, but the account
+        portal keeps the copy it read when it started. A login that spends a
+        minute solving a captcha therefore submits a token the server already
+        replaced, gets `csrf_token_invalid`, and the portal repeats the
+        request with the same captcha. hCaptcha refuses a token it already
+        handed out, so the repeat comes back as `captcha_invalid` and the
+        login looks like a broken captcha.
+
+        The portal's repeat is dropped for the same reason: a second request
+        for the same transaction can only carry the token Epic already used.
+        """
+
+        state = {"last_body": ""}
+
+        async def handler(route):
+            request = route.request
+            header = request.headers.get("x-xsrf-token", "")
+            body = request.post_data or ""
+            if body and body == state["last_body"]:
+                logger.warning("LOGIN_XSRF_REFRESH:repeat_transaction_dropped")
+                await route.abort()
+                return
+            state["last_body"] = body
+            token = ""
+            with suppress(Exception):
+                cookies = await self.page.context.cookies([request.url])
+                token = next(
+                    (
+                        str(cookie.get("value") or "")
+                        for cookie in cookies
+                        if str(cookie.get("name") or "") == "XSRF-TOKEN"
+                    ),
+                    "",
+                )
+            if not token or not header or token == header:
+                await route.continue_()
+                return
+            headers = dict(request.headers)
+            headers["x-xsrf-token"] = token
+            await route.continue_(headers=headers)
+            logger.warning("LOGIN_XSRF_REFRESH:stale_header_replaced")
+
+        with suppress(Exception):
+            await self.page.route("**/id/api/email/exists", handler)
+            logger.debug("Login transaction now sends Epic's live XSRF cookie")
 
     async def _has_cloudflare_security_check(self) -> bool:
         title = ""
@@ -736,12 +786,44 @@ class EpicAuthorization:
             await self._save_page_debug("account_validation_timeout")
             logger.warning("⚠️ 账号验证阶段未观察到 refresh-csrf，继续依赖已有会话状态")
 
-    async def _resume_login_form(self) -> bool:
-        """Continue the visible login step after a rejected/expired challenge."""
-        for field, button_id, value in (
+    async def _restart_email_challenge(self) -> bool:
+        """Start a fresh hCaptcha transaction for the email step.
+
+        hCaptcha keeps the whole interaction of a challenge in its plan, and
+        Epic refuses a transaction whose plan contains a wrong answer. A new
+        page is the only way to get a challenge with a clean plan.
+        """
+        login_url = self._login_point_url
+        if not login_url:
+            return False
+        with suppress(Exception):
+            await self.page.goto(login_url, wait_until="domcontentloaded")
+            await self.page.wait_for_timeout(1500)
+            email_box = self.page.locator("#email")
+            await email_box.wait_for(state="visible", timeout=60000)
+            await email_box.clear()
+            await email_box.type(settings.EPIC_EMAIL)
+            continue_button = self.page.locator("#continue")
+            await expect(continue_button).to_be_enabled(timeout=30000)
+            await continue_button.click(timeout=5000, no_wait_after=True)
+            logger.warning("邮箱步骤 hCaptcha 被拒，重新开始一次全新的挑战")
+            return True
+        logger.warning("邮箱步骤 hCaptcha 被拒，但无法开始新的挑战")
+        return False
+
+    async def _resume_login_form(self, include_email: bool = True) -> bool:
+        """Continue the visible login step after a rejected/expired challenge.
+
+        The email step is only resumed on request. Submitting the email form
+        again repeats the same hCaptcha transaction with a token the server
+        already used, and Epic answers that with `captcha_invalid`.
+        """
+        steps = [
             ("#password", "#sign-in", settings.EPIC_PASSWORD.get_secret_value()),
-            ("#email", "#continue", settings.EPIC_EMAIL),
-        ):
+        ]
+        if include_email:
+            steps.append(("#email", "#continue", settings.EPIC_EMAIL))
+        for field, button_id, value in steps:
             with suppress(Exception):
                 box = self.page.locator(field)
                 button = self.page.locator(button_id).first
@@ -774,6 +856,10 @@ class EpicAuthorization:
         # 尽可能早地初始化机器人
         agent = get_login_hcaptcha_agent(self.page)
 
+        # The captcha can take a minute to solve, and Epic rotates its XSRF
+        # cookie meanwhile. Keep the login transaction on the live cookie.
+        await self._install_live_xsrf_route()
+
         # {{< SIGN IN PAGE >}}
         logger.debug("Login with Email")
 
@@ -786,6 +872,7 @@ class EpicAuthorization:
 
         try:
             point_url = login_url or "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
+            self._login_point_url = point_url
             logger.warning("LOGIN_STAGE:open_login")
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
@@ -903,7 +990,10 @@ class EpicAuthorization:
 
             async def retrigger_security_check():
                 """Reopen Epic/Talon security checks after a stale challenge."""
-                for selector in ("#talon_error_container_login_prod button",):
+                for selector in (
+                    "#talon_error_container_email_exists_prod button",
+                    "#talon_error_container_login_prod button",
+                ):
                     with suppress(Exception):
                         button = self.page.locator(selector).first
                         if await button.is_visible(timeout=1500):
@@ -911,11 +1001,10 @@ class EpicAuthorization:
                             await button.click(timeout=3000)
                             await self.page.wait_for_timeout(3000)
                             return
-                await self._resume_login_form()
+                await self._resume_login_form(include_email=False)
 
             async def keep_login_flow_alive():
-                """Resume either form step without competing with a visible challenge."""
-                email_resumes = 0
+                """Resume the password step without competing with a challenge."""
                 while not result_task.done():
                     await self.page.wait_for_timeout(8000)
                     if result_task.done():
@@ -930,16 +1019,12 @@ class EpicAuthorization:
                             or await self._has_hcaptcha_challenge()
                         ):
                             continue
+                        # The email step is never resumed here. Clicking
+                        # `#continue` again repeats the same hCaptcha
+                        # transaction with a token Epic already used, and the
+                        # second answer comes back as `captcha_invalid`.
                         if await self._password_form_ready():
-                            await self._resume_login_form()
-                        elif await self.page.locator("#continue").is_visible():
-                            if email_resumes >= 3:
-                                self._is_login_success_signal.put_nowait(
-                                    {"error": True, "code": "email_captcha_resume_exhausted"}
-                                )
-                                return
-                            if await self._resume_login_form():
-                                email_resumes += 1
+                            await self._resume_login_form(include_email=False)
 
             async def handle_captcha():
                 """Handle every hCaptcha round until Epic accepts the login."""
@@ -1050,6 +1135,12 @@ class EpicAuthorization:
                         signal = getattr(challenge_result, "value", challenge_result)
                         captcha_round_failed = signal != "success"
                         logger.warning(f"LOGIN_CAPTCHA_RESULT:{signal}")
+                        if signal == "retry":
+                            # hCaptcha refused the answer and its plan now
+                            # holds that wrong answer. Start a new challenge.
+                            agent = replace_login_hcaptcha_agent(self.page)
+                            if not await self._restart_email_challenge():
+                                return
                     except Exception as e:
                         captcha_round_failed = True
                         logger.warning(f"登录 hCaptcha 处理异常 [{captcha_attempt}/12]: {e}")

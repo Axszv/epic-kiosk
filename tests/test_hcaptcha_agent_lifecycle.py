@@ -65,7 +65,12 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("wait_for_challenge_start", source)
         self.assertIn("hCaptcha issued another round after submission", source)
         self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
-        self.assertIn("frame closed without a validated server response", source)
+        # A closed challenge frame is the normal state right after the
+        # answers are submitted, so the validated server response decides.
+        self.assertIn(
+            "hCaptcha challenge frame closed; waiting for the server result", source
+        )
+        self.assertNotIn("frame closed without a validated server response", source)
         self.assertIn("_perform_drag_drop_with_dom_source", source)
         self.assertIn("_match_drag_user_prompt", source)
         self.assertIn("PIPE_ROUTE_DRAG_PROMPT", source)

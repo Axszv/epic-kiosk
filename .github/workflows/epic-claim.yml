@@ -102,6 +102,9 @@ jobs:
       EPIC_BROWSER_ENGINE: ${{ github.event.inputs.browser_engine || 'camoufox' }}
       EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'true' }}
       HCAPTCHA_VISUAL_ONLY: ${{ github.event.inputs.captcha_visual_only || 'false' }}
+      # Scheduled runs always use the browser proxy when one is configured.
+      # Manual runs opt in through the use_browser_proxy input.
+      EPIC_BROWSER_PROXY_ENABLED: ${{ github.event_name == 'schedule' || github.event.inputs.use_browser_proxy == 'true' }}
 
     steps:
       - name: Checkout
@@ -200,7 +203,10 @@ jobs:
             epic-state-v2-
 
       - name: Prepare browser proxy
-        if: github.event.inputs.use_browser_proxy == 'true'
+        if: env.EPIC_BROWSER_PROXY_ENABLED == 'true'
+        # A proxy outage must not skip the weekly claim. The claim then runs
+        # with the runner's direct connection instead.
+        continue-on-error: true
         env:
           EPIC_BROWSER_PROXY: ${{ secrets.EPIC_BROWSER_PROXY }}
           EPIC_PROXY_EGRESS_CHECK: ${{ github.event.inputs.proxy_check_only || 'false' }}
@@ -210,15 +216,14 @@ jobs:
       - name: Run Epic claim
         if: github.event.inputs.proxy_check_only != 'true'
         env:
-          EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
+          EPIC_USE_BROWSER_PROXY: ${{ env.EPIC_BROWSER_PROXY_ENABLED }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
         run: |
           if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
-            echo "::error::EPIC_BROWSER_PROXY secret is required for this network comparison"
-            exit 1
+            echo "::warning::No browser proxy is available; continuing with the runner's direct connection"
           fi
           python scripts/github_actions_claim_once.py
 

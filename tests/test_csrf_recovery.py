@@ -32,7 +32,8 @@ for node in tree.body:
         selected.append(node)
     elif isinstance(node, ast.ClassDef) and node.name == "EpicAuthorization":
         node.body = [method for method in node.body if isinstance(method, ast.AsyncFunctionDef)
-                     and method.name in {"_take_email_transaction_failure", "_login"}]
+                     and method.name in {"_take_email_transaction_failure", "_login",
+                                         "_install_live_xsrf_route"}]
         selected.append(node)
 namespace = dict(
     suppress=suppress, hashlib=hashlib, json=json, unquote=unquote, urlsplit=urlsplit, Enum=Enum,

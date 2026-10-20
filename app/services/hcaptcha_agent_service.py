@@ -141,6 +141,10 @@ class EpicAgentV(AgentV):
         self.robotic_arm._perform_drag_drop = self._perform_drag_drop_with_dom_source
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
+        # hCaptcha keeps the whole interaction of a challenge in its plan and
+        # Epic refuses a transaction whose plan holds a wrong answer, so the
+        # login agent has to end its wait after a rejected round.
+        self.restart_on_rejected_round = False
         self.robotic_arm.challenge_image_label_select = self._select_image_local_points
 
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
@@ -159,7 +163,18 @@ class EpicAgentV(AgentV):
         native = cache_key / f"{cache_key.name}_{crumb_id}_native.png"
         raw = cache_key / f"{cache_key.name}_{crumb_id}_challenge_view.png"
         grid = cache_key / f"{cache_key.name}_{crumb_id}_spatial_helper.png"
-        await frame.locator(".challenge-view").screenshot(path=native, type="png", scale="css")
+        # The image grid is filled in after the challenge view appears, and
+        # a screenshot taken in that moment is blank. The model then answers
+        # an empty grid, hCaptcha rejects the answer, and Epic refuses the
+        # token that follows.
+        for attempt in range(6):
+            await frame.locator(".challenge-view").screenshot(
+                path=native, type="png", scale="css"
+            )
+            if not self._challenge_capture_is_blank(native):
+                break
+            print(f"HCAPTCHA_IMAGE:blank:attempt={attempt + 1}", flush=True)
+            await self.page.wait_for_timeout(1500)
         with Image.open(native) as original:
             native_size = original.size
             # Flash sometimes returns normalized 0..1000 coordinates despite
@@ -189,6 +204,18 @@ class EpicAgentV(AgentV):
                 for source in (native, raw, grid):
                     shutil.copyfile(source, RUNTIME_DIR / source.name)
         return raw, grid, size
+
+    @staticmethod
+    def _challenge_capture_is_blank(path) -> bool:
+        """Return whether a challenge capture holds no picture at all."""
+        try:
+            from PIL import Image, ImageStat
+
+            with Image.open(path) as image:
+                stat = ImageStat.Stat(image.convert("L"))
+            return stat.stddev[0] < 3.0
+        except Exception:
+            return False
 
     @staticmethod
     def _local_point_positions(points, image_size):
@@ -888,6 +915,10 @@ class EpicAgentV(AgentV):
                     self._cache_validated_captcha_response(response)
                     return ChallengeSignal.SUCCESS
                 logger.warning("hCaptcha rejected the submitted round; checking for the next round")
+                if getattr(self, "restart_on_rejected_round", False):
+                    # The widget stays poisoned, so the caller has to start a
+                    # new challenge instead of answering the same one again.
+                    return ChallengeSignal.RETRY
 
             round_number += 1
             logger.debug(
@@ -938,20 +969,12 @@ class EpicAgentV(AgentV):
                     logger.debug(
                         "hCaptcha challenge frame closed; waiting for the server result"
                     )
-                    closed_deadline = min(
-                        response_deadline,
-                        time.monotonic() + 10,
-                    )
-                    while time.monotonic() < closed_deadline:
-                        if not self._captcha_response_queue.empty():
-                            break
-                        await self.page.wait_for_timeout(250)
-                    else:
-                        logger.warning(
-                            "hCaptcha frame closed without a validated server response"
-                        )
-                        return ChallengeSignal.FAILURE
-                    break
+                    # hCaptcha replaces the challenge view as soon as the
+                    # answers are submitted. The validated server response
+                    # arrives after the frame is gone, so keep waiting for it
+                    # instead of failing on the closed frame.
+                    await self.page.wait_for_timeout(250)
+                    continue
                 await self.page.wait_for_timeout(250)
             else:
                 logger.error(
@@ -1050,6 +1073,7 @@ def get_login_hcaptcha_agent(page: Page) -> AgentV:
     agent = _AGENTS.get(page)
     if agent is None:
         agent = EpicAgentV(page=page, agent_config=settings)
+        agent.restart_on_rejected_round = True
         _AGENTS[page] = agent
         logger.debug("Created the multi-round hCaptcha agent for Epic login")
     return agent
@@ -1062,6 +1086,7 @@ def replace_login_hcaptcha_agent(page: Page) -> AgentV:
         _detach_hcaptcha_agent(page, previous)
 
     agent = EpicAgentV(page=page, agent_config=settings)
+    agent.restart_on_rejected_round = True
     _AGENTS[page] = agent
     logger.debug("Replaced multi-round hCaptcha agent for a fresh Epic login transaction")
     return agent
