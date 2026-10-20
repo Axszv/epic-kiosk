@@ -287,11 +287,25 @@ class EpicAuthorization:
         already replaced. The first request is then rejected with
         `csrf_token_invalid` and the portal retries with the same captcha,
         which hCaptcha refuses because it was already used.
+
+        The portal's automatic repeat is dropped for the same reason: a
+        second request for the same transaction can only carry the token
+        Epic has already refused.
         """
+
+        state = {"last_body": ""}
 
         async def handler(route):
             request = route.request
             header = request.headers.get("x-xsrf-token", "")
+            body = request.post_data or ""
+            if body and body == state["last_body"]:
+                # The portal repeats the same transaction within a second.
+                # That repeat can only carry the token Epic already used.
+                logger.warning("LOGIN_XSRF_REFRESH:repeat_transaction_dropped")
+                await route.abort()
+                return
+            state["last_body"] = body
             token = ""
             with suppress(Exception):
                 cookies = await self.page.context.cookies([request.url])

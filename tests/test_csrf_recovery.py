@@ -134,12 +134,14 @@ class CsrfRecoveryTests(unittest.IsolatedAsyncioTestCase):
 class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
     """The login transaction must carry Epic's live XSRF cookie."""
 
-    def build_page(self, cookies):
+    def build_page(self, cookies, body="{\"captcha\": \"first\"}"):
         route = SimpleNamespace(
             continue_=AsyncMock(),
+            abort=AsyncMock(),
             request=SimpleNamespace(
                 url="https://www.epicgames.com/id/api/email/exists",
                 headers={"x-xsrf-token": "stale-value"},
+                post_data=body,
             ),
         )
         context = SimpleNamespace(cookies=AsyncMock(return_value=cookies))
@@ -172,6 +174,34 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
         handler = page.route.await_args.args[1]
         await handler(route)
         route.continue_.assert_awaited_once_with()
+
+    async def test_repeated_transaction_is_dropped(self):
+        auth = namespace["EpicAuthorization"]()
+        page, route = self.build_page([{"name": "XSRF-TOKEN", "value": "stale-value"}])
+        auth.page = page
+
+        await auth._install_live_xsrf_route()
+
+        handler = page.route.await_args.args[1]
+        await handler(route)
+        # The portal repeats the same transaction with the same captcha token.
+        await handler(route)
+        route.abort.assert_awaited_once()
+        self.assertEqual(route.continue_.await_count, 1)
+
+    async def test_a_new_transaction_is_allowed(self):
+        auth = namespace["EpicAuthorization"]()
+        page, route = self.build_page([{"name": "XSRF-TOKEN", "value": "live-value"}])
+        auth.page = page
+
+        await auth._install_live_xsrf_route()
+
+        handler = page.route.await_args.args[1]
+        await handler(route)
+        route.request.post_data = "{\"captcha\": \"second\"}"
+        await handler(route)
+        route.abort.assert_not_awaited()
+        self.assertEqual(route.continue_.await_count, 2)
 
 
 class CsrfDiagnosticTests(unittest.TestCase):
