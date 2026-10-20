@@ -94,18 +94,19 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ScheduledProxyTests(unittest.TestCase):
-    def test_scheduled_runs_use_the_browser_proxy(self):
+    def test_the_schedule_keeps_the_runners_own_connection(self):
+        # The cached browser profile and the account session belong to the
+        # address that created them. A scheduled run behind another address
+        # would throw the session away and need a captcha every week.
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertIn(
-            "EPIC_BROWSER_PROXY_ENABLED: ${{ github.event_name == 'schedule' "
-            "|| github.event.inputs.use_browser_proxy == 'true' }}",
-            workflow,
-        )
+        self.assertNotIn("EPIC_BROWSER_PROXY_ENABLED", workflow)
         proxy_start = workflow.index("      - name: Prepare browser proxy")
         proxy_end = workflow.index("      - name: Run Epic claim", proxy_start)
         proxy_step = workflow[proxy_start:proxy_end]
-        self.assertIn("if: env.EPIC_BROWSER_PROXY_ENABLED == 'true'", proxy_step)
+        self.assertIn(
+            "if: github.event.inputs.use_browser_proxy == 'true'", proxy_step
+        )
         # A proxy outage must not skip the weekly claim.
         self.assertIn("continue-on-error: true", proxy_step)
 

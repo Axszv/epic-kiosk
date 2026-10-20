@@ -87,9 +87,6 @@ jobs:
       CHECKOUT_CONFIRM_DELAY_MS: ${{ github.event.inputs.confirm_delay_ms || '0' }}
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
       PYTHONUNBUFFERED: "1"
-      # Scheduled runs always use the browser proxy when one is configured.
-      # Manual runs opt in through the use_browser_proxy input.
-      EPIC_BROWSER_PROXY_ENABLED: ${{ github.event_name == 'schedule' || github.event.inputs.use_browser_proxy == 'true' }}
 
     steps:
       - name: Checkout
@@ -170,7 +167,7 @@ jobs:
             epic-state-v2-
 
       - name: Prepare browser proxy
-        if: env.EPIC_BROWSER_PROXY_ENABLED == 'true'
+        if: github.event.inputs.use_browser_proxy == 'true'
         # A proxy outage must not skip the weekly claim. The claim then runs
         # with the runner's direct connection instead.
         continue-on-error: true
@@ -182,7 +179,7 @@ jobs:
 
       - name: Run Epic claim
         env:
-          EPIC_USE_BROWSER_PROXY: ${{ env.EPIC_BROWSER_PROXY_ENABLED }}
+          EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
