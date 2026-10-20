@@ -239,7 +239,7 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
                     ], (500, 470))
         view.click.assert_not_awaited()
 
-    async def test_point_pages_retry_invalid_answer_before_clicking_and_submit_once(self):
+    async def test_point_pages_retry_invalid_answer_before_clicking_and_submit_every_page(self):
         arm = self.agent.robotic_arm
         arm.signal_crumb_count = 2
         frames = [MagicMock(), MagicMock()]
@@ -261,10 +261,7 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arm._spatial_point_reasoner.await_count, 3)
         self.assertIn("previous answer was invalid", arm._spatial_point_reasoner.await_args_list[1].kwargs["auxiliary_information"])
         self.assertEqual([call.args[0] for call in self.agent._click_image_points.await_args_list], frames)
-        # Only the last page of a payload may be submitted. A Verify in
-        # between makes hCaptcha answer with an incomplete plan, and Epic
-        # rejects the resulting token.
-        self.assertEqual(arm.click_by_mouse.await_count, 1)
+        self.assertEqual(arm.click_by_mouse.await_count, 2)
 
     async def test_closed_point_frame_preserves_a_pass_arriving_during_inference(self):
         arm = self.agent.robotic_arm
