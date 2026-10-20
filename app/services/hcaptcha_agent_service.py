@@ -284,7 +284,11 @@ class EpicAgentV(AgentV):
                 break
             logger.debug(f"[{cid + 1}/{crumb_count}] Local point answer: {response.log_message}")
             await self._click_image_points(frame, response.points, size)
-            await arm.click_by_mouse(frame.locator("div.button-submit.button"))
+            if cid + 1 == crumb_count:
+                # Only the last page of a payload may be submitted. Clicking
+                # Verify in between makes hCaptcha answer with an incomplete
+                # plan, and Epic rejects the resulting token.
+                await arm.click_by_mouse(frame.locator("div.button-submit.button"))
 
     @staticmethod
     def _captcha_pass_metadata(response) -> str:
