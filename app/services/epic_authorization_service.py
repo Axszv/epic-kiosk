@@ -219,9 +219,9 @@ class EpicAuthorization:
                 endpoint, headers=headers, timeout=30000
             )
         except Exception as err:
-            logger.warning(f"ACCOUNT_SESSION_PROBE:failed:{type(err).__name__}")
+            print(f"ACCOUNT_SESSION_PROBE:failed:{type(err).__name__}", flush=True)
             return False
-        logger.info(f"ACCOUNT_SESSION_PROBE:status={response.status}")
+        print(f"ACCOUNT_SESSION_PROBE:status={response.status}", flush=True)
         return response.status == 200
 
     async def _install_live_xsrf_route(self) -> None:
