@@ -105,6 +105,8 @@ class EpicAgentV(AgentV):
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
         super().__init__(*args, **kwargs)
+        with suppress(Exception):
+            self.page.on("requestfailed", self._log_failed_request)
         # Upstream requires an exact visible `.challenge-view`, which misses
         # Epic's hCaptcha when it is nested inside the purchase iframe.
         self.robotic_arm.get_challenge_frame_locator = (
@@ -129,10 +131,67 @@ class EpicAgentV(AgentV):
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
 
+    def _log_failed_request(self, request) -> None:
+        """Report blocked image requests; hCaptcha's grid then stays empty."""
+        url = str(getattr(request, "url", "") or "")
+        if "hcaptcha" not in url and "epicgames" not in url:
+            return
+        failure = str(getattr(request, "failure", "") or "")
+        logger.warning(f"HCAPTCHA_REQUEST_FAILED:{url.split('?')[0]}:{failure}")
+
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
         self._challenge_page_index = int(crumb_id)
         print(f"HCAPTCHA_PAGE:{self._challenge_page_index + 1}", flush=True)
+        await self._wait_for_challenge_images(frame)
         return await self._original_capture_spatial_mapping(frame, cache_key, crumb_id)
+
+    async def _wait_for_challenge_images(self, frame, timeout_ms: int = 20000) -> bool:
+        """Wait until hCaptcha's tile images are really rendered.
+
+        The challenge view is visible before its images arrive, and a
+        screenshot of that moment is blank. The model then answers an empty
+        grid, hCaptcha rejects the answer, and Epic refuses the token.
+        """
+        deadline = time.monotonic() + timeout_ms / 1000
+        reported = False
+        if frame is None:
+            return True
+        while time.monotonic() < deadline:
+            state = {}
+            with suppress(Exception):
+                state = await frame.evaluate(
+                    """() => {
+                        const tiles = Array.from(document.querySelectorAll(
+                            '.challenge-view .task-image, .challenge-view img,'
+                            + ' .challenge-view canvas'
+                        ));
+                        const loaded = tiles.filter(tile => {
+                            if (tile.tagName === 'IMG') {
+                                return tile.complete && tile.naturalWidth > 0;
+                            }
+                            if (tile.tagName === 'CANVAS') {
+                                return tile.width > 0 && tile.height > 0;
+                            }
+                            const background = getComputedStyle(tile).backgroundImage;
+                            return background && background !== 'none';
+                        });
+                        return {tiles: tiles.length, loaded: loaded.length};
+                    }"""
+                )
+            tiles = int(state.get("tiles") or 0)
+            loaded = int(state.get("loaded") or 0)
+            if tiles and loaded >= tiles:
+                if reported:
+                    logger.info(f"HCAPTCHA_IMAGES:ready:tiles={tiles}")
+                return True
+            if not reported:
+                logger.warning(
+                    f"HCAPTCHA_IMAGES:waiting:tiles={tiles}:loaded={loaded}"
+                )
+                reported = True
+            await self.page.wait_for_timeout(250)
+        logger.warning("HCAPTCHA_IMAGES:timeout:the challenge tiles are still empty")
+        return False
 
     async def _single_crumb_count(self) -> int:
         return 1
