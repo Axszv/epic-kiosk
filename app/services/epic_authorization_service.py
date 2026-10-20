@@ -472,6 +472,13 @@ class EpicAuthorization:
                 )
                 signal = getattr(result, "value", result)
                 logger.warning(f"EMAIL_CAPTCHA_RESULT:{signal}")
+                if signal == "retry":
+                    # hCaptcha refused the answer and its plan now holds that
+                    # wrong answer. Start a fresh challenge.
+                    agent = replace_login_hcaptcha_agent(self.page)
+                    if not await self._restart_email_challenge():
+                        break
+                    continue
                 if signal != "success":
                     if not self._email_transaction_failure_signal.empty():
                         return True
