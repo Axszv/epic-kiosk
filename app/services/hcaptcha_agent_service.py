@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import math
 import os
+import random
 import time
 from contextlib import suppress
 from typing import Any
@@ -219,9 +220,18 @@ class EpicAgentV(AgentV):
                 raise InvalidChallengeCoordinates("Challenge image is no longer visible")
             # Locator clicks handle iframe offsets and scrolling; re-read size
             # after inference and before each click in case the layout moved.
-            await view.click(position={"x": x * box["width"], "y": y * box["height"]},
-                             delay=180, timeout=3000)
-            await self.page.wait_for_timeout(500)
+            target_x = box["x"] + x * box["width"]
+            target_y = box["y"] + y * box["height"]
+            # Move the pointer onto the answer instead of teleporting onto it.
+            # hCaptcha records the whole interaction, and Epic rejects a
+            # transaction whose plan looks like an instant hit on the exact
+            # centre of every tile.
+            await self.page.mouse.move(target_x, target_y, steps=random.randint(8, 16))
+            await self.page.wait_for_timeout(random.randint(120, 320))
+            await self.page.mouse.down()
+            await self.page.wait_for_timeout(random.randint(40, 110))
+            await self.page.mouse.up()
+            await self.page.wait_for_timeout(random.randint(420, 900))
 
     async def _select_image_local_points(self, job_type):
         try:

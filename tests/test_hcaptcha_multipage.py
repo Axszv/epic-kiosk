@@ -140,14 +140,24 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
             ]), click=AsyncMock(),
         )
         frame = types.SimpleNamespace(locator=MagicMock(return_value=view))
+        mouse = types.SimpleNamespace(
+            move=AsyncMock(), down=AsyncMock(), up=AsyncMock(),
+        )
+        self.agent.page = types.SimpleNamespace(
+            mouse=mouse, wait_for_timeout=AsyncMock(),
+        )
         await self.agent._click_image_points(frame, [
             types.SimpleNamespace(x=250, y=235),
             types.SimpleNamespace(x=100, y=200),
         ], (500, 470))
         # Locator coordinates stay local despite the changed page offsets.
-        self.assertEqual([call.kwargs["position"] for call in view.click.await_args_list], [
-            {"x": 500, "y": 470}, {"x": 50, "y": 100},
+        self.assertEqual([call.args[:2] for call in mouse.move.await_args_list], [
+            (1210.0, 843.0), (80.0, 140.0),
         ])
+        # The pointer is moved onto the answer instead of teleporting onto it.
+        self.assertTrue(all(call.kwargs["steps"] > 1 for call in mouse.move.await_args_list))
+        self.assertEqual(mouse.down.await_count, 2)
+        self.assertEqual(mouse.up.await_count, 2)
 
     def test_visual_only_question_receives_the_same_specialized_guidance(self):
         self.agent.robotic_arm.captcha_payload = None
