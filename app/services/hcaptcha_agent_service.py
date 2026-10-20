@@ -133,6 +133,10 @@ class EpicAgentV(AgentV):
         self._challenge_page_index = 0
         self._original_capture_spatial_mapping = self.robotic_arm._capture_spatial_mapping
         self.robotic_arm._capture_spatial_mapping = self._capture_challenge_page
+        # hCaptcha can change the task type between pages. Upstream answers
+        # every crumb of a payload with the first page's type, so answer one
+        # page per round and classify the newly rendered challenge again.
+        self.robotic_arm.check_crumb_count = self._single_crumb_count
         # Upstream executes the model's start coordinate verbatim. Visual
         # models often identify the correct target while missing the small
         # draggable tile by tens of pixels, so align the start with the actual
@@ -147,6 +151,9 @@ class EpicAgentV(AgentV):
         self._challenge_page_index = int(crumb_id)
         print(f"HCAPTCHA_PAGE:{self._challenge_page_index + 1}", flush=True)
         return await self._original_capture_spatial_mapping(frame, cache_key, crumb_id)
+
+    async def _single_crumb_count(self) -> int:
+        return 1
 
     async def _capture_point_image(self, frame, cache_key, crumb_id):
         # Keep the two model images pixel-aligned. Upstream's matplotlib plot
