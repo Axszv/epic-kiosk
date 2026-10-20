@@ -195,6 +195,8 @@ class EpicAuthorization:
         self._email_transaction_failure_signal = asyncio.Queue()
         self._refresh_csrf_seen = False
         self._login_error_code = None  # 存储登录错误码
+        self._login_point_url = ""
+        self._login_agent = None
 
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
@@ -348,6 +350,32 @@ class EpicAuthorization:
             return {"status": 200, "body": body_text[:1000]}
         return None
 
+    async def _restart_email_challenge(self) -> bool:
+        """Start a fresh hCaptcha transaction for the email step.
+
+        hCaptcha keeps the whole interaction of a challenge in its plan, and
+        Epic refuses a transaction whose plan contains a wrong answer. A new
+        page is the only way to get a challenge with a clean plan.
+        """
+        login_url = self._login_point_url
+        if not login_url:
+            return False
+        with suppress(Exception):
+            await self.page.goto(login_url, wait_until="domcontentloaded")
+            await self.page.wait_for_timeout(1500)
+            email_box = self.page.locator("#email")
+            await email_box.wait_for(state="visible", timeout=60000)
+            await email_box.clear()
+            await email_box.type(settings.EPIC_EMAIL)
+            continue_button = self.page.locator("#continue")
+            await expect(continue_button).to_be_enabled(timeout=30000)
+            await continue_button.click(timeout=5000, no_wait_after=True)
+            self._login_agent = replace_login_hcaptcha_agent(self.page)
+            logger.warning("邮箱步骤 hCaptcha 被拒，重新开始一次全新的挑战")
+            return True
+        logger.warning("邮箱步骤 hCaptcha 被拒，但无法开始新的挑战")
+        return False
+
     async def _solve_pre_password_hcaptcha(self, agent: AgentV) -> bool:
         # Epic can insert an email_exists_prod hCaptcha between the email and
         # password steps. Wait briefly for either state before proceeding.
@@ -363,18 +391,26 @@ class EpicAuthorization:
 
         for attempt in range(1, 4):
             logger.info(f"处理邮箱步骤 hCaptcha [{attempt}/3]")
+            agent = getattr(self, "_login_agent", None) or agent
             try:
-                await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     agent.wait_for_challenge(),
                     timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
                 )
             except Exception as err:
                 logger.warning(f"邮箱步骤 hCaptcha 处理异常 [{attempt}/3]: {err}")
+                result = None
 
             await self.page.wait_for_timeout(2000)
             if not await self._has_hcaptcha_challenge():
                 logger.success("✅ 邮箱步骤 hCaptcha 已通过")
                 return True
+            if getattr(result, "value", result) == "retry":
+                if not await self._restart_email_challenge():
+                    break
+                continue
+            if not await self._restart_email_challenge():
+                break
 
         await self._save_page_debug("login_email_hcaptcha_failed")
         logger.error("❌ 邮箱步骤 hCaptcha 未通过")
@@ -639,6 +675,7 @@ class EpicAuthorization:
 
         # 尽可能早地初始化机器人
         agent = get_login_hcaptcha_agent(self.page)
+        self._login_agent = agent
 
         # The captcha can take a minute to solve, and Epic rotates its XSRF
         # cookie meanwhile. Keep the login transaction on the live cookie.
@@ -655,6 +692,7 @@ class EpicAuthorization:
 
         try:
             point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
+            self._login_point_url = point_url
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
             if self._has_refresh_csrf_session():

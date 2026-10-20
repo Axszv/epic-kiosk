@@ -14,6 +14,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "app/services/hcaptcha_agent_serv
 class Signal(str, Enum):
     SUCCESS = "success"
     FAILURE = "failure"
+    RETRY = "retry"
     EXECUTION_TIMEOUT = "challenge_execution_timeout"
     RESPONSE_TIMEOUT = "challenge_response_timeout"
 
@@ -125,6 +126,25 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(result, Signal.SUCCESS)
         self.assertEqual(len(self.agent.solved_pages), 2)
         self.agent._cache_validated_captcha_response.assert_not_called()
+
+    async def test_rejected_round_ends_the_wait_for_the_login_agent(self):
+        # hCaptcha keeps the whole interaction of a challenge in its plan and
+        # Epic refuses a transaction whose plan holds a wrong answer, so the
+        # login agent has to hand the round back for a fresh challenge.
+        self.agent.restart_on_rejected_round = True
+        self.agent._captcha_payload_queue.put_nowait(payload(accepted=False))
+
+        result = await self.agent.wait_for_challenge()
+
+        self.assertEqual(result, Signal.RETRY)
+        self.agent._cache_validated_captcha_response.assert_not_called()
+
+    async def test_checkout_agent_keeps_answering_the_next_round(self):
+        self.agent._captcha_payload_queue.put_nowait(payload(accepted=False))
+
+        result = await self.agent.wait_for_challenge()
+
+        self.assertNotEqual(result, Signal.RETRY)
 
     async def test_drag_source_uses_the_current_page_entities(self):
         self.agent.robotic_arm.captcha_payload = types.SimpleNamespace(tasklist=[

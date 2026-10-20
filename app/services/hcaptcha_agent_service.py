@@ -702,6 +702,11 @@ class EpicAgentV(AgentV):
                     self._cache_validated_captcha_response(response)
                     return ChallengeSignal.SUCCESS
                 logger.warning("hCaptcha rejected the submitted round; checking for the next round")
+                if getattr(self, "restart_on_rejected_round", False):
+                    # Epic refuses a transaction whose hCaptcha plan contains a
+                    # wrong answer. The widget stays poisoned, so the caller
+                    # has to start a new challenge.
+                    return ChallengeSignal.RETRY
 
             round_number += 1
             logger.debug(
@@ -836,24 +841,32 @@ def get_hcaptcha_agent(page: Page) -> AgentV:
 
 
 def get_login_hcaptcha_agent(page: Page) -> AgentV:
-    """Return the upstream agent used by Epic's login transaction."""
+    """Return the agent used by Epic's login transaction.
+
+    The login agent ends its wait after a rejected round. hCaptcha keeps the
+    whole interaction of a challenge in its plan, and Epic refuses a
+    transaction whose plan contains a wrong answer, so the caller has to
+    start a fresh challenge instead of answering the poisoned one again.
+    """
     agent = _AGENTS.get(page)
     if agent is None:
-        agent = AgentV(page=page, agent_config=settings)
+        agent = EpicAgentV(page=page, agent_config=settings)
+        agent.restart_on_rejected_round = True
         _AGENTS[page] = agent
-        logger.debug("Created the upstream hCaptcha agent for Epic login")
+        logger.debug("Created the hCaptcha agent for Epic login")
     return agent
 
 
 def replace_login_hcaptcha_agent(page: Page) -> AgentV:
-    """Reset upstream hCaptcha state after Epic restarts a login transaction."""
+    """Reset hCaptcha state after Epic restarts a login transaction."""
     previous = _AGENTS.pop(page, None)
     if previous is not None:
         _detach_hcaptcha_agent(page, previous)
 
-    agent = AgentV(page=page, agent_config=settings)
+    agent = EpicAgentV(page=page, agent_config=settings)
+    agent.restart_on_rejected_round = True
     _AGENTS[page] = agent
-    logger.debug("Replaced upstream hCaptcha agent for a fresh Epic login transaction")
+    logger.debug("Replaced the hCaptcha agent for a fresh Epic login transaction")
     return agent
 
 

@@ -115,18 +115,20 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         replacement = MagicMock()
         module._AGENTS[page] = previous
 
-        original_agent_class = module.AgentV
-        module.AgentV = MagicMock(return_value=replacement)
+        original_agent_class = module.EpicAgentV
+        module.EpicAgentV = MagicMock(return_value=replacement)
         try:
             result = module.replace_login_hcaptcha_agent(page)
         finally:
-            module.AgentV = original_agent_class
+            module.EpicAgentV = original_agent_class
 
         self.assertIs(result, replacement)
         page.remove_listener.assert_called_once_with(
             "response", previous._task_handler
         )
         self.assertIs(module._AGENTS[page], replacement)
+        # The login agent has to end its wait after a rejected round.
+        self.assertTrue(replacement.restart_on_rejected_round)
 
     def test_legacy_checkout_agent_replaces_and_caches_the_page_agent(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
