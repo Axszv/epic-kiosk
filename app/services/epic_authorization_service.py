@@ -785,12 +785,19 @@ class EpicAuthorization:
             await self._save_page_debug("account_validation_timeout")
             logger.warning("⚠️ 账号验证阶段未观察到 refresh-csrf，继续依赖已有会话状态")
 
-    async def _resume_login_form(self) -> bool:
-        """Continue the visible login step after a rejected/expired challenge."""
-        for field, button_id, value in (
+    async def _resume_login_form(self, include_email: bool = True) -> bool:
+        """Continue the visible login step after a rejected/expired challenge.
+
+        The email step is only resumed on request. Submitting the email form
+        again repeats the same hCaptcha transaction with a token the server
+        already used, and Epic answers that with `captcha_invalid`.
+        """
+        steps = [
             ("#password", "#sign-in", settings.EPIC_PASSWORD.get_secret_value()),
-            ("#email", "#continue", settings.EPIC_EMAIL),
-        ):
+        ]
+        if include_email:
+            steps.append(("#email", "#continue", settings.EPIC_EMAIL))
+        for field, button_id, value in steps:
             with suppress(Exception):
                 box = self.page.locator(field)
                 button = self.page.locator(button_id).first
@@ -956,7 +963,10 @@ class EpicAuthorization:
 
             async def retrigger_security_check():
                 """Reopen Epic/Talon security checks after a stale challenge."""
-                for selector in ("#talon_error_container_login_prod button",):
+                for selector in (
+                    "#talon_error_container_email_exists_prod button",
+                    "#talon_error_container_login_prod button",
+                ):
                     with suppress(Exception):
                         button = self.page.locator(selector).first
                         if await button.is_visible(timeout=1500):
@@ -964,11 +974,10 @@ class EpicAuthorization:
                             await button.click(timeout=3000)
                             await self.page.wait_for_timeout(3000)
                             return
-                await self._resume_login_form()
+                await self._resume_login_form(include_email=False)
 
             async def keep_login_flow_alive():
-                """Resume either form step without competing with a visible challenge."""
-                email_resumes = 0
+                """Resume the password step without competing with a challenge."""
                 while not result_task.done():
                     await self.page.wait_for_timeout(8000)
                     if result_task.done():
@@ -983,16 +992,12 @@ class EpicAuthorization:
                             or await self._has_hcaptcha_challenge()
                         ):
                             continue
+                        # The email step is never resumed here. Clicking
+                        # `#continue` again repeats the same hCaptcha
+                        # transaction with a token Epic already used, and the
+                        # second answer comes back as `captcha_invalid`.
                         if await self._password_form_ready():
-                            await self._resume_login_form()
-                        elif await self.page.locator("#continue").is_visible():
-                            if email_resumes >= 3:
-                                self._is_login_success_signal.put_nowait(
-                                    {"error": True, "code": "email_captcha_resume_exhausted"}
-                                )
-                                return
-                            if await self._resume_login_form():
-                                email_resumes += 1
+                            await self._resume_login_form(include_email=False)
 
             async def handle_captcha():
                 """Handle every hCaptcha round until Epic accepts the login."""

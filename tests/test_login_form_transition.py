@@ -54,6 +54,17 @@ class LoginFormTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.auth._save_page_debug = AsyncMock()
         self.agent = types.SimpleNamespace(wait_for_challenge=AsyncMock(return_value="success"))
 
+    async def test_email_step_is_not_resumed_by_the_login_watchdog(self):
+        # Clicking `#continue` again repeats the same hCaptcha transaction
+        # with a token Epic already used, and the answer comes back as
+        # `captcha_invalid`. Only the password step may be resumed.
+        source = SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def keep_login_flow_alive")
+        end = source.index("async def handle_captcha", start)
+        watchdog = source[start:end]
+        self.assertNotIn('locator("#continue")', watchdog)
+        self.assertIn("include_email=False", watchdog)
+
     async def test_offscreen_password_is_not_the_password_step(self):
         self.assertFalse(await self.auth._password_form_ready())
         self.assertTrue(await self.auth._resume_login_form())
