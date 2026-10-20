@@ -208,14 +208,21 @@ class EpicAuthorization:
         unavoidable. A 200 means the account is still signed in, so the store
         can be used right away.
         """
-        with suppress(Exception):
+        endpoint = "https://accounts.epicgames.com/account/v2/payment/ajaxGetOrderHistory"
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "referer": "https://accounts.epicgames.com/account/transactions?lang=en-US",
+            "x-requested-with": "XMLHttpRequest",
+        }
+        try:
             response = await self.page.context.request.get(
-                "https://accounts.epicgames.com/account/v2/payment/ajaxGetOrderHistory",
-                timeout=30000,
+                endpoint, headers=headers, timeout=30000
             )
-            logger.info(f"ACCOUNT_SESSION_PROBE:status={response.status}")
-            return response.status == 200
-        return False
+        except Exception as err:
+            logger.warning(f"ACCOUNT_SESSION_PROBE:failed:{type(err).__name__}")
+            return False
+        logger.info(f"ACCOUNT_SESSION_PROBE:status={response.status}")
+        return response.status == 200
 
     async def _install_live_xsrf_route(self) -> None:
         """Send Epic's live XSRF cookie with the login transaction.
