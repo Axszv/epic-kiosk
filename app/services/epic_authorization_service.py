@@ -20,6 +20,7 @@ from loguru import logger
 from playwright.async_api import expect, Page, Response, TimeoutError as PlaywrightTimeoutError
 
 from settings import RUNTIME_DIR, settings
+from services.epic_store_page import STORE_LOGIN_URL, store_signed_out
 from services.hcaptcha_agent_service import (
     get_login_hcaptcha_agent,
     replace_login_hcaptcha_agent,
@@ -805,7 +806,20 @@ class EpicAuthorization:
             await self._save_page_debug("account_validation_timeout")
             logger.warning("⚠️ 账号验证阶段未观察到 refresh-csrf，继续依赖已有会话状态")
 
-    async def _login(self) -> tuple[bool, ErrorType] | None:
+    async def _store_session_ready(self) -> bool:
+        """Return whether the Store already has a signed-in session."""
+        if not self.page.url.startswith("https://store.epicgames.com/"):
+            return False
+        if await store_signed_out(self.page):
+            return False
+        with suppress(Exception):
+            status = await self.page.locator("egs-navigation").get_attribute(
+                "isloggedin", timeout=3000
+            )
+            return status == "true"
+        return False
+
+    async def _login(self, login_url: str | None = None) -> tuple[bool, ErrorType] | None:
         """
         执行登录流程
 
@@ -844,12 +858,16 @@ class EpicAuthorization:
         keepalive_task = None
 
         try:
-            point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
+            point_url = login_url or "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
             self._login_point_url = point_url
             await self._reset_login_cookies()
             await self._reset_xsrf_cookie()
+            logger.warning("LOGIN_STAGE:open_login")
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
+            if login_url and await self._store_session_ready():
+                logger.success("✅ Store login callback restored the existing session")
+                return (True, ErrorType.SUCCESS)
             if self._has_refresh_csrf_session():
                 logger.success("✅ 检测到已有 refresh-csrf 会话，跳过登录表单")
                 return (True, ErrorType.SUCCESS)
@@ -1465,7 +1483,13 @@ class EpicAuthorization:
                 return ErrorType.SUCCESS
 
             # 执行登录
-            login_result = await self._login()
+            # Start with the Store's client/redirect context, just as the
+            # signed-out checkout recovery does. A bare /id/login creates an
+            # account-portal session that still needs a second Store login,
+            # and the captcha of such a session is never executed by Epic's
+            # Talon service, so Epic refuses the transaction with
+            # `captcha_invalid`.
+            login_result = await self._login(login_url=STORE_LOGIN_URL)
             if login_result:
                 success, error_type = login_result
                 if success:
