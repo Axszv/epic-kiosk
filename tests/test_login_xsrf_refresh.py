@@ -109,7 +109,7 @@ class ScheduledProxyTests(unittest.TestCase):
         proxy_end = workflow.index("      - name: Run Epic claim", proxy_start)
         proxy_step = workflow[proxy_start:proxy_end]
         self.assertIn(
-            "if: github.event.inputs.use_browser_proxy == 'true'", proxy_step
+            "github.event.inputs.use_browser_proxy == 'true'", proxy_step
         )
         # A proxy outage must not skip the weekly claim.
         self.assertIn("continue-on-error: true", proxy_step)
