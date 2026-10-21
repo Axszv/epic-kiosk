@@ -413,6 +413,26 @@ def run_account(
         failure_reasons.append("module_not_found")
 
     failed = bool(failure_reasons)
+    if fresh_profile and not failed:
+        # A fresh profile holds the session that the login just established.
+        # The cached profile is the next week's login, so the session is
+        # copied back into it before the workflow saves the state.
+        cached = Path(__file__).resolve().parents[1].joinpath(
+            "app", "volumes", "user_data", email
+        )
+        try:
+            if cached.exists():
+                shutil.rmtree(cached)
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(
+                profile,
+                cached,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("lock", ".parentlock", "parent.lock"),
+            )
+            print(f"BROWSER_PROFILE_MODE:session_cached:{email}", flush=True)
+        except Exception as err:  # noqa: BLE001
+            print(f"BROWSER_PROFILE_MODE:session_cache_failed:{err}", flush=True)
     result = {
         "attempt": attempt,
         "timed_out": timed_out,

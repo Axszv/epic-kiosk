@@ -43,6 +43,17 @@ class ScheduledRunnerTests(unittest.TestCase):
         end = self.workflow.index("jobs:")
         self.assertNotIn("matrix", self.workflow[start:end])
 
+    def test_a_fresh_profile_keeps_the_session_it_established(self):
+        # A fresh profile is the only shape that Epic accepts a login with, so
+        # the session it establishes has to be copied into the cached profile.
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/github_actions_claim_once.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("BROWSER_PROFILE_MODE:session_cached", script)
+        self.assertIn('"app", "volumes", "user_data", email', script)
+        self.assertIn("if fresh_profile and not failed:", script)
+
 
 if __name__ == "__main__":
     unittest.main()
