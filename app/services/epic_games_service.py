@@ -7,6 +7,7 @@
 import asyncio
 import hashlib
 import json
+import re
 from contextlib import suppress
 from enum import Enum
 from json import JSONDecodeError
@@ -1059,7 +1060,12 @@ class EpicGames:
         return False
 
     async def _solve_checkout_captcha(self, page: Page, agent) -> bool:
-        """Answer the hCaptcha the checkout shows before its order form."""
+        """Answer the hCaptcha the checkout shows before its order form.
+
+        Epic's checkout puts a "One more step" security check in front of the
+        order form. The page runs it through the Talon service, and a "TRY
+        AGAIN" button re-runs it once the challenge has been answered.
+        """
         if not await self._checkout_has_captcha(page):
             return False
         logger.info("结账页先出现验证码，解题后再找下单按钮")
@@ -1079,7 +1085,27 @@ class EpicGames:
             logger.warning(f"结账验证码未确认通过: {err}")
             return False
         await page.wait_for_timeout(2000)
+        await self._retry_talon_execution(page)
         return True
+
+    @staticmethod
+    async def _retry_talon_execution(page: Page) -> bool:
+        """Re-run Epic's Talon execution after the challenge was answered.
+
+        The checkout's "TRY AGAIN" button calls `talon.execute` again, which
+        is what turns the solved challenge into the order form.
+        """
+        retry = page.get_by_role("button", name=re.compile(r"try again", re.I))
+        with suppress(Exception):
+            if await retry.count() == 0 or not await retry.first.is_visible(
+                timeout=1000
+            ):
+                return False
+            await retry.first.click(timeout=5000)
+            logger.info("已重新触发结账页的 Talon 校验")
+            await page.wait_for_timeout(3000)
+            return True
+        return False
 
     async def _handle_instant_checkout(self, page: Page) -> bool:
         return await self._handle_legacy_instant_checkout(page)
