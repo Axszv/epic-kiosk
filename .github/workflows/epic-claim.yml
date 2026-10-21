@@ -74,6 +74,10 @@ jobs:
       fail-fast: false
       matrix:
         account: [1, 2, 3, 4, 5, 6, 7, 8]
+    # A manual run that names one account runs only that account.
+    if: >-
+      github.event.inputs.account_index == '' ||
+      github.event.inputs.account_index == format('{0}', matrix.account)
 
     env:
       API_PROVIDER: openai_compatible
