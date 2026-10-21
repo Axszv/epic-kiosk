@@ -1,4 +1,5 @@
-"""The weekly schedule gives every account its own runner."""
+"""The weekly schedule runs the accounts one after another."""
+
 
 import unittest
 from pathlib import Path
@@ -11,30 +12,28 @@ class ScheduledRunnerTests(unittest.TestCase):
     def setUp(self):
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_every_account_runs_on_its_own_runner(self):
-        # A runner address that Epic has flagged would otherwise refuse every
-        # account of that week.
-        self.assertIn("matrix:", self.workflow)
-        self.assertIn("account: [1, 2, 3, 4, 5, 6, 7, 8]", self.workflow)
-        self.assertIn("fail-fast: false", self.workflow)
+    def test_the_accounts_run_one_after_another(self):
+        # The accounts share one model gateway key, and the free tier of that
+        # gateway takes only a few requests a minute. Accounts that run at the
+        # same time answer their captchas into a rate limit, and a week then
+        # has one chance only. The claim succeeded on 2026-10-14 with all
+        # eight accounts in one job.
+        self.assertNotIn("matrix:", self.workflow)
+        self.assertNotIn("matrix.account", self.workflow)
+        self.assertNotIn("fail-fast: false", self.workflow)
 
-    def test_the_matrix_account_reaches_the_claim(self):
+    def test_the_whole_profile_set_is_cached_once(self):
+        # Every account keeps its own profile under app/volumes, so the whole
+        # directory is what the next run restores.
+        self.assertIn("key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}", self.workflow)
+        self.assertIn("key: epic-state-v2-${{ github.run_id }}", self.workflow)
+        self.assertIn("epic-state-v2-", self.workflow)
+
+    def test_a_manual_run_can_name_one_account(self):
         self.assertIn(
-            "EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || matrix.account }}",
+            "EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}",
             self.workflow,
         )
-
-    def test_every_account_keeps_its_own_browser_profile(self):
-        # The cached profile holds the account session, so two accounts must
-        # never share one cache entry.
-        self.assertIn(
-            "key: epic-state-v2-${{ github.run_id }}-${{ matrix.account }}-${{ github.run_attempt }}",
-            self.workflow,
-        )
-        self.assertIn(
-            "key: epic-state-v2-${{ github.run_id }}-${{ matrix.account }}", self.workflow
-        )
-        self.assertIn("epic-state-v2-${{ matrix.account }}-", self.workflow)
 
     def test_the_concurrency_group_has_no_matrix_context(self):
         # `matrix` only exists inside a job, so the workflow level group would

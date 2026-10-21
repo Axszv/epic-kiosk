@@ -75,13 +75,11 @@ jobs:
   claim:
     runs-on: ubuntu-latest
     timeout-minutes: 330
-    # Every account runs on its own runner. A runner address that Epic has
-    # flagged would otherwise refuse every account of that week, and a week
-    # with a single address has one chance only.
-    strategy:
-      fail-fast: false
-      matrix:
-        account: [1, 2, 3, 4, 5, 6, 7, 8]
+    # The accounts run one after another in this job, the way the claim
+    # succeeded on 2026-10-14. They share one model gateway key, and the
+    # free tier of that gateway takes only a few requests a minute, so
+    # accounts that run at the same time answer their captchas into a rate
+    # limit that leaves a week with a single chance.
 
     env:
       API_PROVIDER: openai_compatible
@@ -161,9 +159,6 @@ jobs:
             pyyaml
 
       - name: Install Camoufox browser
-        # A manual run that names one account runs only that account.
-        if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -181,21 +176,15 @@ jobs:
           test -f "${CAMOUFOX_UBO_DIR}/manifest.json"
 
       - name: Restore browser state
-        # A manual run that names one account runs only that account.
-        if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
-          key: epic-state-v2-${{ github.run_id }}-${{ matrix.account }}
+          key: epic-state-v2-${{ github.run_id }}
           restore-keys: |
-            epic-state-v2-${{ matrix.account }}-
             epic-state-v2-
 
       - name: Prepare browser proxy
-        # A manual run that names one account runs only that account.
         if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account)) &&
           (github.event.inputs.use_browser_proxy == 'true')
         # A proxy outage must not skip the weekly claim. The claim then runs
         # with the runner's direct connection instead.
@@ -207,31 +196,18 @@ jobs:
         run: python scripts/prepare_browser_proxy.py
 
       - name: Run Epic claim
-        # A manual run that names one account runs only that account.
-        if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
         env:
           EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_LET_PAGE_SOLVE_CAPTCHA: ${{ github.event.inputs.let_page_solve_captcha || 'false' }}
           EPIC_LIVE_XSRF_ROUTE: ${{ github.event.inputs.live_xsrf_route || 'true' }}
           EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'true' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
-          EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || matrix.account }}
+          EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
         run: |
           if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
             echo "::warning::No browser proxy is available; continuing with the runner's direct connection"
-          fi
-          # The accounts run at the same time, and the model gateway's free
-          # tier only takes a few requests a minute. Stagger the accounts so
-          # their captcha answers do not queue behind each other.
-          if [ -n "$EPIC_ACCOUNT_INDEX" ]; then
-            delay=$(( (EPIC_ACCOUNT_INDEX - 1) * 90 ))
-            if [ "$delay" -gt 0 ]; then
-              echo "Waiting ${delay}s before this account starts"
-              sleep "$delay"
-            fi
           fi
           python scripts/github_actions_claim_once.py
 
@@ -243,20 +219,14 @@ jobs:
           fi
 
       - name: Save browser state
-        # A manual run that names one account runs only that account.
-        if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account)) &&
-          (always())
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: app/volumes
-          key: epic-state-v2-${{ github.run_id }}-${{ matrix.account }}-${{ github.run_attempt }}
+          key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload logs
-        # A manual run that names one account runs only that account.
-        if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account)) &&
-          (always())
+        if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -270,10 +240,7 @@ jobs:
           retention-days: 7
 
       - name: Send ServerChan notification
-        # A manual run that names one account runs only that account.
-        if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account)) &&
-          (always())
+        if: always()
         continue-on-error: true
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
