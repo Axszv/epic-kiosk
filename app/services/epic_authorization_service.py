@@ -12,6 +12,7 @@ import os
 import time
 from contextlib import suppress
 from enum import Enum
+from urllib.parse import urlsplit
 
 from hcaptcha_challenger.agent import AgentV
 from loguru import logger
@@ -202,12 +203,8 @@ class EpicAuthorization:
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
 
-    async def _refresh_xsrf_token(self, url: str) -> str:
-        """Return the XSRF cookie the account portal currently expects."""
-        with suppress(Exception):
-            await self.page.request.get(
-                "https://www.epicgames.com/id/api/location", timeout=15000
-            )
+    async def _read_xsrf_cookie(self, url: str) -> str:
+        """Return the XSRF cookie the browser holds for the given URL."""
         with suppress(Exception):
             cookies = await self.page.context.cookies([url])
             return next(
@@ -218,6 +215,24 @@ class EpicAuthorization:
                 ),
                 "",
             )
+        return ""
+
+    async def _refresh_xsrf_token(self, url: str) -> str:
+        """Return the XSRF cookie the account portal currently expects.
+
+        Epic rotates the XSRF-TOKEN cookie on every response, so the copy the
+        portal read when it started is stale once the login has spent a minute
+        solving a captcha. Asking the portal for a fresh one right before the
+        transaction makes the request carry the token the server expects.
+        """
+        parsed = urlsplit(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        for path in ("/id/api/location", "/id/api/analytics"):
+            with suppress(Exception):
+                await self.page.request.get(f"{origin}{path}", timeout=15000)
+            value = await self._read_xsrf_cookie(url)
+            if value:
+                return value
         return ""
 
     async def _install_live_xsrf_route(self) -> None:
@@ -242,6 +257,10 @@ class EpicAuthorization:
             header = request.headers.get("x-xsrf-token", "")
             body = request.post_data or ""
             if body and body == state["last_body"]:
+                # The portal repeats the transaction when Epic refuses it. The
+                # repeat carries the same captcha token, and a token can only
+                # be handed to Epic once, so the repeat is dropped and the
+                # login recovers with a fresh challenge instead.
                 logger.warning("LOGIN_XSRF_REFRESH:repeat_transaction_dropped")
                 await route.abort()
                 return
@@ -252,6 +271,11 @@ class EpicAuthorization:
             # and Epic refuses the transaction with `csrf_token_invalid`. Ask
             # the portal for a fresh token right before the transaction.
             token = await self._refresh_xsrf_token(request.url)
+            logger.warning(
+                "LOGIN_XSRF_REFRESH:transaction"
+                f" header={diagnostic_value_fingerprint(header)}"
+                f" cookie={diagnostic_value_fingerprint(token)}"
+            )
             if not token or not header or token == header:
                 await route.continue_()
                 return

@@ -1,6 +1,8 @@
 """Keep Epic's login transaction on its live XSRF cookie."""
 
 import ast
+import hashlib
+import json
 import types
 import unittest
 from contextlib import suppress
@@ -15,11 +17,15 @@ tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "EpicAuthorization")
 cls.body = [n for n in cls.body if isinstance(n, ast.AsyncFunctionDef)
             and n.name == "_install_live_xsrf_route"]
+fingerprint = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                   and n.name == "diagnostic_value_fingerprint")
 namespace = {
     "suppress": suppress,
     "logger": MagicMock(),
+    "hashlib": hashlib,
+    "json": json,
 }
-exec(compile(ast.Module(body=[cls], type_ignores=[]), str(SOURCE), "exec"), namespace)
+exec(compile(ast.Module(body=[cls, fingerprint], type_ignores=[]), str(SOURCE), "exec"), namespace)
 
 
 class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -113,6 +119,15 @@ class ScheduledProxyTests(unittest.TestCase):
         )
         # A proxy outage must not skip the weekly claim.
         self.assertIn("continue-on-error: true", proxy_step)
+
+    def test_the_weekly_run_uses_the_live_xsrf_route(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("EPIC_LIVE_XSRF_ROUTE:", workflow)
+        # The route has to be on by default; the schedule has no input for it.
+        self.assertIn(
+            "EPIC_LIVE_XSRF_ROUTE: ${{ github.event.inputs.live_xsrf_route || 'true' }}",
+            workflow,
+        )
 
 
 if __name__ == "__main__":
