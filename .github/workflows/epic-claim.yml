@@ -67,6 +67,13 @@ jobs:
   claim:
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    # Every account runs on its own runner. A runner address that Epic has
+    # flagged would otherwise refuse every account of that week, and a week
+    # with a single address has one chance only.
+    strategy:
+      fail-fast: false
+      matrix:
+        account: [1, 2, 3, 4, 5, 6, 7, 8]
 
     env:
       API_PROVIDER: openai_compatible
@@ -166,8 +173,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
-          key: epic-state-v2-${{ github.run_id }}
+          key: epic-state-v2-${{ github.run_id }}-${{ matrix.account }}
           restore-keys: |
+            epic-state-v2-${{ matrix.account }}-
             epic-state-v2-
 
       - name: Prepare browser proxy
@@ -186,7 +194,7 @@ jobs:
           EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_LET_PAGE_SOLVE_CAPTCHA: ${{ github.event.inputs.let_page_solve_captcha || 'false' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
-          EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
+          EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || matrix.account }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
         run: |
@@ -207,7 +215,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: app/volumes
-          key: epic-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: epic-state-v2-${{ github.run_id }}-${{ matrix.account }}-${{ github.run_attempt }}
 
       - name: Upload logs
         if: always()

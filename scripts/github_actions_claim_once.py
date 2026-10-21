@@ -435,10 +435,19 @@ def main() -> int:
     indexed_accounts = list(enumerate(raw_accounts, start=1))
     if account_index:
         index = int(account_index)
-        if index <= 0 or index > len(raw_accounts):
+        if index <= 0:
             raise SystemExit(
                 f"EPIC_ACCOUNT_INDEX must be between 1 and {len(raw_accounts)}"
             )
+        if index > len(raw_accounts):
+            # Every account runs in its own job, and a matrix can offer more
+            # accounts than there are. There is simply nothing to do here.
+            print(
+                f"EPIC_ACCOUNT_INDEX {index} is beyond the {len(raw_accounts)} "
+                "configured accounts; nothing to do",
+                flush=True,
+            )
+            return 0
         indexed_accounts = [indexed_accounts[index - 1]]
     elif account_limit:
         limit = int(account_limit)
