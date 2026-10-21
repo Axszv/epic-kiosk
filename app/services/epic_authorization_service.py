@@ -203,6 +203,25 @@ class EpicAuthorization:
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
 
+    async def _reset_xsrf_cookie(self) -> None:
+        """Drop the cached XSRF cookie so the portal reads a current one.
+
+        The account portal reads the XSRF-TOKEN cookie when its login page
+        starts and sends that copy with the transaction. A cached browser
+        profile carries the token of an earlier session, and Epic answers
+        such a transaction with `csrf_token_invalid`; the captcha token is
+        burned by that refusal and every retry comes back as
+        `captcha_invalid`. Asking for a new cookie before the page starts
+        makes the portal read the token Epic expects.
+        """
+        if os.getenv("EPIC_RESET_XSRF_COOKIE", "true").strip().lower() not in {
+            "1", "true", "yes", "on"
+        }:
+            return
+        with suppress(Exception):
+            await self.page.context.clear_cookies(name="XSRF-TOKEN")
+            logger.warning("LOGIN_XSRF_REFRESH:stale_cookie_cleared")
+
     async def _read_xsrf_cookie(self, url: str) -> str:
         """Return the XSRF cookie the browser holds for the given URL."""
         with suppress(Exception):
@@ -756,6 +775,7 @@ class EpicAuthorization:
         try:
             point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
             self._login_point_url = point_url
+            await self._reset_xsrf_cookie()
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
             if self._has_refresh_csrf_session():

@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import json
+import os
 import types
 import unittest
 from contextlib import suppress
@@ -16,7 +17,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/epic-claim.y
 tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "EpicAuthorization")
 cls.body = [n for n in cls.body if isinstance(n, ast.AsyncFunctionDef)
-            and n.name == "_install_live_xsrf_route"]
+            and n.name in {"_install_live_xsrf_route", "_reset_xsrf_cookie"}]
 fingerprint = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                    and n.name == "diagnostic_value_fingerprint")
 namespace = {
@@ -24,6 +25,7 @@ namespace = {
     "logger": MagicMock(),
     "hashlib": hashlib,
     "json": json,
+    "os": os,
 }
 exec(compile(ast.Module(body=[cls, fingerprint], type_ignores=[]), str(SOURCE), "exec"), namespace)
 
@@ -101,6 +103,29 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
         await handler(route)
         route.abort.assert_not_awaited()
         self.assertEqual(route.continue_.await_count, 2)
+
+
+class StaleXsrfCookieTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_cached_xsrf_cookie_is_dropped_before_the_login_page(self):
+        # The portal reads the XSRF cookie when its page starts. A cached
+        # profile carries an old one, and Epic refuses the transaction.
+        auth = namespace["EpicAuthorization"]()
+        context = types.SimpleNamespace(clear_cookies=AsyncMock())
+        auth.page = types.SimpleNamespace(context=context)
+
+        await auth._reset_xsrf_cookie()
+
+        context.clear_cookies.assert_awaited_once_with(name="XSRF-TOKEN")
+
+    async def test_the_reset_can_be_turned_off(self):
+        auth = namespace["EpicAuthorization"]()
+        context = types.SimpleNamespace(clear_cookies=AsyncMock())
+        auth.page = types.SimpleNamespace(context=context)
+
+        with unittest.mock.patch.dict(os.environ, {"EPIC_RESET_XSRF_COOKIE": "false"}):
+            await auth._reset_xsrf_cookie()
+
+        context.clear_cookies.assert_not_awaited()
 
 
 class ScheduledProxyTests(unittest.TestCase):
