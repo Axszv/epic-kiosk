@@ -155,8 +155,7 @@ jobs:
       - name: Install Camoufox browser
         # A manual run that names one account runs only that account.
         if: >-
-          github.event.inputs.account_index == '' ||
-          github.event.inputs.account_index == format('{0}', matrix.account)
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -176,8 +175,7 @@ jobs:
       - name: Restore browser state
         # A manual run that names one account runs only that account.
         if: >-
-          github.event.inputs.account_index == '' ||
-          github.event.inputs.account_index == format('{0}', matrix.account)
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
@@ -189,9 +187,8 @@ jobs:
       - name: Prepare browser proxy
         # A manual run that names one account runs only that account.
         if: >-
-          github.event.inputs.account_index == '' ||
-          github.event.inputs.account_index == format('{0}', matrix.account)
-        if: github.event.inputs.use_browser_proxy == 'true'
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
+          (github.event.inputs.use_browser_proxy == 'true')
         # A proxy outage must not skip the weekly claim. The claim then runs
         # with the runner's direct connection instead.
         continue-on-error: true
@@ -204,8 +201,7 @@ jobs:
       - name: Run Epic claim
         # A manual run that names one account runs only that account.
         if: >-
-          github.event.inputs.account_index == '' ||
-          github.event.inputs.account_index == format('{0}', matrix.account)
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
         env:
           EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_LET_PAGE_SOLVE_CAPTCHA: ${{ github.event.inputs.let_page_solve_captcha || 'false' }}
@@ -229,9 +225,8 @@ jobs:
       - name: Save browser state
         # A manual run that names one account runs only that account.
         if: >-
-          always() &&
-          (github.event.inputs.account_index == '' ||
-           github.event.inputs.account_index == format('{0}', matrix.account))
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
+          (always())
         uses: actions/cache/save@v4
         with:
           path: app/volumes
@@ -240,9 +235,8 @@ jobs:
       - name: Upload logs
         # A manual run that names one account runs only that account.
         if: >-
-          github.event.inputs.account_index == '' ||
-          github.event.inputs.account_index == format('{0}', matrix.account)
-        if: always()
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
+          (always())
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -258,9 +252,8 @@ jobs:
       - name: Send ServerChan notification
         # A manual run that names one account runs only that account.
         if: >-
-          github.event.inputs.account_index == '' ||
-          github.event.inputs.account_index == format('{0}', matrix.account)
-        if: always()
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
+          (always())
         continue-on-error: true
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
