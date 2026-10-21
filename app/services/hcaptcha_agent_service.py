@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import math
 import os
 import time
 from contextlib import suppress
@@ -75,6 +76,20 @@ carefully, and return one point at the visual center of every selected grid
 animal, with no extra points. The output must contain exactly the total number
 of points implied by the instruction cards.
 """.strip()
+FOOD_INGREDIENT_PROMPT = """
+The small reference picture at the TOP RIGHT shows the target dish. First
+identify that reference dish; do not use one of the large answer tiles as the
+reference. Then inspect EVERY selectable tile and select only foods that are
+ingredients of that dish. For example, a fruit salad needs fruit, not pizza,
+pasta, or a glass of drink. Different prepared meals are distractors. In your
+challenge_prompt field, briefly name the reference dish and the selected
+ingredient types so the identification is explicit. Return one point at the
+center of EACH matching tile, including repeated matching ingredients.
+""".strip()
+
+
+class InvalidChallengeCoordinates(ValueError):
+    """A visual answer cannot safely be clicked inside the captured image."""
 
 
 async def load_hsw_script(page: Page, url: str) -> str:
@@ -101,13 +116,13 @@ class EpicAgentV(AgentV):
     HCAPTCHA_CHALLENGE_VIEW_HEIGHT = 470
     HCAPTCHA_DRAG_CANVAS_LEFT = 10
     HCAPTCHA_DRAG_CANVAS_TOP = 135
+    POINT_IMAGE_SIZE = 1000
 
     def __init__(self, *args, **kwargs):
+        self._decode_payloads = os.getenv("HCAPTCHA_VISUAL_ONLY", "false").lower() != "true"
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
         super().__init__(*args, **kwargs)
-        with suppress(Exception):
-            self.page.on("requestfailed", self._log_failed_request)
         # Upstream requires an exact visible `.challenge-view`, which misses
         # Epic's hCaptcha when it is nested inside the purchase iframe.
         self.robotic_arm.get_challenge_frame_locator = (
@@ -118,11 +133,6 @@ class EpicAgentV(AgentV):
         self._challenge_page_index = 0
         self._original_capture_spatial_mapping = self.robotic_arm._capture_spatial_mapping
         self.robotic_arm._capture_spatial_mapping = self._capture_challenge_page
-        # hCaptcha can change the task type between the pages of a payload.
-        # Upstream answers every crumb of a payload with the first page's
-        # type, so answer one page per round and classify the newly rendered
-        # challenge again.
-        self.robotic_arm.check_crumb_count = self._single_crumb_count
         # Upstream executes the model's start coordinate verbatim. Visual
         # models often identify the correct target while missing the small
         # draggable tile by tens of pixels, so align the start with the actual
@@ -131,40 +141,12 @@ class EpicAgentV(AgentV):
         self.robotic_arm._perform_drag_drop = self._perform_drag_drop_with_dom_source
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
-
-    def _log_failed_request(self, request) -> None:
-        """Report blocked image requests; hCaptcha's grid then stays empty."""
-        url = str(getattr(request, "url", "") or "")
-        if "hcaptcha" not in url and "epicgames" not in url:
-            return
-        failure = str(getattr(request, "failure", "") or "")
-        logger.warning(f"HCAPTCHA_REQUEST_FAILED:{url.split('?')[0]}:{failure}")
+        self.robotic_arm.challenge_image_label_select = self._select_image_local_points
 
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
         self._challenge_page_index = int(crumb_id)
         print(f"HCAPTCHA_PAGE:{self._challenge_page_index + 1}", flush=True)
-        await self._wait_for_challenge_images(frame)
-        await self._save_challenge_debug(frame)
         return await self._original_capture_spatial_mapping(frame, cache_key, crumb_id)
-
-    async def _save_challenge_debug(self, frame) -> None:
-        """Save the live challenge so a blank capture can be inspected."""
-        if os.getenv("GITHUB_ACTIONS") != "true":
-            return
-        with suppress(Exception):
-            from settings import RUNTIME_DIR
-
-            RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-            name = f"hcaptcha_challenge_{int(time.time() * 1000)}"
-            (RUNTIME_DIR / f"{name}.html").write_text(
-                await frame.content(), encoding="utf-8"
-            )
-            await frame.locator(".challenge-view").screenshot(
-                path=str(RUNTIME_DIR / f"{name}_view.png"), type="png", scale="css"
-            )
-            await self.page.screenshot(
-                path=str(RUNTIME_DIR / f"{name}_page.png"), type="png", scale="css"
-            )
 
     async def _wait_for_challenge_images(self, frame, timeout_ms: int = 20000) -> bool:
         """Wait until hCaptcha's tile images are really rendered.
@@ -214,8 +196,144 @@ class EpicAgentV(AgentV):
         logger.warning("HCAPTCHA_IMAGES:timeout:the challenge tiles are still empty")
         return False
 
-    async def _single_crumb_count(self) -> int:
-        return 1
+    async def _capture_point_image(self, frame, cache_key, crumb_id):
+        # Keep the two model images pixel-aligned. Upstream's matplotlib plot
+        # adds margins and page-coordinate axes to a differently sized canvas.
+        from PIL import Image, ImageDraw, ImageFont
+
+        self._challenge_page_index = crumb_id
+        print(f"HCAPTCHA_PAGE:{crumb_id + 1}", flush=True)
+        await self._wait_for_challenge_images(frame)
+        cache_key.mkdir(parents=True, exist_ok=True)
+        native = cache_key / f"{cache_key.name}_{crumb_id}_native.png"
+        raw = cache_key / f"{cache_key.name}_{crumb_id}_challenge_view.png"
+        grid = cache_key / f"{cache_key.name}_{crumb_id}_spatial_helper.png"
+        await frame.locator(".challenge-view").screenshot(path=native, type="png", scale="css")
+        with Image.open(native) as original:
+            native_size = original.size
+            # Flash sometimes returns normalized 0..1000 coordinates despite
+            # the pixel prompt. Make both conventions identical in its inputs.
+            size = (self.POINT_IMAGE_SIZE, self.POINT_IMAGE_SIZE)
+            overlay = original.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+        overlay.save(raw)
+        draw = ImageDraw.Draw(overlay)
+        font = ImageFont.load_default(size=18)
+        width, height = size
+        for x in range(100, width, 100):
+            draw.line((x, 0, x, height - 1), fill=(135, 135, 135), width=1)
+            draw.text((x + 2, 2), str(x), font=font, fill="black", stroke_width=1, stroke_fill="white")
+        for y in range(100, height, 100):
+            draw.line((0, y, width - 1, y), fill=(135, 135, 135), width=1)
+            draw.text((2, y + 2), str(y), font=font, fill="black", stroke_width=1, stroke_fill="white")
+        overlay.save(grid)
+        print(f"HCAPTCHA_IMAGE:{raw.name}:source={native_size}:input={size}", flush=True)
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            # Only puzzle images go into the existing Actions artifact, never
+            # the dependency's raw payload/token cache.
+            import shutil
+            from settings import RUNTIME_DIR
+
+            with suppress(Exception):
+                RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+                for source in (native, raw, grid):
+                    shutil.copyfile(source, RUNTIME_DIR / source.name)
+        return raw, grid, size
+
+    @staticmethod
+    def _local_point_positions(points, image_size):
+        width, height = image_size
+        if width <= 0 or height <= 0 or not points:
+            raise InvalidChallengeCoordinates("Missing image dimensions or answer points")
+        positions = []
+        for point in points:
+            try:
+                x, y = float(point.x), float(point.y)
+            except (AttributeError, TypeError, ValueError) as err:
+                raise InvalidChallengeCoordinates("Non-numeric answer point") from err
+            if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < width and 0 <= y < height):
+                raise InvalidChallengeCoordinates(
+                    f"Point ({x}, {y}) is outside the {width} x {height} image"
+                )
+            positions.append((x / width, y / height))
+        return positions
+
+    async def _click_image_points(self, frame, points, image_size):
+        # Validate the entire answer before clicking anything: a partial answer
+        # must not toggle already selected objects when the model is retried.
+        positions = self._local_point_positions(points, image_size)
+        view = frame.locator(".challenge-view")
+        for x, y in positions:
+            box = await view.bounding_box(timeout=1000)
+            if not box or box["width"] <= 0 or box["height"] <= 0:
+                raise InvalidChallengeCoordinates("Challenge image is no longer visible")
+            # Locator clicks handle iframe offsets and scrolling; re-read size
+            # after inference and before each click in case the layout moved.
+            await view.click(position={"x": x * box["width"], "y": y * box["height"]},
+                             delay=180, timeout=3000)
+            await self.page.wait_for_timeout(500)
+
+    async def _select_image_local_points(self, job_type):
+        try:
+            return await self._select_image_local_points_impl(job_type)
+        except PlaywrightTimeoutError:
+            # The challenge may expire while the model is answering. Returning
+            # through the upstream dispatcher avoids its unconditional refresh
+            # of a detached frame. Let a queued result or replacement round win.
+            logger.warning("hCaptcha point challenge changed during inference")
+            if (not self._captcha_response_queue.empty()
+                    or not self._captcha_payload_queue.empty()):
+                return None
+            return ChallengeSignal.FAILURE
+        except InvalidChallengeCoordinates as err:
+            # Upstream catches every Exception and blindly refreshes, which can
+            # itself fail on a closed iframe and hide our validation failure.
+            # Its dispatcher forwards return values unchanged.
+            logger.error(f"hCaptcha answer was not clicked: {err}")
+            return ChallengeSignal.FAILURE
+
+    async def _select_image_local_points_impl(self, job_type):
+        arm = self.robotic_arm
+        crumb_count = await arm.check_crumb_count()
+        cache_key = self.config.create_cache_key(arm.captcha_payload)
+        for cid in range(crumb_count):
+            frame = await arm.get_challenge_frame_locator()
+            if frame is None:
+                raise InvalidChallengeCoordinates("Challenge frame is no longer visible")
+            await self.page.wait_for_timeout(self.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS)
+            raw, grid, size = await self._capture_point_image(frame, cache_key, cid)
+            width, height = size
+            coordinate_prompt = (
+                f"Both images are exactly {width} pixels wide and {height} pixels high. "
+                "Return ONLY image-local pixel coordinates: origin (0,0) is the TOP LEFT "
+                "of either image, x increases rightwards, y increases downwards. "
+                f"Every point must satisfy 0 <= x < {width} and 0 <= y < {height}. "
+                "The grid labels are these same pixel coordinates, with no image margins. "
+                "Do not use browser/page coordinates. "
+                "Select the centers of the answer objects, not the instruction examples. "
+                'Each point must have two integer fields, for example {"x":125,"y":240}. '
+                "Never put a coordinate pair in the x field."
+            )
+            prompt = f"{arm._match_user_prompt(job_type)}\n\n{coordinate_prompt}"
+            for attempt in range(2):
+                response = await arm._spatial_point_reasoner(
+                    challenge_screenshot=raw, grid_divisions=grid,
+                    auxiliary_information=prompt,
+                )
+                arm._spatial_point_reasoner.cache_response(
+                    path=cache_key / f"{cache_key.name}_{cid}_{attempt}_model_answer.json"
+                )
+                try:
+                    self._local_point_positions(response.points, size)
+                except InvalidChallengeCoordinates as err:
+                    logger.warning(f"Rejected hCaptcha image coordinates: {err}")
+                    if attempt:
+                        raise
+                    prompt += f"\nYour previous answer was invalid: {err}. Re-read the grid. {coordinate_prompt}"
+                    continue
+                break
+            logger.debug(f"[{cid + 1}/{crumb_count}] Local point answer: {response.log_message}")
+            await self._click_image_points(frame, response.points, size)
+            await arm.click_by_mouse(frame.locator("div.button-submit.button"))
 
     @staticmethod
     def _captcha_pass_metadata(response) -> str:
@@ -248,15 +366,19 @@ class EpicAgentV(AgentV):
             return FLYING_ANIMALS_PROMPT
         if "find all animals based on the number provided" in normalized:
             return COUNTED_ANIMALS_PROMPT
+        if "ingredients" in normalized and "dish" in normalized:
+            return FOOD_INGREDIENT_PROMPT
         return None
 
     def _match_drag_user_prompt(self, job_type) -> str:
         base_prompt = self._original_match_user_prompt(job_type)
         payload = getattr(self.robotic_arm, "captcha_payload", None)
-        challenge_prompt = ""
+        # Visual-only classification stores the question on the arm rather
+        # than in a decoded payload. It needs the same task-specific guidance.
+        challenge_prompt = getattr(self.robotic_arm, "_challenge_prompt", "") or ""
         if payload is not None:
             with suppress(Exception):
-                challenge_prompt = payload.get_requester_question() or ""
+                challenge_prompt = payload.get_requester_question() or challenge_prompt
         specialized = self._specialized_visual_prompt(challenge_prompt)
         if specialized is None:
             return base_prompt
@@ -368,12 +490,14 @@ class EpicAgentV(AgentV):
         frame = await self._get_nested_challenge_frame_locator()
         if frame is None:
             return None
+        elements = frame.locator(".challenge-view *")
         try:
-            candidates = await frame.locator(".challenge-view *").evaluate_all(
-                """elements => elements.map(element => {
+            candidates = await elements.evaluate_all(
+                """elements => elements.map((element, index) => {
                     const style = getComputedStyle(element);
                     const rect = element.getBoundingClientRect();
                     return {
+                        index,
                         tag: element.tagName.toLowerCase(),
                         x: rect.x,
                         y: rect.y,
@@ -390,7 +514,12 @@ class EpicAgentV(AgentV):
             return None
         canvas_box = self._select_drag_canvas_box(candidates or [])
         if canvas_box is not None:
-            return canvas_box
+            # DOM client rects are iframe-local; Playwright's bounding_box
+            # includes all ancestor frame offsets, as page.mouse requires.
+            with suppress(Exception):
+                page_box = await elements.nth(canvas_box["index"]).bounding_box(timeout=1000)
+                if page_box:
+                    return page_box
 
         try:
             challenge_box = await frame.locator(".challenge-view").bounding_box(timeout=1000)
@@ -571,7 +700,7 @@ class EpicAgentV(AgentV):
                             const center = {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
                             if (seen.some(item => Math.hypot(item.x - center.x, item.y - center.y) < 18)) break;
                             seen.push(center);
-                            result.push(center);
+                            result.push({index: elements.indexOf(node)});
                             break;
                         }
                     }
@@ -581,11 +710,20 @@ class EpicAgentV(AgentV):
         except Exception as err:
             logger.debug(f"Could not inspect hCaptcha Move cards: {err}")
             return []
-        return [
-            {"x": float(item["x"]), "y": float(item["y"]), "score": 2000, "reason": "move-card"}
-            for item in boxes or []
-            if isinstance(item, dict) and "x" in item and "y" in item
-        ]
+        centers = []
+        for item in boxes or []:
+            with suppress(Exception):
+                index = int(item["index"])
+                if index < 0:
+                    continue
+                box = await elements.nth(index).bounding_box(timeout=1000)
+                if box:
+                    centers.append({
+                        "x": box["x"] + box["width"] / 2,
+                        "y": box["y"] + box["height"] / 2,
+                        "score": 2000, "reason": "move-card",
+                    })
+        return centers
 
     async def _perform_drag_drop_with_dom_source(
         self,
@@ -691,26 +829,10 @@ class EpicAgentV(AgentV):
         self._captcha_payload_queue.put_nowait(latest)
         logger.debug(f"Discarded {discarded} stale hCaptcha payload(s)")
 
-    async def _get_nested_challenge_frame_locator(self):
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            candidates = [
-                frame
-                for frame in self.page.frames
-                if "hcaptcha.com/captcha/" in frame.url
-                and "frame=challenge" in frame.url
-            ]
-            for frame in candidates:
-                with suppress(Exception):
-                    if await frame.locator("body").is_visible(timeout=500):
-                        return frame
-            if candidates:
-                return candidates[0]
-            await self.page.wait_for_timeout(250)
-        logger.error("Cannot find a nested hCaptcha challenge frame")
-        return None
-
-    async def _has_visible_challenge_frame(self) -> bool:
+    async def _find_visible_challenge_frame(self):
+        viewport = self.page.viewport_size
+        if not viewport:
+            viewport = await self.page.evaluate("({width: innerWidth, height: innerHeight})")
         for frame in self.page.frames:
             if (
                 "hcaptcha.com/captcha/" not in frame.url
@@ -718,10 +840,43 @@ class EpicAgentV(AgentV):
             ):
                 continue
             with suppress(Exception):
+                owner = await frame.frame_element()
+                if not await owner.evaluate("""el => {
+                    for (let node = el; node; node = node.parentElement) {
+                        const style = getComputedStyle(node);
+                        if (style.display === 'none' || style.visibility === 'hidden' ||
+                            Number(style.opacity) === 0) return false;
+                    }
+                    return true;
+                }"""):
+                    continue
+                box = await owner.bounding_box()
+                if not box or box["width"] <= 1 or box["height"] <= 1:
+                    continue
+                if (
+                    box["x"] + box["width"] <= 0
+                    or box["y"] + box["height"] <= 0
+                    or box["x"] >= viewport["width"]
+                    or box["y"] >= viewport["height"]
+                ):
+                    continue
                 challenge_view = frame.locator(".challenge-view")
                 if await challenge_view.is_visible(timeout=250):
-                    return True
-        return False
+                    return frame
+        return None
+
+    async def _get_nested_challenge_frame_locator(self):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            frame = await self._find_visible_challenge_frame()
+            if frame is not None:
+                return frame
+            await self.page.wait_for_timeout(250)
+        logger.error("Cannot find a visible nested hCaptcha challenge frame")
+        return None
+
+    async def _has_visible_challenge_frame(self) -> bool:
+        return await self._find_visible_challenge_frame() is not None
 
     async def wait_for_challenge_start(self, timeout_seconds: float = 15) -> bool:
         """Wait for a fresh checkout challenge payload or visible challenge frame."""
@@ -782,11 +937,6 @@ class EpicAgentV(AgentV):
                     self._cache_validated_captcha_response(response)
                     return ChallengeSignal.SUCCESS
                 logger.warning("hCaptcha rejected the submitted round; checking for the next round")
-                if getattr(self, "restart_on_rejected_round", False):
-                    # Epic refuses a transaction whose hCaptcha plan contains a
-                    # wrong answer. The widget stays poisoned, so the caller
-                    # has to start a new challenge.
-                    return ChallengeSignal.RETRY
 
             round_number += 1
             logger.debug(
@@ -796,10 +946,12 @@ class EpicAgentV(AgentV):
             )
             remaining = deadline - time.monotonic()
             try:
-                await asyncio.wait_for(
+                round_result = await asyncio.wait_for(
                     self._solve_captcha(),
                     timeout=min(self.config.EXECUTION_TIMEOUT, remaining),
                 )
+                if round_result == ChallengeSignal.FAILURE:
+                    return ChallengeSignal.FAILURE
             except asyncio.TimeoutError:
                 logger.error(
                     f"Challenge execution timed out after {self.config.EXECUTION_TIMEOUT}s"
@@ -835,12 +987,20 @@ class EpicAgentV(AgentV):
                     logger.debug(
                         "hCaptcha challenge frame closed; waiting for the server result"
                     )
-                    # hCaptcha replaces the challenge view as soon as the
-                    # answers are submitted. The validated server response
-                    # arrives after the frame is gone, so keep waiting for it
-                    # instead of failing on the closed frame.
-                    await self.page.wait_for_timeout(250)
-                    continue
+                    closed_deadline = min(
+                        response_deadline,
+                        time.monotonic() + 10,
+                    )
+                    while time.monotonic() < closed_deadline:
+                        if not self._captcha_response_queue.empty():
+                            break
+                        await self.page.wait_for_timeout(250)
+                    else:
+                        logger.warning(
+                            "hCaptcha frame closed without a validated server response"
+                        )
+                        return ChallengeSignal.FAILURE
+                    break
                 await self.page.wait_for_timeout(250)
             else:
                 logger.error(
@@ -856,6 +1016,20 @@ class EpicAgentV(AgentV):
         return ChallengeSignal.EXECUTION_TIMEOUT
 
     async def _task_handler(self, response):
+        if not getattr(self, "_decode_payloads", True):
+            if response.url.endswith("/hsw.js"):
+                print("HCAPTCHA_HSW:visual_only", flush=True)
+                return
+            if (
+                "/getcaptcha/" in response.url
+                and response.headers.get("content-type", "").split(";", 1)[0] != "application/json"
+            ):
+                # Let the site's own scripts process its challenge. Upstream
+                # can classify the visible task when no decoded payload exists.
+                self._captcha_payload = None
+                self._captcha_payload_queue.put_nowait(None)
+                self._keep_latest_payload()
+                return
         if "/checkcaptcha/" in response.url:
             print(f"HCAPTCHA_CHECK_RESPONSE:{response.status}", flush=True)
         if (
@@ -921,20 +1095,12 @@ def get_hcaptcha_agent(page: Page) -> AgentV:
 
 
 def get_login_hcaptcha_agent(page: Page) -> AgentV:
-    """Return the agent used by Epic's login transaction.
-
-    The login transaction uses the plain upstream agent. Epic only accepts a
-    token that the page's own hCaptcha scripts produced, and the upstream
-    agent leaves the page's scripts in charge. The project's own agent
-    replaces the page's hsw.js and answers the image grid from a screenshot
-    of its own, and Epic refuses those transactions with "Incorrect
-    response".
-    """
+    """Use the multi-page, stale-DOM recovery shared by Epic challenges."""
     agent = _AGENTS.get(page)
     if agent is None:
-        agent = AgentV(page=page, agent_config=settings)
+        agent = EpicAgentV(page=page, agent_config=settings)
         _AGENTS[page] = agent
-        logger.debug("Created the upstream hCaptcha agent for Epic login")
+        logger.debug("Created the multi-round hCaptcha agent for Epic login")
     return agent
 
 
@@ -944,9 +1110,9 @@ def replace_login_hcaptcha_agent(page: Page) -> AgentV:
     if previous is not None:
         _detach_hcaptcha_agent(page, previous)
 
-    agent = AgentV(page=page, agent_config=settings)
+    agent = EpicAgentV(page=page, agent_config=settings)
     _AGENTS[page] = agent
-    logger.debug("Replaced the upstream hCaptcha agent for a fresh Epic login transaction")
+    logger.debug("Replaced multi-round hCaptcha agent for a fresh Epic login transaction")
     return agent
 
 

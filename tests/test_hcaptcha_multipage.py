@@ -1,6 +1,8 @@
 import asyncio
 import importlib.util
+import os
 import sys
+import tempfile
 import types
 import unittest
 from enum import Enum
@@ -14,7 +16,6 @@ SOURCE = Path(__file__).resolve().parents[1] / "app/services/hcaptcha_agent_serv
 class Signal(str, Enum):
     SUCCESS = "success"
     FAILURE = "failure"
-    RETRY = "retry"
     EXECUTION_TIMEOUT = "challenge_execution_timeout"
     RESPONSE_TIMEOUT = "challenge_response_timeout"
 
@@ -49,23 +50,18 @@ class UpstreamAgent:
         for page_index in range(await self.robotic_arm.check_crumb_count()):
             await self.robotic_arm._capture_spatial_mapping(None, "cache", page_index)
             self.solved_pages.append((payload.kind, page_index))
-            payload.remaining -= 1
-            if payload.remaining > 0:
-                # hCaptcha renders the next page of a payload as a fresh
-                # challenge, and the task type can change between pages.
-                self._captcha_payload_queue.put_nowait(payload)
-            elif payload.next_payload is not None:
-                self._captcha_payload_queue.put_nowait(payload.next_payload)
-            else:
-                self._captcha_response_queue.put_nowait(
-                    types.SimpleNamespace(is_pass=payload.accepted)
-                )
+            if page_index + 1 == payload.pages:
+                if payload.next_payload is not None:
+                    self._captcha_payload_queue.put_nowait(payload.next_payload)
+                else:
+                    self._captcha_response_queue.put_nowait(
+                        types.SimpleNamespace(is_pass=payload.accepted)
+                    )
 
 
 def payload(pages=2, kind="image_label_multi_select", accepted=True, next_payload=None):
     return types.SimpleNamespace(
-        pages=pages, kind=kind, accepted=accepted, next_payload=next_payload,
-        remaining=pages,
+        pages=pages, kind=kind, accepted=accepted, next_payload=next_payload
     )
 
 
@@ -94,13 +90,8 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         result = await self.agent.wait_for_challenge()
 
         self.assertEqual(result, Signal.SUCCESS)
-        # One page per round: the second page arrives as a fresh challenge and
-        # is classified again, because the task type can change between pages.
         self.assertEqual(self.agent.solved_pages, [
-            ("image_label_multi_select", 0), ("image_label_multi_select", 0)
-        ])
-        self.assertEqual(self.agent.classified_types, [
-            "image_label_multi_select", "image_label_multi_select"
+            ("image_label_multi_select", 0), ("image_label_multi_select", 1)
         ])
         self.agent._cache_validated_captcha_response.assert_called_once()
         self.agent._retry_unanswered_challenge.assert_not_awaited()
@@ -112,9 +103,7 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         result = await self.agent.wait_for_challenge()
 
         self.assertEqual(result, Signal.SUCCESS)
-        self.assertEqual(self.agent.classified_types, [
-            "image_label_multi_select", "image_label_multi_select", "image_drag_multi"
-        ])
+        self.assertEqual(self.agent.classified_types, ["image_label_multi_select", "image_drag_multi"])
         self.assertEqual(len(self.agent.solved_pages), 3)
         self.assertEqual(self.agent._challenge_page_index, 0)
 
@@ -126,25 +115,6 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(result, Signal.SUCCESS)
         self.assertEqual(len(self.agent.solved_pages), 2)
         self.agent._cache_validated_captcha_response.assert_not_called()
-
-    async def test_rejected_round_ends_the_wait_for_the_login_agent(self):
-        # hCaptcha keeps the whole interaction of a challenge in its plan and
-        # Epic refuses a transaction whose plan holds a wrong answer, so the
-        # login agent has to hand the round back for a fresh challenge.
-        self.agent.restart_on_rejected_round = True
-        self.agent._captcha_payload_queue.put_nowait(payload(accepted=False))
-
-        result = await self.agent.wait_for_challenge()
-
-        self.assertEqual(result, Signal.RETRY)
-        self.agent._cache_validated_captcha_response.assert_not_called()
-
-    async def test_checkout_agent_keeps_answering_the_next_round(self):
-        self.agent._captcha_payload_queue.put_nowait(payload(accepted=False))
-
-        result = await self.agent.wait_for_challenge()
-
-        self.assertNotEqual(result, Signal.RETRY)
 
     async def test_drag_source_uses_the_current_page_entities(self):
         self.agent.robotic_arm.captcha_payload = types.SimpleNamespace(tasklist=[
@@ -161,6 +131,186 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((result["x"], result["y"]), (340, 360))
         await self.agent._capture_challenge_page(None, "cache", 2)
         self.assertIsNone(await self.agent._payload_drag_source(340, 360))
+
+    async def test_point_clicks_use_local_scaled_positions_after_layout_changes(self):
+        view = types.SimpleNamespace(
+            bounding_box=AsyncMock(side_effect=[
+                {"x": 710, "y": 373, "width": 1000, "height": 940},
+                {"x": 30, "y": 40, "width": 250, "height": 235},
+            ]), click=AsyncMock(),
+        )
+        frame = types.SimpleNamespace(locator=MagicMock(return_value=view))
+        await self.agent._click_image_points(frame, [
+            types.SimpleNamespace(x=250, y=235),
+            types.SimpleNamespace(x=100, y=200),
+        ], (500, 470))
+        # Locator coordinates stay local despite the changed page offsets.
+        self.assertEqual([call.kwargs["position"] for call in view.click.await_args_list], [
+            {"x": 500, "y": 470}, {"x": 50, "y": 100},
+        ])
+
+    def test_visual_only_question_receives_the_same_specialized_guidance(self):
+        self.agent.robotic_arm.captcha_payload = None
+        self.agent.robotic_arm._challenge_prompt = "Click on the ingredients that could be used to make the dish shown"
+        self.agent._original_match_user_prompt.return_value = "Base instructions"
+        prompt = self.agent._match_drag_user_prompt("image_label_multi_select")
+        self.assertIn("TOP RIGHT", prompt)
+        self.assertIn("fruit salad", prompt)
+        self.assertIn("Base instructions", prompt)
+
+    async def test_drag_canvas_uses_page_coordinates_in_nested_iframe(self):
+        elements = types.SimpleNamespace(
+            evaluate_all=AsyncMock(return_value=[{
+                "index": 7, "tag": "canvas", "x": 10, "y": 135, "width": 480, "height": 320,
+            }]),
+            nth=MagicMock(return_value=types.SimpleNamespace(bounding_box=AsyncMock(return_value={
+                "x": 720, "y": 435, "width": 480, "height": 320,
+            }))),
+        )
+        self.agent._get_nested_challenge_frame_locator = AsyncMock(
+            return_value=types.SimpleNamespace(locator=MagicMock(return_value=elements)),
+        )
+        self.agent.robotic_arm.captcha_payload = types.SimpleNamespace(tasklist=[
+            types.SimpleNamespace(entities=[types.SimpleNamespace(coords=[240, 160])]),
+        ])
+
+        result = await self.agent._payload_drag_source(960, 595)
+
+        self.assertEqual((result["x"], result["y"]), (960, 595))
+        elements.nth.assert_called_once_with(7)
+
+    async def test_move_card_uses_page_coordinates_before_drag_execution(self):
+        elements = types.SimpleNamespace(
+            evaluate_all=AsyncMock(return_value=[{"index": 5}]),
+            nth=MagicMock(return_value=types.SimpleNamespace(bounding_box=AsyncMock(return_value={
+                "x": 1090, "y": 345, "width": 100, "height": 104,
+            }))),
+        )
+        self.agent._get_nested_challenge_frame_locator = AsyncMock(
+            return_value=types.SimpleNamespace(locator=MagicMock(return_value=elements)),
+        )
+        self.agent._original_perform_drag_drop = AsyncMock()
+        path = types.SimpleNamespace(start_point=types.SimpleNamespace(x=1120, y=390),
+                                     end_point=types.SimpleNamespace(x=760, y=400))
+
+        await self.agent._perform_drag_drop_with_dom_source(path)
+
+        self.assertEqual((path.start_point.x, path.start_point.y), (1140, 397))
+        elements.nth.assert_called_once_with(5)
+
+    async def test_model_images_share_the_normalized_pixel_coordinate_system(self):
+        from PIL import Image
+
+        async def screenshot(*, path, **kwargs):
+            with Image.new("RGB", (500, 470), "red") as native:
+                native.save(path)
+        frame = types.SimpleNamespace(locator=MagicMock(return_value=types.SimpleNamespace(
+            screenshot=AsyncMock(side_effect=screenshot),
+        )))
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
+            raw, grid, size = await self.agent._capture_point_image(frame, Path(folder), 0)
+            self.assertEqual(size, (1000, 1000))
+            for path in (raw, grid):
+                with Image.open(path) as supplied:
+                    self.assertEqual(supplied.size, (1000, 1000))
+                    self.assertEqual(supplied.getpixel((555, 555)), (255, 0, 0))
+            self.assertEqual(self.agent._local_point_positions([
+                types.SimpleNamespace(x=786, y=694),
+            ], size), [(0.786, 0.694)])
+
+    async def test_any_invalid_point_prevents_all_clicks(self):
+        view = types.SimpleNamespace(click=AsyncMock())
+        frame = types.SimpleNamespace(locator=MagicMock(return_value=view))
+        for x, y in [(295, 530), (1067, 307), (500, 200), (-1, 50), (float("nan"), 1), (1, float("inf"))]:
+            with self.subTest(point=(x, y)):
+                with self.assertRaises(self.module.InvalidChallengeCoordinates):
+                    await self.agent._click_image_points(frame, [
+                        types.SimpleNamespace(x=200, y=200), types.SimpleNamespace(x=x, y=y),
+                    ], (500, 470))
+        view.click.assert_not_awaited()
+
+    async def test_point_pages_retry_invalid_answer_before_clicking_and_submit_every_page(self):
+        arm = self.agent.robotic_arm
+        arm.signal_crumb_count = 2
+        frames = [MagicMock(), MagicMock()]
+        arm.get_challenge_frame_locator = AsyncMock(side_effect=frames)
+        arm.click_by_mouse = AsyncMock()
+        self.agent.config.create_cache_key = MagicMock(return_value=Path("cache"))
+        self.agent.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS = 0
+        self.agent._capture_point_image = AsyncMock(return_value=("raw", "grid", (500, 470)))
+        self.agent._click_image_points = AsyncMock()
+        def answer(x, y):
+            return types.SimpleNamespace(points=[types.SimpleNamespace(x=x, y=y)], log_message="points")
+        arm._spatial_point_reasoner = AsyncMock(side_effect=[
+            answer(295, 530), answer(200, 200), answer(300, 300),
+        ])
+        arm._spatial_point_reasoner.cache_response = MagicMock()
+
+        await arm.challenge_image_label_select("image_label_multi_select")
+
+        self.assertEqual(arm._spatial_point_reasoner.await_count, 3)
+        self.assertIn("previous answer was invalid", arm._spatial_point_reasoner.await_args_list[1].kwargs["auxiliary_information"])
+        self.assertEqual([call.args[0] for call in self.agent._click_image_points.await_args_list], frames)
+        self.assertEqual(arm.click_by_mouse.await_count, 2)
+
+    async def test_closed_point_frame_preserves_a_pass_arriving_during_inference(self):
+        arm = self.agent.robotic_arm
+        arm.refresh_challenge = AsyncMock(side_effect=ValueError("Frame detached"))
+
+        async def answer_after_frame_closes(job_type):
+            self.agent._captcha_response_queue.put_nowait(types.SimpleNamespace(is_pass=True))
+            raise TimeoutError("Locator.bounding_box timed out")
+
+        self.agent._select_image_local_points_impl = answer_after_frame_closes
+
+        async def upstream_dispatch():
+            try:
+                return await arm.challenge_image_label_select("image_label_multi_select")
+            except Exception:
+                await arm.refresh_challenge()
+
+        self.agent._solve_captcha = upstream_dispatch
+        result = await self.agent.wait_for_challenge()
+        self.assertEqual(result, Signal.SUCCESS)
+        arm.refresh_challenge.assert_not_awaited()
+        self.agent._cache_validated_captcha_response.assert_called_once()
+
+    async def test_closed_point_frame_without_result_returns_failure_without_refresh(self):
+        self.agent._select_image_local_points_impl = AsyncMock(
+            side_effect=TimeoutError("Locator.bounding_box timed out"),
+        )
+        result = await self.agent.robotic_arm.challenge_image_label_select("image_label_multi_select")
+        self.assertEqual(result, Signal.FAILURE)
+
+    async def test_repeated_invalid_answer_is_failure_without_a_click_or_submit(self):
+        arm = self.agent.robotic_arm
+        arm.signal_crumb_count = 1
+        arm.get_challenge_frame_locator = AsyncMock(return_value=MagicMock())
+        arm.click_by_mouse = AsyncMock()
+        self.agent.config.create_cache_key = MagicMock(return_value=Path("cache"))
+        self.agent.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS = 0
+        self.agent._capture_point_image = AsyncMock(return_value=("raw", "grid", (500, 470)))
+        self.agent._click_image_points = AsyncMock()
+        arm._spatial_point_reasoner = AsyncMock(return_value=types.SimpleNamespace(
+            points=[types.SimpleNamespace(x=295, y=530)], log_message="invalid",
+        ))
+        arm._spatial_point_reasoner.cache_response = MagicMock()
+        arm.refresh_challenge = AsyncMock(side_effect=ValueError("Element is not visible or does not exist"))
+        async def upstream_dispatch():
+            # The real upstream dispatcher catches all Exceptions, then tries
+            # to refresh the frame. A rejected answer must not enter that path.
+            try:
+                return await arm.challenge_image_label_select("image_label_multi_select")
+            except Exception:
+                await arm.refresh_challenge()
+        self.agent._solve_captcha = upstream_dispatch
+
+        result = await self.agent.wait_for_challenge()
+
+        self.assertEqual(result, Signal.FAILURE)
+        self.agent._click_image_points.assert_not_awaited()
+        arm.click_by_mouse.assert_not_awaited()
+        arm.refresh_challenge.assert_not_awaited()
 
 
 if __name__ == "__main__":

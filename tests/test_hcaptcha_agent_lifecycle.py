@@ -58,22 +58,14 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         self.assertIn("self._hsw_lock = asyncio.Lock()", source)
         self.assertIn("if document_key == self._hsw_document_key:", source)
         self.assertIn("_get_nested_challenge_frame_locator", source)
-        self.assertIn('"frame=challenge" in frame.url', source)
+        self.assertIn('"frame=challenge" not in frame.url', source)
         self.assertIn("HSW payload was not decoded", source)
         self.assertIn("prepare_for_new_challenge", source)
         self.assertIn("_keep_latest_payload", source)
         self.assertIn("wait_for_challenge_start", source)
         self.assertIn("hCaptcha issued another round after submission", source)
         self.assertIn("ChallengeSignal.RESPONSE_TIMEOUT", source)
-        # A closed challenge frame is the normal state right after the
-        # answers are submitted, so the validated server response decides.
-        self.assertIn("hCaptcha challenge frame closed; waiting for the server result", source)
-        self.assertNotIn("frame closed without a validated server response", source)
-        # One page per round: hCaptcha can change the task type between the
-        # pages of a payload, and upstream answers all of them with the first
-        # page's type.
-        self.assertIn("self.robotic_arm.check_crumb_count = self._single_crumb_count", source)
-        self.assertIn("async def _single_crumb_count", source)
+        self.assertIn("frame closed without a validated server response", source)
         self.assertIn("_perform_drag_drop_with_dom_source", source)
         self.assertIn("_match_drag_user_prompt", source)
         self.assertIn("PIPE_ROUTE_DRAG_PROMPT", source)
@@ -115,12 +107,12 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         replacement = MagicMock()
         module._AGENTS[page] = previous
 
-        original_agent_class = module.AgentV
-        module.AgentV = MagicMock(return_value=replacement)
+        original_agent_class = module.EpicAgentV
+        module.EpicAgentV = MagicMock(return_value=replacement)
         try:
             result = module.replace_login_hcaptcha_agent(page)
         finally:
-            module.AgentV = original_agent_class
+            module.EpicAgentV = original_agent_class
 
         self.assertIs(result, replacement)
         page.remove_listener.assert_called_once_with(
@@ -128,18 +120,16 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         )
         self.assertIs(module._AGENTS[page], replacement)
 
-    def test_login_uses_the_plain_upstream_agent(self):
+    def test_login_reuses_the_multi_round_agent_without_duplicate_listeners(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
-        source = (ROOT / "app/services/hcaptcha_agent_service.py").read_text(
-            encoding="utf-8"
-        )
-        start = source.index("def get_login_hcaptcha_agent")
-        end = source.index("def get_legacy_checkout_agent", start)
-        login_factory = source[start:end]
-        # Epic only accepts a token that the page's own hCaptcha scripts
-        # produced, so the login transaction keeps the upstream agent.
-        self.assertIn("AgentV(page=page, agent_config=settings)", login_factory)
-        self.assertNotIn("EpicAgentV(page=page", login_factory)
+        page = MagicMock()
+        replacement = MagicMock()
+        with patch.object(module, "EpicAgentV", return_value=replacement) as factory:
+            first = module.get_login_hcaptcha_agent(page)
+            second = module.get_login_hcaptcha_agent(page)
+        self.assertIs(first, replacement)
+        self.assertIs(second, first)
+        factory.assert_called_once_with(page=page, agent_config=module.settings)
 
     def test_legacy_checkout_agent_replaces_and_caches_the_page_agent(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
@@ -176,6 +166,50 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
         loader.assert_awaited_once_with(agent.page, response.url)
         agent.page.evaluate.assert_any_await("hsw script")
+
+    def test_visual_mode_does_not_inject_or_decode_scripts_in_the_login_page(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+        agent.page = types.SimpleNamespace(evaluate=AsyncMock())
+        agent._decode_payloads = False
+        agent._captcha_payload_queue = asyncio.Queue()
+        hsw = types.SimpleNamespace(url="https://hcaptcha.com/hsw.js")
+        payload = types.SimpleNamespace(
+            url="https://hcaptcha.com/getcaptcha/site",
+            headers={"content-type": "application/octet-stream"}, body=AsyncMock(),
+        )
+        with patch.object(module, "load_hsw_script", new=AsyncMock()) as loader:
+            asyncio.run(agent._task_handler(hsw))
+            asyncio.run(agent._task_handler(payload))
+        loader.assert_not_awaited()
+        agent.page.evaluate.assert_not_awaited()
+        payload.body.assert_not_awaited()
+        self.assertEqual(agent._captcha_payload_queue.qsize(), 1)
+        self.assertIsNone(agent._captcha_payload_queue.get_nowait())
+
+    def test_frame_selection_ignores_hidden_and_offscreen_challenges(self):
+        module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
+
+        def frame(x, opacity_visible=True):
+            owner = types.SimpleNamespace(
+                bounding_box=AsyncMock(return_value={"x": x, "y": 100, "width": 500, "height": 470}),
+                evaluate=AsyncMock(return_value=opacity_visible),
+            )
+            return types.SimpleNamespace(
+                url="https://newassets.hcaptcha.com/captcha/test?frame=challenge",
+                frame_element=AsyncMock(return_value=owner),
+                locator=MagicMock(return_value=types.SimpleNamespace(is_visible=AsyncMock(return_value=True))),
+            )
+
+        offscreen, hidden, active = frame(-9999), frame(100, False), frame(100)
+        agent.page = types.SimpleNamespace(
+            viewport_size={"width": 1920, "height": 1080},
+            frames=[offscreen, hidden, active],
+        )
+        self.assertIs(asyncio.run(agent._find_visible_challenge_frame()), active)
+        agent.page.frames = [offscreen, hidden]
+        self.assertIsNone(asyncio.run(agent._find_visible_challenge_frame()))
 
     def test_checkout_resets_agent_before_submitting_order(self):
         source = (ROOT / "app/services/epic_games_service.py").read_text(
