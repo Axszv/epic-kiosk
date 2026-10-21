@@ -53,6 +53,17 @@ class ScheduledRunnerTests(unittest.TestCase):
         self.assertIn('"app", "volumes", "user_data", email', script)
         self.assertIn("if fresh_profile and not failed:", script)
 
+    def test_a_profile_that_fails_twice_is_thrown_away(self):
+        # A profile that keeps the session of a failed attempt makes Epic
+        # challenge the visitor over and over without ever accepting an
+        # answer, so the second failure starts over with a clean profile.
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/github_actions_claim_once.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('elif len(account_result["attempts"]) > 1:', script)
+        self.assertIn("after a repeated login failure.", script)
+
 
 if __name__ == "__main__":
     unittest.main()

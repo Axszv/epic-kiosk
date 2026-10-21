@@ -603,6 +603,18 @@ def main() -> int:
                         "a blocked or invalid login session.",
                         flush=True,
                     )
+                elif len(account_result["attempts"]) > 1:
+                    # A profile that fails a second time keeps the session of
+                    # the first attempt, and Epic then challenges the visitor
+                    # over and over without ever accepting an answer. A clean
+                    # profile is what a fresh login succeeds with.
+                    profile_refreshed = refresh_account_profile(account["email"])
+                    attempt_result["profile_refreshed"] = profile_refreshed
+                    print(
+                        f"Account {original_index} browser profile was refreshed "
+                        "after a repeated login failure.",
+                        flush=True,
+                    )
                 if attempt < max_attempts:
                     retry_delay = account_retry_delay(attempt_result)
                     print(
