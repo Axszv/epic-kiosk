@@ -204,6 +204,51 @@ class EpicAuthorization:
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
 
+    async def _log_email_transaction_diagnostic(self, r: Response, body_text: str) -> None:
+        """Report why Epic refused the login transaction, without any secret.
+
+        The two refusals look the same from the outside. `csrf_token_invalid`
+        means the request carried an XSRF token Epic had already replaced,
+        and `captcha_invalid` means Epic rejected the captcha itself. The
+        fingerprints of the header, the cookie and the token tell them
+        apart, and they are what a later run needs to judge a change.
+        """
+        error_code = ""
+        with suppress(Exception):
+            payload = json.loads(body_text or "{}")
+            error_code = str(payload.get("errorCode") or "")
+        header = ""
+        with suppress(Exception):
+            header = (await r.request.all_headers()).get("x-xsrf-token", "")
+        cookies = []
+        with suppress(Exception):
+            cookies = [
+                diagnostic_value_fingerprint(str(cookie.get("value") or ""))
+                for cookie in await self.page.context.cookies([r.request.url])
+                if str(cookie.get("name") or "") == "XSRF-TOKEN"
+            ]
+        rotated = []
+        with suppress(Exception):
+            for item in await r.headers_array():
+                value = str(item.get("value") or "")
+                if "XSRF-TOKEN" in value:
+                    rotated.append(diagnostic_value_fingerprint(value.split("=", 1)[-1]))
+        captcha = {}
+        with suppress(Exception):
+            request_payload = json.loads(r.request.post_data or "{}")
+            captcha = {
+                key: diagnostic_value_fingerprint(str(value))
+                for key, value in request_payload.items()
+                if "captcha" in key.casefold()
+            }
+        logger.warning(
+            f"EPIC_EMAIL_RESPONSE:status={r.status}:error={error_code}:"
+            f"header={diagnostic_value_fingerprint(header)}:"
+            f"cookies={json.dumps(cookies, ensure_ascii=False)}:"
+            f"rotated={json.dumps(rotated, ensure_ascii=False)}:"
+            f"captcha={json.dumps(captcha, ensure_ascii=False)}"
+        )
+
     async def _reset_login_cookies(self) -> None:
         """Drop the cookies of a dead session before the login page starts.
 
@@ -643,6 +688,7 @@ class EpicAuthorization:
                 f"📡 邮箱校验 API 响应: {r.url} | 状态码: {r.status} | "
                 f"响应: {body_text[:500]}"
             )
+            await self._log_email_transaction_diagnostic(r, body_text)
             if is_epic_email_transaction_failure(r.status, body_text):
                 logger.warning(
                     f"Epic 拒绝邮箱/hCaptcha 事务，准备在当前浏览器中恢复: HTTP {r.status}"
