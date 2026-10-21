@@ -187,7 +187,7 @@ async def deploy():
     This function runs the collection process immediately and optionally
     sets up a scheduled task for automatic recurring execution.
     """
-    headless = True
+    headless = os.getenv("EPIC_BROWSER_HEADLESS", "true").strip().lower() != "false"
 
     # Log current configuration for debugging
     sj = settings.model_dump(mode="json")
