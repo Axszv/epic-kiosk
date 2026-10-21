@@ -44,6 +44,7 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
         auth = namespace["EpicAuthorization"]()
         page, route = self.build_page([{"name": "XSRF-TOKEN", "value": "live-value"}])
         auth.page = page
+        auth._refresh_xsrf_token = AsyncMock(return_value="live-value")
 
         await auth._install_live_xsrf_route()
 
@@ -57,6 +58,7 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
         auth = namespace["EpicAuthorization"]()
         page, route = self.build_page([{"name": "XSRF-TOKEN", "value": "stale-value"}])
         auth.page = page
+        auth._refresh_xsrf_token = AsyncMock(return_value="stale-value")
 
         await auth._install_live_xsrf_route()
 
@@ -68,6 +70,7 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
         auth = namespace["EpicAuthorization"]()
         page, route = self.build_page([{"name": "XSRF-TOKEN", "value": "live-value"}])
         auth.page = page
+        auth._refresh_xsrf_token = AsyncMock(return_value="live-value")
 
         await auth._install_live_xsrf_route()
 
@@ -82,6 +85,7 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
         auth = namespace["EpicAuthorization"]()
         page, route = self.build_page([{"name": "XSRF-TOKEN", "value": "live-value"}])
         auth.page = page
+        auth._refresh_xsrf_token = AsyncMock(return_value="live-value")
 
         await auth._install_live_xsrf_route()
 
