@@ -957,6 +957,13 @@ class EpicAuthorization:
                         logger.info(f"处理登录 hCaptcha [{captcha_attempt}/12]")
                         captcha_in_progress = True
                         captcha_round_failed = False
+                        if os.getenv(
+                            "EPIC_LET_PAGE_SOLVE_CAPTCHA", "false"
+                        ).strip().lower() in {"1", "true", "yes", "on"}:
+                            # Let the page answer its own invisible hCaptcha.
+                            captcha_in_progress = False
+                            await self.page.wait_for_timeout(2000)
+                            continue
                         await asyncio.wait_for(
                             agent.wait_for_challenge(),
                             timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
