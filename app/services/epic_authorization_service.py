@@ -8,6 +8,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import time
 from contextlib import suppress
 from enum import Enum
@@ -401,6 +402,26 @@ class EpicAuthorization:
             await self.page.wait_for_timeout(500)
         else:
             return True
+
+        # Epic renders an invisible hCaptcha. When the visitor has enough
+        # history, hCaptcha lets the request through on its own and the page
+        # submits the token itself. Answering the challenge for the page
+        # produces a token that Epic refuses, so this mode only waits for the
+        # page to continue.
+        if os.getenv("EPIC_LET_PAGE_SOLVE_CAPTCHA", "false").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            deadline = time.monotonic() + settings.LOGIN_RESULT_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                if self._has_refresh_csrf_session() or await self._password_form_ready():
+                    logger.success("✅ 邮箱步骤 hCaptcha 已由页面自行通过")
+                    return True
+                if not self._email_transaction_failure_signal.empty():
+                    return True
+                await self.page.wait_for_timeout(1000)
+            await self._save_page_debug("login_email_hcaptcha_failed")
+            logger.error("❌ 邮箱步骤 hCaptcha 未通过")
+            return False
 
         for attempt in range(1, 4):
             logger.info(f"处理邮箱步骤 hCaptcha [{attempt}/3]")
