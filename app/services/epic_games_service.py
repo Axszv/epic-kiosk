@@ -1045,6 +1045,25 @@ class EpicGames:
         except Exception as err:
             logger.warning(f"CHECKOUT_BUTTON_STATE:{phase}:inspect_failed:{err}")
 
+    async def _wait_for_order_button(self, page: Page, attempts: int = 4):
+        """Wait for the order form that follows a solved challenge.
+
+        Epic renders the order form once its Talon execution has accepted the
+        challenge, and that takes a moment longer than the form of a checkout
+        without a challenge.
+        """
+        last_error: AssertionError | None = None
+        for attempt in range(attempts):
+            try:
+                return await self._active_purchase_container(page)
+            except AssertionError as err:
+                last_error = err
+                logger.info(
+                    f"等待下单按钮 ({attempt + 1}/{attempts})"
+                )
+                await page.wait_for_timeout(4000)
+        raise last_error
+
     @staticmethod
     async def _checkout_has_captcha(page: Page) -> bool:
         """Return whether the checkout shows a hCaptcha challenge.
@@ -1138,7 +1157,7 @@ class EpicGames:
                 # and look for the button again.
                 if not await self._solve_checkout_captcha(page, agent):
                     raise
-                _, payment_btn = await self._active_purchase_container(page)
+                _, payment_btn = await self._wait_for_order_button(page)
             if await self._handle_device_not_supported_modal(page):
                 _, payment_btn = await self._active_purchase_container(page)
 
