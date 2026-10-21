@@ -153,6 +153,10 @@ jobs:
             pyyaml
 
       - name: Install Camoufox browser
+        # A manual run that names one account runs only that account.
+        if: >-
+          github.event.inputs.account_index == '' ||
+          github.event.inputs.account_index == format('{0}', matrix.account)
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -170,6 +174,10 @@ jobs:
           test -f "${CAMOUFOX_UBO_DIR}/manifest.json"
 
       - name: Restore browser state
+        # A manual run that names one account runs only that account.
+        if: >-
+          github.event.inputs.account_index == '' ||
+          github.event.inputs.account_index == format('{0}', matrix.account)
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
@@ -179,6 +187,10 @@ jobs:
             epic-state-v2-
 
       - name: Prepare browser proxy
+        # A manual run that names one account runs only that account.
+        if: >-
+          github.event.inputs.account_index == '' ||
+          github.event.inputs.account_index == format('{0}', matrix.account)
         if: github.event.inputs.use_browser_proxy == 'true'
         # A proxy outage must not skip the weekly claim. The claim then runs
         # with the runner's direct connection instead.
@@ -215,6 +227,10 @@ jobs:
           fi
 
       - name: Save browser state
+        # A manual run that names one account runs only that account.
+        if: >-
+          github.event.inputs.account_index == '' ||
+          github.event.inputs.account_index == format('{0}', matrix.account)
         if: always()
         uses: actions/cache/save@v4
         with:
@@ -222,6 +238,10 @@ jobs:
           key: epic-state-v2-${{ github.run_id }}-${{ matrix.account }}-${{ github.run_attempt }}
 
       - name: Upload logs
+        # A manual run that names one account runs only that account.
+        if: >-
+          github.event.inputs.account_index == '' ||
+          github.event.inputs.account_index == format('{0}', matrix.account)
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -236,6 +256,10 @@ jobs:
           retention-days: 7
 
       - name: Send ServerChan notification
+        # A manual run that names one account runs only that account.
+        if: >-
+          github.event.inputs.account_index == '' ||
+          github.event.inputs.account_index == format('{0}', matrix.account)
         if: always()
         continue-on-error: true
         env:
