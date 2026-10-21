@@ -712,8 +712,13 @@ class EpicAuthorization:
         self._login_agent = agent
 
         # The captcha can take a minute to solve, and Epic rotates its XSRF
-        # cookie meanwhile. Keep the login transaction on the live cookie.
-        await self._install_live_xsrf_route()
+        # cookie meanwhile. Keep the login transaction on the live cookie. The
+        # portal's own retry is left alone by default, because a request that
+        # the portal repeats is one it still wants to make.
+        if os.getenv("EPIC_LIVE_XSRF_ROUTE", "false").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            await self._install_live_xsrf_route()
 
         # {{< SIGN IN PAGE >}}
         logger.debug("Login with Email")
