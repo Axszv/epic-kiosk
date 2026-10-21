@@ -224,6 +224,24 @@ class EpicAuthorization:
         print(f"ACCOUNT_SESSION_PROBE:status={response.status}", flush=True)
         return response.status == 200
 
+    async def _refresh_xsrf_token(self, url: str) -> str:
+        """Return the XSRF cookie the account portal currently expects."""
+        with suppress(Exception):
+            await self.page.request.get(
+                "https://www.epicgames.com/id/api/location", timeout=15000
+            )
+        with suppress(Exception):
+            cookies = await self.page.context.cookies([url])
+            return next(
+                (
+                    str(cookie.get("value") or "")
+                    for cookie in cookies
+                    if str(cookie.get("name") or "") == "XSRF-TOKEN"
+                ),
+                "",
+            )
+        return ""
+
     async def _install_live_xsrf_route(self) -> None:
         """Send Epic's live XSRF cookie with the login transaction.
 
@@ -250,17 +268,12 @@ class EpicAuthorization:
                 await route.abort()
                 return
             state["last_body"] = body
-            token = ""
-            with suppress(Exception):
-                cookies = await self.page.context.cookies([request.url])
-                token = next(
-                    (
-                        str(cookie.get("value") or "")
-                        for cookie in cookies
-                        if str(cookie.get("name") or "") == "XSRF-TOKEN"
-                    ),
-                    "",
-                )
+            # Epic rotates the XSRF-TOKEN cookie on every response, and the
+            # account portal sends the copy it read when the page started. A
+            # captcha takes a minute to solve, so the copy is stale by then
+            # and Epic refuses the transaction with `csrf_token_invalid`. Ask
+            # the portal for a fresh token right before the transaction.
+            token = await self._refresh_xsrf_token(request.url)
             if not token or not header or token == header:
                 await route.continue_()
                 return
