@@ -187,7 +187,7 @@ jobs:
       - name: Prepare browser proxy
         # A manual run that names one account runs only that account.
         if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account)) &&
           (github.event.inputs.use_browser_proxy == 'true')
         # A proxy outage must not skip the weekly claim. The claim then runs
         # with the runner's direct connection instead.
@@ -225,7 +225,7 @@ jobs:
       - name: Save browser state
         # A manual run that names one account runs only that account.
         if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account)) &&
           (always())
         uses: actions/cache/save@v4
         with:
@@ -235,7 +235,7 @@ jobs:
       - name: Upload logs
         # A manual run that names one account runs only that account.
         if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account)) &&
           (always())
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -252,7 +252,7 @@ jobs:
       - name: Send ServerChan notification
         # A manual run that names one account runs only that account.
         if: >-
-          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account))
+          (github.event.inputs.account_index == '' || github.event.inputs.account_index == format('{0}', matrix.account)) &&
           (always())
         continue-on-error: true
         env:
