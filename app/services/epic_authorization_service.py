@@ -201,29 +201,6 @@ class EpicAuthorization:
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
 
-    async def _account_session_is_valid(self) -> bool:
-        """Ask Epic's account API whether the cached session still works.
-
-        A 401 means the session expired and the login form with its captcha is
-        unavoidable. A 200 means the account is still signed in, so the store
-        can be used right away.
-        """
-        endpoint = "https://accounts.epicgames.com/account/v2/payment/ajaxGetOrderHistory"
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "referer": "https://accounts.epicgames.com/account/transactions?lang=en-US",
-            "x-requested-with": "XMLHttpRequest",
-        }
-        try:
-            response = await self.page.context.request.get(
-                endpoint, headers=headers, timeout=30000
-            )
-        except Exception as err:
-            print(f"ACCOUNT_SESSION_PROBE:failed:{type(err).__name__}", flush=True)
-            return False
-        print(f"ACCOUNT_SESSION_PROBE:status={response.status}", flush=True)
-        return response.status == 200
-
     async def _refresh_xsrf_token(self, url: str) -> str:
         """Return the XSRF cookie the account portal currently expects."""
         with suppress(Exception):
@@ -1272,14 +1249,6 @@ class EpicAuthorization:
 
         for attempt in range(3):
             logger.info(f"🔄 登录尝试 [{attempt + 1}/3]")
-
-            # A Cloudflare check on the store page hides its navigation
-            # element, and the code then shows the login form even though the
-            # account session is fine. The account API answers that directly,
-            # and a valid session means the weekly claim needs no captcha.
-            if attempt == 0 and await self._account_session_is_valid():
-                logger.success("✅ Epic Games 已登录（账号会话有效）")
-                return ErrorType.SUCCESS
 
             try:
                 await self.page.goto(URL_CLAIM, wait_until="domcontentloaded")

@@ -131,7 +131,17 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
         mobile_offers = load_mobile_offers(os.getenv("MOBILE_OFFERS_JSON", ""))
         if mobile_offers:
             logger.info(f"MOBILE_COLLECTION_START:offers={len(mobile_offers)}")
+            # The mobile store opens the account login page when its own
+            # session is missing, and that page replaces the session cookies
+            # of the profile. The browser profile is cached for the next
+            # weekly run, so the desktop session is kept and restored.
+            session_cookies = await page.context.cookies(
+                ["https://www.epicgames.com", "https://store.epicgames.com"]
+            )
             mobile_results = await collect_mobile_offers(page, mobile_offers)
+            if session_cookies:
+                await page.context.add_cookies(session_cookies)
+                logger.info("MOBILE_COLLECTION_DONE:desktop_session_restored")
             successful_statuses = {
                 "already_owned",
                 "verified_owned",
