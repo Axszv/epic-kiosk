@@ -218,16 +218,6 @@ jobs:
           if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
             echo "::warning::No browser proxy is available; continuing with the runner's direct connection"
           fi
-          # The accounts run at the same time, and the model gateway's free
-          # tier only takes a few requests a minute. Stagger the accounts so
-          # their captcha answers do not queue behind each other.
-          if [ -n "$EPIC_ACCOUNT_INDEX" ]; then
-            delay=$(( (EPIC_ACCOUNT_INDEX - 1) * 90 ))
-            if [ "$delay" -gt 0 ]; then
-              echo "Waiting ${delay}s before this account starts"
-              sleep "$delay"
-            fi
-          fi
           python scripts/github_actions_claim_once.py
 
       - name: Stop browser proxy

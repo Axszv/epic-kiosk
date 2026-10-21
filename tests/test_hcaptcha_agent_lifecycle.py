@@ -115,12 +115,12 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         replacement = MagicMock()
         module._AGENTS[page] = previous
 
-        original_agent_class = module.EpicAgentV
-        module.EpicAgentV = MagicMock(return_value=replacement)
+        original_agent_class = module.AgentV
+        module.AgentV = MagicMock(return_value=replacement)
         try:
             result = module.replace_login_hcaptcha_agent(page)
         finally:
-            module.EpicAgentV = original_agent_class
+            module.AgentV = original_agent_class
 
         self.assertIs(result, replacement)
         page.remove_listener.assert_called_once_with(
@@ -128,7 +128,7 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         )
         self.assertIs(module._AGENTS[page], replacement)
 
-    def test_login_keeps_the_page_hsw_script(self):
+    def test_login_uses_the_plain_upstream_agent(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
         source = (ROOT / "app/services/hcaptcha_agent_service.py").read_text(
             encoding="utf-8"
@@ -136,10 +136,10 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         start = source.index("def get_login_hcaptcha_agent")
         end = source.index("def get_legacy_checkout_agent", start)
         login_factory = source[start:end]
-        # The decoded payload is what the model answers, so the page's own
-        # hsw.js has to stay in charge.
-        self.assertIn("library_solving=True", login_factory)
-        self.assertIn("inject_hsw=False", login_factory)
+        # Epic only accepts a token that the page's own hCaptcha scripts
+        # produced, so the login transaction keeps the upstream agent.
+        self.assertIn("AgentV(page=page, agent_config=settings)", login_factory)
+        self.assertNotIn("EpicAgentV(page=page", login_factory)
 
     def test_legacy_checkout_agent_replaces_and_caches_the_page_agent(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
@@ -168,7 +168,6 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         agent.page.evaluate = AsyncMock(side_effect=[None, True])
         agent._hsw_lock = asyncio.Lock()
         agent._hsw_document_key = ""
-        agent.inject_hsw = True
         agent.page.url = "https://store.epicgames.com/p/test"
         response = types.SimpleNamespace(url="https://hcaptcha.com/hsw.js")
 
@@ -177,15 +176,6 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
         loader.assert_awaited_once_with(agent.page, response.url)
         agent.page.evaluate.assert_any_await("hsw script")
-
-    def test_login_leaves_the_hsw_script_to_the_upstream_agent(self):
-        source = (ROOT / "app/services/hcaptcha_agent_service.py").read_text(
-            encoding="utf-8"
-        )
-        # The decoded payload is what the model answers, so the page's own
-        # hsw.js has to stay in charge.
-        self.assertIn("if not self.inject_hsw:", source)
-        self.assertIn("return await super()._task_handler(response)", source)
 
     def test_checkout_resets_agent_before_submitting_order(self):
         source = (ROOT / "app/services/epic_games_service.py").read_text(
