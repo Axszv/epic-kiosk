@@ -190,6 +190,10 @@ jobs:
         run: python scripts/prepare_browser_proxy.py
 
       - name: Run Epic claim
+        # A manual run that names one account runs only that account.
+        if: >-
+          github.event.inputs.account_index == '' ||
+          github.event.inputs.account_index == format('{0}', matrix.account)
         env:
           EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_LET_PAGE_SOLVE_CAPTCHA: ${{ github.event.inputs.let_page_solve_captcha || 'false' }}
