@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import types
 import unittest
 from contextlib import suppress
@@ -16,8 +17,10 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/epic-claim.y
 
 tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "EpicAuthorization")
-cls.body = [n for n in cls.body if isinstance(n, ast.AsyncFunctionDef)
-            and n.name in {"_install_live_xsrf_route", "_reset_xsrf_cookie"}]
+cls.body = [n for n in cls.body
+            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+            and n.name in {"_install_live_xsrf_route", "_reset_xsrf_cookie",
+                           "_reset_login_cookies", "_has_refresh_csrf_session"}]
 fingerprint = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                    and n.name == "diagnostic_value_fingerprint")
 namespace = {
@@ -26,6 +29,7 @@ namespace = {
     "hashlib": hashlib,
     "json": json,
     "os": os,
+    "re": re,
 }
 exec(compile(ast.Module(body=[cls, fingerprint], type_ignores=[]), str(SOURCE), "exec"), namespace)
 
@@ -124,6 +128,33 @@ class StaleXsrfCookieTests(unittest.IsolatedAsyncioTestCase):
 
         with unittest.mock.patch.dict(os.environ, {"EPIC_RESET_XSRF_COOKIE": "false"}):
             await auth._reset_xsrf_cookie()
+
+        context.clear_cookies.assert_not_awaited()
+
+
+class StaleSessionCookieTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_epic_cookies_are_dropped_before_the_login(self):
+        # The one run that logged in successfully started with no Epic cookie
+        # at all; a cached profile carries the leftovers of earlier attempts.
+        auth = namespace["EpicAuthorization"]()
+        context = types.SimpleNamespace(clear_cookies=AsyncMock())
+        auth.page = types.SimpleNamespace(context=context)
+        auth._refresh_csrf_seen = False
+        auth._is_refresh_csrf_signal = types.SimpleNamespace(empty=lambda: True)
+
+        await auth._reset_login_cookies()
+
+        context.clear_cookies.assert_awaited_once()
+        self.assertIn("epicgames", context.clear_cookies.await_args.kwargs["domain"].pattern)
+
+    async def test_a_working_session_is_never_thrown_away(self):
+        auth = namespace["EpicAuthorization"]()
+        context = types.SimpleNamespace(clear_cookies=AsyncMock())
+        auth.page = types.SimpleNamespace(context=context)
+        auth._refresh_csrf_seen = True
+        auth._is_refresh_csrf_signal = types.SimpleNamespace(empty=lambda: True)
+
+        await auth._reset_login_cookies()
 
         context.clear_cookies.assert_not_awaited()
 

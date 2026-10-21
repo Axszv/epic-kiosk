@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from contextlib import suppress
 from enum import Enum
@@ -202,6 +203,30 @@ class EpicAuthorization:
 
     def _has_refresh_csrf_session(self) -> bool:
         return self._refresh_csrf_seen or not self._is_refresh_csrf_signal.empty()
+
+    async def _reset_login_cookies(self) -> None:
+        """Drop the cookies of a dead session before the login page starts.
+
+        The one run that logged in successfully restored no cache at all, so
+        its browser started without a single Epic cookie. A cached profile
+        instead carries the leftovers of every earlier attempt, and Epic
+        answers the login transaction of such a profile with
+        `captcha_invalid` even when hCaptcha accepted the challenge. The
+        session is only cleared when the profile has no working session left,
+        so a cached login is never thrown away.
+        """
+        if os.getenv("EPIC_RESET_LOGIN_COOKIES", "true").strip().lower() not in {
+            "1", "true", "yes", "on"
+        }:
+            return
+        if self._has_refresh_csrf_session():
+            logger.warning("LOGIN_SESSION:the cached session is still valid")
+            return
+        with suppress(Exception):
+            await self.page.context.clear_cookies(
+                domain=re.compile(r"(^|\.)epicgames\.com$")
+            )
+            logger.warning("LOGIN_SESSION:stale_cookies_cleared")
 
     async def _reset_xsrf_cookie(self) -> None:
         """Drop the cached XSRF cookie so the portal reads a current one.
@@ -775,6 +800,7 @@ class EpicAuthorization:
         try:
             point_url = "https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true"
             self._login_point_url = point_url
+            await self._reset_login_cookies()
             await self._reset_xsrf_cookie()
             await self.page.goto(point_url, wait_until="domcontentloaded")
             await self.page.wait_for_timeout(1500)
