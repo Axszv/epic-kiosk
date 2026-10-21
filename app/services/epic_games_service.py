@@ -1044,6 +1044,43 @@ class EpicGames:
         except Exception as err:
             logger.warning(f"CHECKOUT_BUTTON_STATE:{phase}:inspect_failed:{err}")
 
+    @staticmethod
+    async def _checkout_has_captcha(page: Page) -> bool:
+        """Return whether the checkout shows a hCaptcha challenge."""
+        selectors = (
+            "iframe[src*='hcaptcha.com/captcha/']:visible",
+            "iframe[title='hCaptcha challenge']:visible",
+            ".h_captcha_challenge:visible iframe",
+        )
+        for selector in selectors:
+            with suppress(Exception):
+                if await page.locator(selector).count() > 0:
+                    return True
+        return False
+
+    async def _solve_checkout_captcha(self, page: Page, agent) -> bool:
+        """Answer the hCaptcha the checkout shows before its order form."""
+        if not await self._checkout_has_captcha(page):
+            return False
+        logger.info("结账页先出现验证码，解题后再找下单按钮")
+        try:
+            challenge_result = await asyncio.wait_for(
+                agent.wait_for_challenge(),
+                timeout=settings.CHECKOUT_CAPTCHA_TIMEOUT_SECONDS,
+            )
+            print(
+                f"CHECKOUT_CAPTCHA_RESULT:{getattr(challenge_result, 'value', challenge_result)}",
+                flush=True,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Checkout hCaptcha exceeded its time budget")
+            return False
+        except Exception as err:
+            logger.warning(f"结账验证码未确认通过: {err}")
+            return False
+        await page.wait_for_timeout(2000)
+        return True
+
     async def _handle_instant_checkout(self, page: Page) -> bool:
         return await self._handle_legacy_instant_checkout(page)
 
@@ -1058,7 +1095,15 @@ class EpicGames:
         try:
             await self._handle_device_not_supported_modal(page)
             await self._ensure_purchase_checkout_open(page)
-            _, payment_btn = await self._active_purchase_container(page)
+            try:
+                _, payment_btn = await self._active_purchase_container(page)
+            except AssertionError:
+                # The checkout puts its hCaptcha in front of the order form,
+                # so the button is not there yet. Solve the challenge first
+                # and look for the button again.
+                if not await self._solve_checkout_captcha(page, agent):
+                    raise
+                _, payment_btn = await self._active_purchase_container(page)
             if await self._handle_device_not_supported_modal(page):
                 _, payment_btn = await self._active_purchase_container(page)
 
