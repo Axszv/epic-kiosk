@@ -280,7 +280,11 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
     return result
 
 
-async def collect_mobile_offers(page, offers: list[dict]) -> list[dict]:
+async def collect_mobile_offers(
+    page,
+    offers: list[dict],
+    session_cookies: list[dict] | None = None,
+) -> list[dict]:
     results = []
     completed_by_identity: dict[str, dict] = {}
     initial_order_history = None
@@ -292,6 +296,13 @@ async def collect_mobile_offers(page, offers: list[dict]) -> list[dict]:
         )
 
     for offer in offers:
+        # The account login page that a mobile offer opens without a session
+        # replaces the session cookies of the profile. The desktop session is
+        # put back before every offer, so a mobile offer never inherits the
+        # login page of the one before it.
+        if session_cookies:
+            with suppress(Exception):
+                await page.context.add_cookies(session_cookies)
         identity = offer_identity(offer)
         if identity and identity in completed_by_identity:
             original = completed_by_identity[identity]

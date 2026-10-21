@@ -138,7 +138,9 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
             session_cookies = await page.context.cookies(
                 ["https://www.epicgames.com", "https://store.epicgames.com"]
             )
-            mobile_results = await collect_mobile_offers(page, mobile_offers)
+            mobile_results = await collect_mobile_offers(
+                page, mobile_offers, session_cookies=session_cookies
+            )
             if session_cookies:
                 await page.context.add_cookies(session_cookies)
                 logger.info("MOBILE_COLLECTION_DONE:desktop_session_restored")
