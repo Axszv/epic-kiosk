@@ -114,6 +114,10 @@ def emit_result(result: dict) -> None:
     # hides most INFO messages, so emit the machine-readable marker directly.
     print(marker, flush=True)
     logger.info(marker)
+    notes = result.get("notes") or []
+    if notes:
+        # The notes carry why a checkout did not go through.
+        print(f"MOBILE_NOTES:{result['platform']}:{result['status']}:{notes}", flush=True)
 
 
 def order_history_has_offer_id(data: dict, offer_id: str) -> bool:

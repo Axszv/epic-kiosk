@@ -1047,13 +1047,22 @@ class EpicGames:
 
     @staticmethod
     async def _checkout_has_captcha(page: Page) -> bool:
-        """Return whether the checkout shows a hCaptcha challenge."""
-        selectors = (
-            "iframe[src*='hcaptcha.com/captcha/']:visible",
-            "iframe[title='hCaptcha challenge']:visible",
-            ".h_captcha_challenge:visible iframe",
-        )
-        for selector in selectors:
+        """Return whether the checkout shows a hCaptcha challenge.
+
+        Epic's "One more step" page keeps the challenge in a Talon container,
+        and the frame of the widget is only there once Epic asks for it. The
+        frame is not necessarily visible, so the frames of the page are
+        searched as well.
+        """
+        for frame in page.frames:
+            if "hcaptcha.com" in (frame.url or ""):
+                return True
+        for selector in (
+            "iframe[src*='hcaptcha.com/captcha/']",
+            "iframe[title='hCaptcha challenge']",
+            ".h_captcha_challenge iframe",
+            "[id^='h_captcha_challenge_'] iframe",
+        ):
             with suppress(Exception):
                 if await page.locator(selector).count() > 0:
                     return True
