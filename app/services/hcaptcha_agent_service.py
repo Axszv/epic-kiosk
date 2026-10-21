@@ -311,7 +311,11 @@ class EpicAgentV(AgentV):
                 "Do not use browser/page coordinates. "
                 "Select the centers of the answer objects, not the instruction examples. "
                 'Each point must have two integer fields, for example {"x":125,"y":240}. '
-                "Never put a coordinate pair in the x field."
+                "Never put a coordinate pair in the x field. "
+                "The challenge instruction below may be written in any language. "
+                "Translate it into English first, then pick the objects the "
+                "English instruction asks for. Answer the instruction, not the "
+                "examples that are shown in the image."
             )
             prompt = f"{arm._match_user_prompt(job_type)}\n\n{coordinate_prompt}"
             for attempt in range(2):
@@ -381,7 +385,19 @@ class EpicAgentV(AgentV):
                 challenge_prompt = payload.get_requester_question() or challenge_prompt
         specialized = self._specialized_visual_prompt(challenge_prompt)
         if specialized is None:
-            return base_prompt
+            if not challenge_prompt:
+                return base_prompt
+            # The skill manager only knows the English instructions, so a
+            # challenge in any other language reaches the model as a generic
+            # task without its instruction. The instruction itself is what
+            # tells the model which object to pick.
+            logger.debug(f"Using the raw hCaptcha visual guidance: {challenge_prompt}")
+            return (
+                f"{base_prompt}\n\n"
+                f"Challenge instruction: {challenge_prompt}\n\n"
+                "The instruction may be written in any language. Translate it into "
+                "English first, then pick the object the English instruction names."
+            )
         logger.debug(f"Using specialized hCaptcha visual guidance: {challenge_prompt}")
         return (
             f"{base_prompt}\n\n{specialized}\n\n"
