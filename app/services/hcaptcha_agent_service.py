@@ -458,7 +458,9 @@ class EpicAgentV(AgentV):
             "holds and which one of them the instruction asks for, and only "
             "then report the box. The picture often holds more than one "
             "candidate object, and the most obvious one is not always the one "
-            "the instruction names.\n"
+            "the instruction names. When the instruction names a group, a "
+            "colour, a shape or a letter, check every candidate against that "
+            "property and report the one that has it.\n"
             "Report one box per answer object, tight around the object, as "
             '{"x1": <left edge>, "y1": <top edge>, "x2": <right edge>, '
             '"y2": <bottom edge>} in the pixel coordinates of the images. Read '
@@ -514,14 +516,6 @@ class EpicAgentV(AgentV):
                 raise InvalidChallengeCoordinates("Challenge frame is no longer visible")
             await self.page.wait_for_timeout(self.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS)
             raw, grid, size = await self._capture_point_image(frame, cache_key, cid)
-            instruction = self._challenge_instruction()
-            paths = await self._answer_with_drag_boxes(
-                raw, grid, size, instruction, job_type
-            )
-            if not paths:
-                # The upstream answer still gets its chance.
-                logger.info("Falling back to the upstream hCaptcha drag answer")
-                return await self._original_challenge_image_drag_drop(job_type)
             view = frame.locator(".challenge-view")
             box = await view.bounding_box(timeout=2000)
             if not box or box["width"] <= 0 or box["height"] <= 0:
@@ -529,6 +523,15 @@ class EpicAgentV(AgentV):
             if not self._view_matches_the_picture(box):
                 # The view is drawn with another shape than the picture, so a
                 # pixel of the picture is not a pixel of the page.
+                logger.info("Falling back to the upstream hCaptcha drag answer")
+                return await self._original_challenge_image_drag_drop(job_type)
+            instruction = self._challenge_instruction()
+            paths = await self._answer_with_drag_boxes(
+                raw, grid, size, instruction, job_type,
+                view_box=box, cache_key=cache_key, crumb_id=cid,
+            )
+            if not paths:
+                # The upstream answer still gets its chance.
                 logger.info("Falling back to the upstream hCaptcha drag answer")
                 return await self._original_challenge_image_drag_drop(job_type)
             width, height = size
@@ -563,7 +566,50 @@ class EpicAgentV(AgentV):
         view_ratio = box["width"] / box["height"]
         return abs(picture_ratio - view_ratio) / picture_ratio < 0.05
 
-    async def _answer_with_drag_boxes(self, raw, grid, size, instruction, job_type):
+    async def _drag_source_image(self, raw, cache_key, crumb_id, view_box):
+        """An enlarged picture of the element that has to be dragged.
+
+        The element in the Move card is small and drawn with a thin line, and
+        the model has to compare its outline with the shapes of the play
+        area. An enlarged picture of it makes that comparison possible.
+        """
+        from PIL import Image
+
+        if not view_box or view_box.get("width", 0) <= 0:
+            return None
+        centers = []
+        with suppress(Exception):
+            centers = await self._move_card_centers()
+        if not centers:
+            return None
+        center = centers[0]
+        scale_x = 1000.0 / max(view_box["width"], 1)
+        scale_y = 1000.0 / max(view_box["height"], 1)
+        cx = (center["x"] - view_box["x"]) * scale_x
+        cy = (center["y"] - view_box["y"]) * scale_y
+        half = 150
+        left = int(max(0, min(1000 - 2 * half, cx - half)))
+        top = int(max(0, min(1000 - 2 * half, cy - half)))
+        path = cache_key / f"{cache_key.name}_{crumb_id}_drag_source.png"
+        try:
+            with Image.open(raw) as image:
+                crop = image.crop((left, top, left + 2 * half, top + 2 * half))
+                crop = crop.resize((600, 600), Image.Resampling.LANCZOS)
+                crop.save(path)
+        except Exception as err:
+            logger.debug(f"Could not cut the drag source out of the picture: {err}")
+            return None
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            import shutil
+
+            from settings import RUNTIME_DIR
+
+            with suppress(Exception):
+                RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, RUNTIME_DIR / path.name)
+        return path
+
+    async def _answer_with_drag_boxes(self, raw, grid, size, instruction, job_type, view_box=None, cache_key=None, crumb_id=None):
         """Ask the model for the source and the target of every drag.
 
         The upstream asks for page coordinates, which the model has to read
@@ -577,26 +623,41 @@ class EpicAgentV(AgentV):
         provider = getattr(reasoner, "_provider", None)
         if provider is None:
             return []
+        source_image = None
+        with suppress(Exception):
+            source_image = await self._drag_source_image(
+                raw, cache_key, crumb_id, view_box
+            )
+        images = [raw, grid]
+        if source_image is not None:
+            images = [source_image, raw, grid]
         prompt = (
             f"{self.robotic_arm._match_user_prompt(job_type)}\n\n"
-            f"The first image is the challenge picture. The second image is the "
-            f"same picture with a coordinate grid drawn on it. Both images are "
-            f"exactly {width} pixels wide and {height} pixels high, the origin "
-            f"(0,0) is the top left corner, x grows to the right and y grows "
-            f"downwards.\n"
+            + (
+                "The first image is the element that has to be dragged, "
+                "enlarged. The second image is the challenge picture, the "
+                "third image is the same picture with a coordinate grid "
+                "drawn on it. "
+                if source_image is not None
+                else "The first image is the challenge picture. The second "
+                "image is the same picture with a coordinate grid drawn on it. "
+            )
+            + f"Both pictures of the challenge are exactly {width} pixels "
+            f"wide and {height} pixels high, the origin (0,0) is the top left "
+            f"corner, x grows to the right and y grows downwards.\n"
             "This is a drag and drop puzzle. For every drag the challenge "
             "asks for, report the box of the object that has to be dragged and "
             "the box of the place where it has to end, as "
             '{"source_box": {"x1": <left edge>, "y1": <top edge>, '
             '"x2": <right edge>, "y2": <bottom edge>}, "target_box": '
             '{"x1": <left edge>, "y1": <top edge>, "x2": <right edge>, '
-            '"y2": <bottom edge>}} in the pixel coordinates of the images. '
+            '"y2": <bottom edge>}} in the pixel coordinates of the pictures. '
             "The target is the empty place the object has to be dropped on, "
             "not an object that is already there."
         )
         try:
             response = await provider.generate_with_images(
-                images=[raw, grid],
+                images=images,
                 user_prompt=prompt,
                 description=AREA_BOX_DESCRIPTION,
                 response_schema=ImageDragBoxChallenge,

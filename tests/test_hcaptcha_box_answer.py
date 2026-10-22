@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
 from enum import Enum
@@ -192,6 +193,14 @@ class HcaptchaBoxAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.agent.robotic_arm.click_by_mouse.assert_awaited_once()
 
     async def test_an_empty_drag_box_answer_falls_back_to_the_upstream_answer(self):
+        view = types.SimpleNamespace(
+            bounding_box=AsyncMock(
+                return_value={"x": 700, "y": 300, "width": 500, "height": 471}
+            ),
+            click=AsyncMock(),
+        )
+        frame = types.SimpleNamespace(locator=MagicMock(return_value=view))
+        self.agent.robotic_arm.get_challenge_frame_locator = AsyncMock(return_value=frame)
         self.agent._answer_with_drag_boxes = AsyncMock(return_value=[])
         self.agent._original_challenge_image_drag_drop = AsyncMock(return_value="upstream")
 
@@ -199,6 +208,28 @@ class HcaptchaBoxAnswerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "upstream")
 
+
+    async def test_the_drag_source_is_shown_enlarged(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder)
+            raw = cache / "picture.png"
+            Image.new("RGB", (1000, 1000), (10, 20, 30)).save(raw)
+            self.agent._move_card_centers = AsyncMock(
+                return_value=[{"x": 750, "y": 800, "score": 1, "reason": "move-card"}]
+            )
+
+            path = await self.agent._drag_source_image(
+                raw, cache, 0, {"x": 700, "y": 300, "width": 500, "height": 471}
+            )
+
+            self.assertIsNotNone(path)
+            with Image.open(path) as image:
+                self.assertEqual(image.size, (600, 600))
+            # The card sits at (100, 100) of the picture, so the crop starts
+            # there: 100 - 150 is left of the picture and becomes 0.
+            self.assertTrue(path.name.endswith("_0_drag_source.png"))
 
 if __name__ == "__main__":
     unittest.main()
