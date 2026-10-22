@@ -60,7 +60,10 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
 
         await auth._install_live_xsrf_route()
 
-        page.route.assert_awaited_once()
+        self.assertEqual(
+            [call.args[0] for call in page.route.await_args_list],
+            ["**/id/api/email/exists", "**/id/api/login"],
+        )
         handler = page.route.await_args.args[1]
         await handler(route)
         headers = route.continue_.await_args.kwargs["headers"]

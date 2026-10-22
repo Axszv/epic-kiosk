@@ -454,6 +454,11 @@ class EpicAgentV(AgentV):
             "The instruction may be written in any language. Translate it into "
             "English first, then look for every object the English instruction "
             "asks for.\n"
+            "Write in the challenge_prompt field which objects the picture "
+            "holds and which one of them the instruction asks for, and only "
+            "then report the box. The picture often holds more than one "
+            "candidate object, and the most obvious one is not always the one "
+            "the instruction names.\n"
             "Report one box per answer object, tight around the object, as "
             '{"x1": <left edge>, "y1": <top edge>, "x2": <right edge>, '
             '"y2": <bottom edge>} in the pixel coordinates of the images. Read '
