@@ -8,6 +8,7 @@ import re
 import sys
 import asyncio
 import base64
+import time
 import json
 from pathlib import Path
 from typing import Any, List, Union
@@ -52,6 +53,32 @@ def captcha_output_budget(requested_max_tokens: int, minimum: int = 8192) -> int
 def captcha_temperature(value: Any, maximum: float = 0.2) -> float:
     """Use deterministic captcha output even when a provider omits temperature."""
     return min(value, maximum) if isinstance(value, (int, float)) else maximum
+
+
+# The free tier of the model gateway takes a few requests a minute, and a
+# refusal costs a whole captcha round: the answer never reaches the page, so
+# hCaptcha rejects the round and the account is lost. The calls are spread
+# out instead, which keeps a week with several accounts inside the limit.
+MODEL_CALL_INTERVAL_SECONDS = float(
+    os.getenv("MODEL_CALL_INTERVAL_SECONDS", "6.5")
+)
+_model_call_lock = asyncio.Lock()
+_model_call_at = 0.0
+
+
+async def wait_for_model_slot() -> None:
+    """Keep the calls to the model gateway inside its per-minute limit."""
+    global _model_call_at
+    if MODEL_CALL_INTERVAL_SECONDS <= 0:
+        return
+    async with _model_call_lock:
+        now = time.monotonic()
+        wait_for = _model_call_at - now
+        if wait_for > 0:
+            logger.debug(f"等待模型网关的请求间隔 {wait_for:.1f}s")
+            await asyncio.sleep(wait_for)
+            now = time.monotonic()
+        _model_call_at = now + MODEL_CALL_INTERVAL_SECONDS
 
 
 def captcha_drag_response_is_valid(parsed_response: Any, minimum_distance: float = 8) -> bool:
@@ -426,6 +453,7 @@ def _apply_openai_compatible_patch():
             调用 OpenAI 兼容 API
             注意：不使用 response_format，因为部分视觉模型不支持
             """
+            await wait_for_model_slot()
             url = f"{base_url}/v1/chat/completions"
 
             headers = {
