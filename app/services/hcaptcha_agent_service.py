@@ -11,7 +11,7 @@ from typing import Any
 from weakref import WeakKeyDictionary
 
 from hcaptcha_challenger.agent import AgentV
-from hcaptcha_challenger.models import ChallengeSignal
+from hcaptcha_challenger.models import ChallengeSignal, PointCoordinate, SpatialPath
 from loguru import logger
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel
@@ -33,6 +33,20 @@ class ImageAreaBoxChallenge(BaseModel):
 
     challenge_prompt: str = ""
     boxes: list[AreaBox] = []
+
+
+class DragBoxPath(BaseModel):
+    """The object that has to be dragged and the place it has to end."""
+
+    source_box: AreaBox
+    target_box: AreaBox
+
+
+class ImageDragBoxChallenge(BaseModel):
+    """The drags of a challenge, as boxes of the challenge picture."""
+
+    challenge_prompt: str = ""
+    paths: list[DragBoxPath] = []
 
 
 DRAG_PROMPT_TRANSLATION = str.maketrans(
@@ -166,6 +180,11 @@ class EpicAgentV(AgentV):
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
         self.robotic_arm.challenge_image_label_select = self._select_image_local_points
+        # The drag challenges are the most frequent ones, and the upstream
+        # answer asks for page coordinates that the model reads off a plotted
+        # axis. The drag is answered in the pixels of the challenge picture.
+        self._original_challenge_image_drag_drop = self.robotic_arm.challenge_image_drag_drop
+        self.robotic_arm.challenge_image_drag_drop = self._drag_image_local
 
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
         self._challenge_page_index = int(crumb_id)
@@ -178,6 +197,9 @@ class EpicAgentV(AgentV):
         The challenge view is visible before its images arrive, and a
         screenshot of that moment is blank. The model then answers an empty
         grid, hCaptcha rejects the answer, and Epic refuses the token.
+
+        A challenge whose picture is a background image has nothing to wait
+        for, and waiting for it anyway costs twenty seconds of every round.
         """
         deadline = time.monotonic() + timeout_ms / 1000
         reported = False
@@ -188,6 +210,7 @@ class EpicAgentV(AgentV):
             with suppress(Exception):
                 state = await frame.evaluate(
                     """() => {
+                        const view = document.querySelector('.challenge-view');
                         const tiles = Array.from(document.querySelectorAll(
                             '.challenge-view .task-image, .challenge-view img,'
                             + ' .challenge-view canvas'
@@ -202,14 +225,31 @@ class EpicAgentV(AgentV):
                             const background = getComputedStyle(tile).backgroundImage;
                             return background && background !== 'none';
                         });
-                        return {tiles: tiles.length, loaded: loaded.length};
+                        let painted = 0;
+                        if (view) {
+                            painted = Array.from(view.querySelectorAll('*')).filter(el => {
+                                const background = getComputedStyle(el).backgroundImage;
+                                return background && background.indexOf('url(') >= 0;
+                            }).length;
+                        }
+                        return {
+                            tiles: tiles.length,
+                            loaded: loaded.length,
+                            painted: painted,
+                        };
                     }"""
                 )
             tiles = int(state.get("tiles") or 0)
             loaded = int(state.get("loaded") or 0)
+            painted = int(state.get("painted") or 0)
             if tiles and loaded >= tiles:
                 if reported:
                     logger.info(f"HCAPTCHA_IMAGES:ready:tiles={tiles}")
+                return True
+            if not tiles and painted:
+                # The picture of this challenge is a background image, so the
+                # screenshot has everything it needs right away.
+                logger.info(f"HCAPTCHA_IMAGES:ready:painted={painted}")
                 return True
             if not reported:
                 logger.warning(
@@ -239,6 +279,7 @@ class EpicAgentV(AgentV):
             # the pixel prompt. Make both conventions identical in its inputs.
             size = (self.POINT_IMAGE_SIZE, self.POINT_IMAGE_SIZE)
             overlay = original.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+        self._native_image_size = native_size
         overlay.save(raw)
         draw = ImageDraw.Draw(overlay)
         font = ImageFont.load_default(size=18)
@@ -456,6 +497,126 @@ class EpicAgentV(AgentV):
                     encoding="utf-8",
                 )
         return centers
+
+    async def _drag_image_local(self, job_type):
+        """Answer a drag challenge in the pixels of the challenge picture."""
+        arm = self.robotic_arm
+        crumb_count = await arm.check_crumb_count()
+        cache_key = self.config.create_cache_key(arm.captcha_payload)
+        for cid in range(crumb_count):
+            frame = await arm.get_challenge_frame_locator()
+            if frame is None:
+                raise InvalidChallengeCoordinates("Challenge frame is no longer visible")
+            await self.page.wait_for_timeout(self.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS)
+            raw, grid, size = await self._capture_point_image(frame, cache_key, cid)
+            instruction = self._challenge_instruction()
+            paths = await self._answer_with_drag_boxes(
+                raw, grid, size, instruction, job_type
+            )
+            if not paths:
+                # The upstream answer still gets its chance.
+                logger.info("Falling back to the upstream hCaptcha drag answer")
+                return await self._original_challenge_image_drag_drop(job_type)
+            view = frame.locator(".challenge-view")
+            box = await view.bounding_box(timeout=2000)
+            if not box or box["width"] <= 0 or box["height"] <= 0:
+                raise InvalidChallengeCoordinates("Challenge image is no longer visible")
+            if not self._view_matches_the_picture(box):
+                # The view is drawn with another shape than the picture, so a
+                # pixel of the picture is not a pixel of the page.
+                logger.info("Falling back to the upstream hCaptcha drag answer")
+                return await self._original_challenge_image_drag_drop(job_type)
+            width, height = size
+            for source, target in paths:
+                page_path = SpatialPath(
+                    start_point=PointCoordinate(
+                        x=int(round(box["x"] + source[0] / width * box["width"])),
+                        y=int(round(box["y"] + source[1] / height * box["height"])),
+                    ),
+                    end_point=PointCoordinate(
+                        x=int(round(box["x"] + target[0] / width * box["width"])),
+                        y=int(round(box["y"] + target[1] / height * box["height"])),
+                    ),
+                )
+                await arm._perform_drag_drop(page_path)
+            await arm.click_by_mouse(frame.locator("div.button-submit.button"))
+
+    def _view_matches_the_picture(self, box) -> bool:
+        """Whether a pixel of the picture is a pixel of the page.
+
+        The picture of the challenge is the view of the challenge, so both
+        have the same shape. When they do not, the browser draws the view
+        with another shape and the coordinates of the model cannot be used.
+        """
+        native_size = getattr(self, "_native_image_size", None)
+        if not native_size:
+            return True
+        width, height = native_size
+        if width <= 0 or height <= 0:
+            return False
+        picture_ratio = width / height
+        view_ratio = box["width"] / box["height"]
+        return abs(picture_ratio - view_ratio) / picture_ratio < 0.05
+
+    async def _answer_with_drag_boxes(self, raw, grid, size, instruction, job_type):
+        """Ask the model for the source and the target of every drag.
+
+        The upstream asks for page coordinates, which the model has to read
+        off a plotted axis that carries margins. Its drag ended a hundred
+        pixels off the place the instruction names, and the round was
+        rejected. A box of the picture is the same question that the select
+        challenges ask, and it is answered far more precisely.
+        """
+        width, height = size
+        reasoner = getattr(self.robotic_arm, "_spatial_path_reasoner", None)
+        provider = getattr(reasoner, "_provider", None)
+        if provider is None:
+            return []
+        prompt = (
+            f"{self.robotic_arm._match_user_prompt(job_type)}\n\n"
+            f"The first image is the challenge picture. The second image is the "
+            f"same picture with a coordinate grid drawn on it. Both images are "
+            f"exactly {width} pixels wide and {height} pixels high, the origin "
+            f"(0,0) is the top left corner, x grows to the right and y grows "
+            f"downwards.\n"
+            "This is a drag and drop puzzle. For every drag the challenge "
+            "asks for, report the box of the object that has to be dragged and "
+            "the box of the place where it has to end, as "
+            '{"source_box": {"x1": <left edge>, "y1": <top edge>, '
+            '"x2": <right edge>, "y2": <bottom edge>}, "target_box": '
+            '{"x1": <left edge>, "y1": <top edge>, "x2": <right edge>, '
+            '"y2": <bottom edge>}} in the pixel coordinates of the images. '
+            "The target is the empty place the object has to be dropped on, "
+            "not an object that is already there."
+        )
+        try:
+            response = await provider.generate_with_images(
+                images=[raw, grid],
+                user_prompt=prompt,
+                description=AREA_BOX_DESCRIPTION,
+                response_schema=ImageDragBoxChallenge,
+            )
+        except Exception as err:
+            logger.warning(f"hCaptcha drag box answer failed: {err}")
+            return []
+        paths = []
+        for entry in list(getattr(response, "paths", []) or []):
+            source = self._box_center(getattr(entry, "source_box", None), size)
+            target = self._box_center(getattr(entry, "target_box", None), size)
+            if source is None or target is None:
+                continue
+            paths.append((source, target))
+        logger.debug(
+            f"hCaptcha drag box answer: {len(paths)} drags -> "
+            f"{[(tuple(round(v) for v in s), tuple(round(v) for v in t)) for s, t in paths]}"
+        )
+        return paths
+
+    @classmethod
+    def _box_center(cls, box, image_size):
+        """The center of one box, or nothing when the box cannot be used."""
+        centers = cls._box_centers([box] if box is not None else [], image_size)
+        return centers[0] if centers else None
 
     @staticmethod
     def _box_centers(boxes, image_size):

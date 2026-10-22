@@ -18,6 +18,18 @@ class Signal(str, Enum):
     RESPONSE_TIMEOUT = "challenge_response_timeout"
 
 
+class PointCoordinate:
+    def __init__(self, x=0, y=0):
+        self.x = x
+        self.y = y
+
+
+class SpatialPath:
+    def __init__(self, start_point=None, end_point=None):
+        self.start_point = start_point
+        self.end_point = end_point
+
+
 class UpstreamAgent:
     """The parts of the upstream contract this test needs."""
 
@@ -33,7 +45,9 @@ class HcaptchaBoxAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.module = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {
             "hcaptcha_challenger.agent": types.SimpleNamespace(AgentV=UpstreamAgent),
-            "hcaptcha_challenger.models": types.SimpleNamespace(ChallengeSignal=Signal),
+            "hcaptcha_challenger.models": types.SimpleNamespace(
+                ChallengeSignal=Signal, PointCoordinate=PointCoordinate, SpatialPath=SpatialPath
+            ),
             "loguru": types.SimpleNamespace(logger=MagicMock()),
             "playwright.async_api": types.SimpleNamespace(Page=object, TimeoutError=TimeoutError),
             "settings": types.SimpleNamespace(settings=object()),
@@ -151,6 +165,39 @@ class HcaptchaBoxAnswerTests(unittest.IsolatedAsyncioTestCase):
         position = view.click.await_args_list[0].kwargs["position"]
         self.assertAlmostEqual(position["x"], 125, places=3)
         self.assertAlmostEqual(position["y"], 235 / 1000 * 471, places=3)
+
+
+    async def test_the_drag_target_is_placed_in_the_pixels_of_the_picture(self):
+        view = types.SimpleNamespace(
+            bounding_box=AsyncMock(
+                return_value={"x": 700, "y": 300, "width": 500, "height": 471}
+            ),
+            click=AsyncMock(),
+        )
+        frame = types.SimpleNamespace(locator=MagicMock(return_value=view))
+        self.agent.robotic_arm.get_challenge_frame_locator = AsyncMock(return_value=frame)
+        self.agent.robotic_arm._perform_drag_drop = AsyncMock()
+        self.agent._answer_with_drag_boxes = AsyncMock(
+            return_value=[((250.0, 500.0), (750.0, 250.0))]
+        )
+
+        await self.agent._drag_image_local("image_drag_single")
+
+        path = self.agent.robotic_arm._perform_drag_drop.await_args.args[0]
+        # The model works in the 1000 x 1000 picture, the drag runs in the
+        # page: 250/1000 of the width and 500/1000 of the height of the
+        # challenge view, plus the offset of the view on the page.
+        self.assertEqual((path.start_point.x, path.start_point.y), (825, 536))
+        self.assertEqual((path.end_point.x, path.end_point.y), (1075, 418))
+        self.agent.robotic_arm.click_by_mouse.assert_awaited_once()
+
+    async def test_an_empty_drag_box_answer_falls_back_to_the_upstream_answer(self):
+        self.agent._answer_with_drag_boxes = AsyncMock(return_value=[])
+        self.agent._original_challenge_image_drag_drop = AsyncMock(return_value="upstream")
+
+        result = await self.agent._drag_image_local("image_drag_single")
+
+        self.assertEqual(result, "upstream")
 
 
 if __name__ == "__main__":
