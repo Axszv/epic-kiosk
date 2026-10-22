@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import math
 import os
 import time
@@ -13,8 +14,25 @@ from hcaptcha_challenger.agent import AgentV
 from hcaptcha_challenger.models import ChallengeSignal
 from loguru import logger
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
+from pydantic import BaseModel
 
 from settings import settings
+
+
+class AreaBox(BaseModel):
+    """A rectangle of the challenge image, in image pixels."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class ImageAreaBoxChallenge(BaseModel):
+    """One box per object that the challenge instruction asks for."""
+
+    challenge_prompt: str
+    boxes: list[AreaBox] = []
 
 
 DRAG_PROMPT_TRANSLATION = str.maketrans(
@@ -85,6 +103,12 @@ pasta, or a glass of drink. Different prepared meals are distractors. In your
 challenge_prompt field, briefly name the reference dish and the selected
 ingredient types so the identification is explicit. Return one point at the
 center of EACH matching tile, including repeated matching ingredients.
+""".strip()
+AREA_BOX_DESCRIPTION = """
+You are shown one challenge picture and the same picture with a coordinate grid
+drawn on top of it. You find the objects a challenge instruction asks for and
+report a tight box around each of them, in the pixel coordinates of the
+pictures.
 """.strip()
 
 
@@ -261,6 +285,9 @@ class EpicAgentV(AgentV):
         # Validate the entire answer before clicking anything: a partial answer
         # must not toggle already selected objects when the model is retried.
         positions = self._local_point_positions(points, image_size)
+        await self._click_local_positions(frame, positions)
+
+    async def _click_local_positions(self, frame, positions):
         view = frame.locator(".challenge-view")
         for x, y in positions:
             box = await view.bounding_box(timeout=1000)
@@ -271,6 +298,125 @@ class EpicAgentV(AgentV):
             await view.click(position={"x": x * box["width"], "y": y * box["height"]},
                              delay=180, timeout=3000)
             await self.page.wait_for_timeout(500)
+
+    def _challenge_instruction(self) -> str:
+        """The challenge's own instruction, in the language it uses.
+
+        The payload carries the instruction once per language, and the
+        accessor of the dependency only ever reads the English copy. A
+        challenge in another language therefore arrives as the word
+        "unknown", which leaves the model with the picture alone.
+        """
+        instruction = str(getattr(self.robotic_arm, "_challenge_prompt", "") or "")
+        payload = getattr(self.robotic_arm, "captcha_payload", None)
+        if payload is None:
+            return instruction
+        questions = getattr(payload, "requester_question", None) or {}
+        if not isinstance(questions, dict) or not questions:
+            with suppress(Exception):
+                instruction = payload.get_requester_question() or instruction
+            return str(instruction or "")
+        english = str(questions.get("en") or "").strip()
+        if english and english != "unknown":
+            return english
+        for value in questions.values():
+            native = str(value or "").strip()
+            if native and native != "unknown":
+                return native
+        return instruction
+
+    async def _answer_with_boxes(self, raw, grid, size, instruction, cache_key=None, crumb_id=None):
+        """Ask the model for a box around every object the instruction names.
+
+        A single point asks the model to do two hard things at once: find the
+        object and place the pixel exactly on it. Its points land a hundred
+        pixels off, on the background, and hCaptcha rejects the round. A box
+        is much easier to place, and the center of a box that is a little too
+        large is still inside the object.
+        """
+        width, height = size
+        if not instruction:
+            return []
+        reasoner = getattr(self.robotic_arm, "_spatial_point_reasoner", None)
+        provider = getattr(reasoner, "_provider", None)
+        if provider is None:
+            return []
+        prompt = (
+            f"The first image is the challenge picture. The second image is the "
+            f"same picture with a coordinate grid drawn on it. Both images are "
+            f"exactly {width} pixels wide and {height} pixels high, the origin "
+            f"(0,0) is the top left corner, x grows to the right and y grows "
+            f"downwards.\n\n"
+            f"Challenge instruction: {instruction}\n\n"
+            "The instruction may be written in any language. Translate it into "
+            "English first, then look for every object the English instruction "
+            "asks for.\n"
+            "Report one box per answer object, tight around the object, as "
+            '{"x1": <left edge>, "y1": <top edge>, "x2": <right edge>, '
+            '"y2": <bottom edge>} in the pixel coordinates of the images. Read '
+            "the coordinates off the grid image, and report a box for every "
+            "matching object and for nothing else."
+        )
+        try:
+            response = await provider.generate_with_images(
+                images=[raw, grid],
+                user_prompt=prompt,
+                description=AREA_BOX_DESCRIPTION,
+                response_schema=ImageAreaBoxChallenge,
+            )
+        except Exception as err:
+            logger.warning(f"hCaptcha box answer failed: {err}")
+            return []
+        boxes = list(getattr(response, "boxes", []) or [])
+        centers = self._box_centers(boxes, size)
+        logger.debug(
+            f"hCaptcha box answer: {len(boxes)} boxes -> "
+            f"{[(round(x), round(y)) for x, y in centers]}"
+        )
+        if cache_key is not None:
+            with suppress(Exception):
+                cache_key.mkdir(parents=True, exist_ok=True)
+                (cache_key / f"{cache_key.name}_{crumb_id}_box_model_answer.json").write_text(
+                    json.dumps(
+                        {
+                            "instruction": instruction,
+                            "boxes": [box.model_dump() for box in boxes],
+                            "centers": centers,
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+        return centers
+
+    @staticmethod
+    def _box_centers(boxes, image_size):
+        """Turn the model's boxes into the pixel centers to click."""
+        width, height = image_size
+        centers = []
+        for box in boxes or []:
+            try:
+                x1, y1 = float(box.x1), float(box.y1)
+                x2, y2 = float(box.x2), float(box.y2)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
+                continue
+            if x2 < x1:
+                x1, x2 = x2, x1
+            if y2 < y1:
+                y1, y2 = y2, y1
+            x1 = min(max(x1, 0.0), width - 1.0)
+            x2 = min(max(x2, 0.0), width - 1.0)
+            y1 = min(max(y1, 0.0), height - 1.0)
+            y2 = min(max(y2, 0.0), height - 1.0)
+            if x2 - x1 < 8 or y2 - y1 < 8:
+                # A box that is a few pixels wide cannot hold an object, and a
+                # normalized answer would land here. Let the point answer try.
+                continue
+            centers.append(((x1 + x2) / 2.0, (y1 + y2) / 2.0))
+        return centers
 
     async def _select_image_local_points(self, job_type):
         try:
@@ -318,6 +464,16 @@ class EpicAgentV(AgentV):
                 "examples that are shown in the image."
             )
             prompt = f"{arm._match_user_prompt(job_type)}\n\n{coordinate_prompt}"
+            instruction = self._challenge_instruction()
+            centers = await self._answer_with_boxes(
+                raw, grid, size, instruction, cache_key=cache_key, crumb_id=cid
+            )
+            if centers:
+                await self._click_local_positions(
+                    frame, [(x / width, y / height) for x, y in centers]
+                )
+                await arm.click_by_mouse(frame.locator("div.button-submit.button"))
+                continue
             for attempt in range(2):
                 response = await arm._spatial_point_reasoner(
                     challenge_screenshot=raw, grid_divisions=grid,
@@ -376,13 +532,9 @@ class EpicAgentV(AgentV):
 
     def _match_drag_user_prompt(self, job_type) -> str:
         base_prompt = self._original_match_user_prompt(job_type)
-        payload = getattr(self.robotic_arm, "captcha_payload", None)
         # Visual-only classification stores the question on the arm rather
         # than in a decoded payload. It needs the same task-specific guidance.
-        challenge_prompt = getattr(self.robotic_arm, "_challenge_prompt", "") or ""
-        if payload is not None:
-            with suppress(Exception):
-                challenge_prompt = payload.get_requester_question() or challenge_prompt
+        challenge_prompt = self._challenge_instruction()
         specialized = self._specialized_visual_prompt(challenge_prompt)
         if specialized is None:
             if not challenge_prompt:
