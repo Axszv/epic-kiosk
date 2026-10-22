@@ -107,12 +107,12 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         replacement = MagicMock()
         module._AGENTS[page] = previous
 
-        original_agent_class = module.EpicAgentV
-        module.EpicAgentV = MagicMock(return_value=replacement)
+        original_agent_class = module.AgentV
+        module.AgentV = MagicMock(return_value=replacement)
         try:
             result = module.replace_login_hcaptcha_agent(page)
         finally:
-            module.EpicAgentV = original_agent_class
+            module.AgentV = original_agent_class
 
         self.assertIs(result, replacement)
         page.remove_listener.assert_called_once_with(
@@ -120,11 +120,15 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
         )
         self.assertIs(module._AGENTS[page], replacement)
 
-    def test_login_reuses_the_multi_round_agent_without_duplicate_listeners(self):
+    def test_the_login_uses_the_upstream_agent(self):
+        # The one login Epic ever accepted was answered by the upstream agent:
+        # its grid image carries the page coordinates the page expects. The
+        # agent of this project answers with image-local pixels, and Epic
+        # refuses those.
         module = importlib.import_module("services.hcaptcha_agent_service")
         page = MagicMock()
         replacement = MagicMock()
-        with patch.object(module, "EpicAgentV", return_value=replacement) as factory:
+        with patch.object(module, "AgentV", return_value=replacement) as factory:
             first = module.get_login_hcaptcha_agent(page)
             second = module.get_login_hcaptcha_agent(page)
         self.assertIs(first, replacement)
