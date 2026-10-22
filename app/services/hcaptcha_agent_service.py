@@ -325,6 +325,64 @@ class EpicAgentV(AgentV):
                 return native
         return instruction
 
+    def _challenge_count_hint(self) -> str:
+        """Tell the model how many objects the challenge wants, when it knows.
+
+        The payload says how many points the answer of one picture needs. An
+        answer with one object too many is a wrong answer, and the model has
+        no way of knowing the number on its own.
+        """
+        payload = getattr(self.robotic_arm, "captcha_payload", None)
+        config = getattr(payload, "request_config", None)
+        if not config:
+            return ""
+
+        def read(name):
+            if isinstance(config, dict):
+                return config.get(name)
+            return getattr(config, name, None)
+
+        for minimum, maximum in (
+            (read("min_points"), read("max_points")),
+            (read("min_shapes_per_image"), read("max_shapes_per_image")),
+        ):
+            if (
+                isinstance(minimum, int)
+                and isinstance(maximum, int)
+                and minimum == maximum
+                and minimum > 0
+            ):
+                noun = "object" if minimum == 1 else "objects"
+                return f"Select exactly {minimum} {noun} in this picture."
+        return ""
+
+    def _challenge_config_log(self) -> str:
+        """The counts of the challenge, for the comparison of a later run."""
+        payload = getattr(self.robotic_arm, "captcha_payload", None)
+        config = getattr(payload, "request_config", None)
+        if not config:
+            return ""
+        names = (
+            "shape_type",
+            "answer_type",
+            "min_points",
+            "max_points",
+            "min_shapes_per_image",
+            "max_shapes_per_image",
+        )
+
+        def read(name):
+            if isinstance(config, dict):
+                return config.get(name)
+            return getattr(config, name, None)
+
+        values = {}
+        for name in names:
+            value = read(name)
+            if isinstance(value, (int, float, str, bool)):
+                values[name] = value
+        return json.dumps(values, ensure_ascii=False) if values else ""
+
     async def _answer_with_boxes(self, raw, grid, size, instruction, cache_key=None, crumb_id=None):
         """Ask the model for a box around every object the instruction names.
 
@@ -337,6 +395,10 @@ class EpicAgentV(AgentV):
         width, height = size
         if not instruction:
             return []
+        count_hint = self._challenge_count_hint()
+        config_log = self._challenge_config_log()
+        if config_log:
+            logger.debug(f"hCaptcha challenge config: {config_log}")
         reasoner = getattr(self.robotic_arm, "_spatial_point_reasoner", None)
         provider = getattr(reasoner, "_provider", None)
         if provider is None:
@@ -355,7 +417,12 @@ class EpicAgentV(AgentV):
             '{"x1": <left edge>, "y1": <top edge>, "x2": <right edge>, '
             '"y2": <bottom edge>} in the pixel coordinates of the images. Read '
             "the coordinates off the grid image, and report a box for every "
-            "matching object and for nothing else."
+            "matching object and for nothing else.\n"
+            "When the instruction names a number of objects, report exactly "
+            "that many boxes. The small example picture in the instruction "
+            "banner is not an answer object, and neither is anything outside "
+            "the picture below the banner.\n"
+            f"{count_hint}"
         )
         try:
             response = await provider.generate_with_images(
