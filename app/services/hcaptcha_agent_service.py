@@ -31,7 +31,7 @@ class AreaBox(BaseModel):
 class ImageAreaBoxChallenge(BaseModel):
     """One box per object that the challenge instruction asks for."""
 
-    challenge_prompt: str
+    challenge_prompt: str = ""
     boxes: list[AreaBox] = []
 
 
