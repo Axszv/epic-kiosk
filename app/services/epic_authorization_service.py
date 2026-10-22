@@ -999,6 +999,15 @@ class EpicAuthorization:
                             await self.page.wait_for_timeout(3000)
                             return
 
+                # The email step has no sign-in button. Its continue button
+                # asks the portal for a new captcha challenge.
+                with suppress(Exception):
+                    continue_button = self.page.locator("#continue").first
+                    if await continue_button.is_visible(timeout=1500):
+                        logger.debug("重新触发邮箱步骤的验证码")
+                        await continue_button.click(timeout=3000, no_wait_after=True)
+                        await self.page.wait_for_timeout(3000)
+
             async def keep_login_flow_alive():
                 """Re-submit the login form if Epic returns to the password step."""
                 while not result_task.done():
@@ -1149,10 +1158,18 @@ class EpicAuthorization:
                             captcha_in_progress = False
                             await self.page.wait_for_timeout(2000)
                             continue
-                        await asyncio.wait_for(
+                        round_result = await asyncio.wait_for(
                             agent.wait_for_challenge(),
                             timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
                         )
+                        if round_result is None or str(
+                            getattr(round_result, "value", round_result)
+                        ) in {"failure", "challenge_execution_timeout"}:
+                            # The round ended without an answer: the challenge
+                            # was replaced while the model was thinking. The
+                            # page has to ask for a new one, or the login waits
+                            # for a challenge that never comes.
+                            captcha_round_failed = True
                     except Exception as e:
                         captcha_round_failed = True
                         logger.warning(f"登录 hCaptcha 处理异常 [{captcha_attempt}/12]: {e}")

@@ -180,11 +180,30 @@ class EpicAgentV(AgentV):
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
         self.robotic_arm.challenge_image_label_select = self._select_image_local_points
+        # The upstream counts the pages of the challenge with a locator on the
+        # challenge frame, and the frame is gone when the portal replaces the
+        # challenge. The count then has to be one.
+        self._original_check_crumb_count = self.robotic_arm.check_crumb_count
+        self.robotic_arm.check_crumb_count = self._safe_check_crumb_count
         # The drag challenges are the most frequent ones, and the upstream
         # answer asks for page coordinates that the model reads off a plotted
         # axis. The drag is answered in the pixels of the challenge picture.
         self._original_challenge_image_drag_drop = self.robotic_arm.challenge_image_drag_drop
         self.robotic_arm.challenge_image_drag_drop = self._drag_image_local
+
+    async def _safe_check_crumb_count(self) -> int:
+        """The number of pages of the challenge, also without its frame.
+
+        The upstream counts the pages with a locator on the challenge frame,
+        and the frame is gone when the portal replaces the challenge. The
+        count is one then, and the round is answered with the picture that
+        is still there.
+        """
+        with suppress(Exception):
+            count = await self._original_check_crumb_count()
+            if isinstance(count, int) and count >= 1:
+                return count
+        return 1
 
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
         self._challenge_page_index = int(crumb_id)
