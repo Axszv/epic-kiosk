@@ -25,7 +25,8 @@ from models import OrderItem, Order
 from models import PromotionGame
 from settings import settings, RUNTIME_DIR
 from services.epic_store_page import (
-    StoreLoginRequired, is_login_url, product_cta, store_signed_out,
+    StoreLoginRequired, is_login_url, product_cta, store_login_state,
+    store_signed_out,
 )
 from services.hcaptcha_agent_service import (
     get_hcaptcha_agent,
@@ -448,7 +449,7 @@ class EpicAgent:
 
         # 尝试获取登录状态，增加超时处理
         try:
-            status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
+            status = await store_login_state(self.page)
         except Exception as e:
             # 如果超时，可能还在修正页面或有其他问题
             current_url = self.page.url

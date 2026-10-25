@@ -103,6 +103,10 @@ jobs:
       CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "375"
       CHECKOUT_CONFIRM_DELAY_MS: ${{ github.event.inputs.confirm_delay_ms || '0' }}
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
+      # The job is cancelled at 330 minutes, and a cancelled job does not save
+      # the browser state the next run starts from. Stop starting attempts
+      # before that.
+      EPIC_RUN_DEADLINE_MINUTES: "280"
       PYTHONUNBUFFERED: "1"
 
     steps:

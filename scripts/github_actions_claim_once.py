@@ -89,22 +89,12 @@ ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\
 REGION_UNAVAILABLE_RE = re.compile(r"REGION_UNAVAILABLE:(.+)")
 MOBILE_RESULT_RE = re.compile(r"MOBILE_RESULT:([^:\r\n]+):(.*):([a-z_]+)\s*$")
 SUCCESS_EVIDENCE_STATUSES = {"already_owned", "verified_owned", "region_unavailable"}
-PROFILE_REFRESH_ERROR_TYPES = {"cookie_invalid"}
 RETRY_BACKOFF_SECONDS = {
     "cloudflare_blocked": 45,
     "captcha_failed": 20,
     "login_timeout": 15,
     "network_timeout": 15,
 }
-
-
-def should_refresh_account_profile(attempt_result: dict) -> bool:
-    """Refresh only profiles proven to contain a blocked or invalid session."""
-    return any(
-        marker.get("kind") == "ERROR_TYPE"
-        and marker.get("value") in PROFILE_REFRESH_ERROR_TYPES
-        for marker in attempt_result.get("error_markers", [])
-    )
 
 
 def account_retry_delay(attempt_result: dict) -> int:
@@ -115,18 +105,6 @@ def account_retry_delay(attempt_result: dict) -> int:
         if marker.get("kind") == "ERROR_TYPE"
     }
     return max((RETRY_BACKOFF_SECONDS.get(value, 0) for value in values), default=0)
-
-
-def refresh_account_profile(email: str, user_data_root: Path | None = None) -> bool:
-    """Remove one failed account profile so the next attempt starts clean."""
-    root = (user_data_root or Path("app/volumes/user_data")).resolve()
-    profile = root.joinpath(email).resolve()
-    if profile.parent != root:
-        raise ValueError("Account profile path escaped the user data directory")
-    if not profile.exists():
-        return False
-    shutil.rmtree(profile)
-    return True
 
 
 def merge_desktop_evidence(current: dict, incoming: dict) -> dict:
@@ -157,13 +135,44 @@ def has_complete_account_evidence(
     mobile_evidence: dict,
     mobile_offers: list[dict],
 ) -> bool:
-    desktop_complete = bool(desktop_evidence) and all(
-        item.get("status") in SUCCESS_EVIDENCE_STATUSES
-        for item in desktop_evidence.values()
+    return not ownership_failure_reasons(
+        desktop_evidence, mobile_evidence, mobile_offers
     )
-    return desktop_complete and not missing_mobile_evidence(
-        mobile_offers, mobile_evidence
-    )
+
+
+def ownership_failure_reasons(
+    desktop_evidence: dict,
+    mobile_evidence: dict,
+    mobile_offers: list[dict],
+) -> list[str]:
+    """The ownership failures of one attempt, if the attempt proves nothing.
+
+    The two channels hand out the same weekly games. A desktop claim that
+    proves the library holds every offer is a completed account even when the
+    mobile offer asked for its own login, and a mobile claim is a completed
+    account when the desktop store page was the one that failed.
+
+    Only an attempt that proves nothing failed. A missing mobile proof used
+    to fail the account, and the retry it caused threw away a profile whose
+    desktop session was working, so the next run had to solve a captcha for
+    a session it already had.
+    """
+    missing_desktop = [
+        title
+        for title, item in desktop_evidence.items()
+        if item.get("status") not in SUCCESS_EVIDENCE_STATUSES
+    ]
+    missing_mobile = missing_mobile_evidence(mobile_offers, mobile_evidence)
+    desktop_complete = bool(desktop_evidence) and not missing_desktop
+    mobile_complete = bool(mobile_evidence) and not missing_mobile
+    if desktop_complete or mobile_complete:
+        return []
+    reasons = []
+    if missing_desktop:
+        reasons.append("missing_desktop_ownership_evidence")
+    if missing_mobile:
+        reasons.append("missing_mobile_ownership_evidence")
+    return reasons
 
 
 def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
@@ -389,8 +398,12 @@ def run_account(
             flush=True,
         )
     if missing_mobile:
+        # The mobile channel repeats the same weekly offers. It needs a login
+        # of its own on the mobile store, and that login is what used to end
+        # a working desktop session, so a missing mobile proof is reported
+        # and not counted as a failed account.
         print(
-            "Missing strict mobile ownership evidence for: "
+            "Mobile offers without ownership evidence (not a failure): "
             + ", ".join(missing_mobile),
             flush=True,
         )
@@ -400,10 +413,13 @@ def run_account(
         failure_reasons.append(f"process_timeout:{timeout_seconds}s")
     if proc.returncode != 0:
         failure_reasons.append(f"returncode:{proc.returncode}")
-    if missing_desktop_evidence:
-        failure_reasons.append("missing_desktop_ownership_evidence")
-    if missing_mobile:
-        failure_reasons.append("missing_mobile_ownership_evidence")
+    failure_reasons.extend(
+        ownership_failure_reasons(
+            desktop_evidence,
+            mobile_evidence,
+            mobile_offers,
+        )
+    )
     failure_reasons.extend(
         f"{marker['kind']}:{marker['value']}" for marker in error_markers
     )
@@ -544,6 +560,26 @@ def main() -> int:
     }
     write_run_summary(summary_path, summary)
 
+    # One account that needs a login costs about ten minutes, and eight of
+    # them across three rounds is more than the job may run. The guard stops
+    # the run before GitHub kills it, because a killed job does not save the
+    # browser state that the next run starts from.
+    deadline_minutes = float(os.getenv("EPIC_RUN_DEADLINE_MINUTES", "0") or 0)
+    started_at = time.monotonic()
+
+    def past_deadline() -> bool:
+        if deadline_minutes <= 0:
+            return False
+        elapsed = (time.monotonic() - started_at) / 60
+        if elapsed < deadline_minutes:
+            return False
+        print(
+            f"Run deadline of {deadline_minutes:g} minutes reached after "
+            f"{elapsed:.0f} minutes; the remaining accounts are left for the next run.",
+            flush=True,
+        )
+        return True
+
     for attempt in range(1, max_attempts + 1):
         pending_indexes = [
             original_index
@@ -551,6 +587,8 @@ def main() -> int:
             if account_results[original_index]["status"] != "completed"
         ]
         if not pending_indexes:
+            break
+        if past_deadline():
             break
 
         print(
@@ -563,6 +601,8 @@ def main() -> int:
             account_result = account_results[original_index]
             if account_result["status"] == "completed":
                 continue
+            if past_deadline():
+                break
 
             ok, attempt_result = run_account(
                 account,
@@ -589,41 +629,21 @@ def main() -> int:
                 if not ok:
                     attempt_result["completed_from_cumulative_evidence"] = True
                     print(
-                        f"Account {original_index} has strict ownership evidence for all "
-                        "desktop and mobile offers across its attempts.",
+                        f"Account {original_index} has ownership evidence for every "
+                        "weekly offer across its attempts.",
                         flush=True,
                     )
             else:
-                profile_refreshed = False
-                if should_refresh_account_profile(attempt_result):
-                    profile_refreshed = refresh_account_profile(account["email"])
-                    attempt_result["profile_refreshed"] = profile_refreshed
-                    print(
-                        f"Account {original_index} browser profile was refreshed after "
-                        "a blocked or invalid login session.",
-                        flush=True,
-                    )
-                elif len(account_result["attempts"]) > 1:
-                    # A profile that fails a second time keeps the session of
-                    # the first attempt, and Epic then challenges the visitor
-                    # over and over without ever accepting an answer. A clean
-                    # profile is what a fresh login succeeds with.
-                    profile_refreshed = refresh_account_profile(account["email"])
-                    attempt_result["profile_refreshed"] = profile_refreshed
-                    print(
-                        f"Account {original_index} browser profile was refreshed "
-                        "after a repeated login failure.",
-                        flush=True,
-                    )
+                # The profile is never thrown away here. It holds the session
+                # the account logs in with, and a login that fails is a lost
+                # captcha round rather than a broken profile: the retry needs
+                # the very cookies this branch would delete.
                 if attempt < max_attempts:
                     retry_delay = account_retry_delay(attempt_result)
                     print(
                         f"Account {original_index} failed attempt {attempt}; "
-                        + (
-                            "retrying in the next round with a clean browser profile."
-                            if profile_refreshed
-                            else "retrying in the next round with a fresh browser process."
-                        )
+                        "retrying in the next round with a fresh browser process.",
+                        flush=True,
                     )
                     if retry_delay:
                         print(

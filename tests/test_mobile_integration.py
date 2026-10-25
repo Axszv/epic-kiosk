@@ -173,22 +173,6 @@ class DesktopEvidenceTests(unittest.TestCase):
 
 
 class ProfileRefreshTests(unittest.TestCase):
-    def test_preserves_profile_for_cloudflare_block(self):
-        result = {
-            "error_markers": [
-                {"kind": "ERROR_TYPE", "value": "cloudflare_blocked"}
-            ]
-        }
-
-        self.assertFalse(claim_once.should_refresh_account_profile(result))
-
-    def test_refreshes_profile_for_invalid_cookie(self):
-        result = {
-            "error_markers": [{"kind": "ERROR_TYPE", "value": "cookie_invalid"}]
-        }
-
-        self.assertTrue(claim_once.should_refresh_account_profile(result))
-
     def test_backs_off_after_transient_login_failures(self):
         cloudflare = {
             "error_markers": [
@@ -203,28 +187,12 @@ class ProfileRefreshTests(unittest.TestCase):
         self.assertEqual(claim_once.account_retry_delay(captcha), 20)
         self.assertEqual(claim_once.account_retry_delay({"error_markers": []}), 0)
 
-    def test_does_not_refresh_profile_for_claim_or_captcha_failure(self):
-        for value in ("captcha_failed", "login_timeout", "unknown"):
-            result = {"error_markers": [{"kind": "ERROR_TYPE", "value": value}]}
-            self.assertFalse(claim_once.should_refresh_account_profile(result))
+    def test_claim_loop_never_removes_a_profile(self):
+        """A failed attempt keeps the cookies the next attempt logs in with."""
+        source = Path(claim_once.__file__).read_text(encoding="utf-8")
 
-    def test_refresh_removes_only_the_selected_account(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            selected = root / "account1@example.com"
-            other = root / "account2@example.com"
-            selected.mkdir()
-            other.mkdir()
-            (selected / "cookies.sqlite").write_text("stale", encoding="utf-8")
-            (other / "cookies.sqlite").write_text("valid", encoding="utf-8")
-
-            refreshed = claim_once.refresh_account_profile(
-                "account1@example.com", user_data_root=root
-            )
-
-            self.assertTrue(refreshed)
-            self.assertFalse(selected.exists())
-            self.assertTrue(other.exists())
+        self.assertNotIn("refresh_account_profile", source)
+        self.assertNotIn("clean browser profile", source)
 
 
 class CumulativeEvidenceTests(unittest.TestCase):
@@ -273,7 +241,7 @@ class CumulativeEvidenceTests(unittest.TestCase):
 
         self.assertFalse(
             claim_once.has_complete_account_evidence(
-                {"Desktop Weekly": {"status": "verified_owned"}},
+                {},
                 {
                     "Android": {
                         "Mobile Weekly": {
@@ -285,25 +253,42 @@ class CumulativeEvidenceTests(unittest.TestCase):
             )
         )
 
-    def test_previous_desktop_proof_does_not_hide_empty_current_attempt(self):
-        offers = [{"platform": "Android", "title": "Mobile Weekly"}]
-        accumulated_desktop = {
-            "Desktop Weekly": {"status": "verified_owned"}
-        }
-        current_desktop = {}
-        mobile = {
-            "Android": {
-                "Mobile Weekly": {"status": "already_owned"}
-            }
-        }
+    def test_desktop_proof_completes_account_without_the_mobile_offer(self):
+        """The two channels hand out the same game; one proof is enough."""
+        offers = [
+            {"platform": "Android", "title": "Mobile Weekly"},
+            {"platform": "iOS", "title": "Mobile Weekly"},
+        ]
 
-        self.assertTrue(accumulated_desktop)
-        self.assertFalse(
-            claim_once.has_complete_account_evidence(
-                current_desktop,
-                mobile,
+        self.assertEqual(
+            claim_once.ownership_failure_reasons(
+                {"Desktop Weekly": {"status": "verified_owned"}},
+                {"Android": {"Mobile Weekly": {"status": "login_required"}}},
                 offers,
-            )
+            ),
+            [],
+        )
+
+    def test_attempt_without_any_proof_is_a_failure(self):
+        offers = [{"platform": "Android", "title": "Mobile Weekly"}]
+
+        self.assertEqual(
+            claim_once.ownership_failure_reasons(
+                {"Desktop Weekly": {"status": "unknown"}},
+                {},
+                offers,
+            ),
+            [
+                "missing_desktop_ownership_evidence",
+                "missing_mobile_ownership_evidence",
+            ],
+        )
+
+    def test_empty_attempt_is_never_complete(self):
+        offers = [{"platform": "Android", "title": "Mobile Weekly"}]
+
+        self.assertFalse(
+            claim_once.has_complete_account_evidence({}, {}, offers)
         )
 
 

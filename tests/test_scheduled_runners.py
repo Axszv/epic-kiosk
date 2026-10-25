@@ -53,16 +53,17 @@ class ScheduledRunnerTests(unittest.TestCase):
         self.assertIn('"app", "volumes", "user_data", email', script)
         self.assertIn("if fresh_profile and not failed:", script)
 
-    def test_a_profile_that_fails_twice_is_thrown_away(self):
-        # A profile that keeps the session of a failed attempt makes Epic
-        # challenge the visitor over and over without ever accepting an
-        # answer, so the second failure starts over with a clean profile.
+    def test_a_profile_that_fails_twice_is_kept(self):
+        # The profile holds the session the account logs in with. Deleting it
+        # after a failed attempt made every later run solve a captcha for a
+        # session it already had, so the retry reuses the same profile.
         script = (
             Path(__file__).resolve().parents[1]
             / "scripts/github_actions_claim_once.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('elif len(account_result["attempts"]) > 1:', script)
-        self.assertIn("after a repeated login failure.", script)
+        self.assertNotIn('elif len(account_result["attempts"]) > 1:', script)
+        self.assertNotIn("after a repeated login failure.", script)
+        self.assertIn("retrying in the next round with a fresh browser process.", script)
 
 
 if __name__ == "__main__":

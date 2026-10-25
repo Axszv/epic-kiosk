@@ -20,7 +20,11 @@ from loguru import logger
 from playwright.async_api import expect, Page, Response, TimeoutError as PlaywrightTimeoutError
 
 from settings import RUNTIME_DIR, settings
-from services.epic_store_page import STORE_LOGIN_URL, store_signed_out
+from services.epic_store_page import (
+    STORE_LOGIN_URL,
+    store_login_state,
+    store_signed_out,
+)
 from services.hcaptcha_agent_service import (
     get_login_hcaptcha_agent,
     replace_login_hcaptcha_agent,
@@ -274,6 +278,20 @@ class EpicAuthorization:
                 domain=re.compile(r"(^|\.)epicgames\.com$")
             )
             logger.warning("LOGIN_SESSION:stale_cookies_cleared")
+
+    async def _restore_session_cookies(self, cookies: list[dict]) -> None:
+        """Put the session of the profile back after a login that failed.
+
+        `_reset_login_cookies` clears the Epic cookies so the login form
+        starts from a clean state. A failed login leaves the profile without
+        a session, and the profile is what the next run starts from, so the
+        cookies are put back before the failure is returned.
+        """
+        if not cookies:
+            return
+        with suppress(Exception):
+            await self.page.context.add_cookies(cookies)
+            logger.warning("LOGIN_SESSION:the_session_of_the_profile_was_restored")
 
     async def _reset_xsrf_cookie(self) -> None:
         """Drop the cached XSRF cookie so the portal reads a current one.
@@ -1534,7 +1552,7 @@ class EpicAuthorization:
                         await self.page.wait_for_timeout(delay_seconds * 1000)
                         continue
                     return ErrorType.CLOUDFLARE_BLOCKED
-                status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
+                status = await store_login_state(self.page)
             except Exception as e:
                 # 超时时检查是否在修正页面
                 current_url = self.page.url
@@ -1557,11 +1575,18 @@ class EpicAuthorization:
             # and the captcha of such a session is never executed by Epic's
             # Talon service, so Epic refuses the transaction with
             # `captcha_invalid`.
+            #
+            # The login clears the cookies of the profile before the form
+            # starts. A login that then fails must not leave the profile
+            # without the session it came with, or every later run of this
+            # account needs another captcha.
+            session_cookies = await self.page.context.cookies()
             login_result = await self._login(login_url=STORE_LOGIN_URL)
             if login_result:
                 success, error_type = login_result
                 if success:
                     return ErrorType.SUCCESS
+                await self._restore_session_cookies(session_cookies)
                 if error_type == ErrorType.CLOUDFLARE_BLOCKED and attempt < 2:
                     delay_seconds = 10 * (attempt + 1)
                     logger.warning(
