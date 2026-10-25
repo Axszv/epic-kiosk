@@ -25,8 +25,8 @@ from models import OrderItem, Order
 from models import PromotionGame
 from settings import settings, RUNTIME_DIR
 from services.epic_store_page import (
-    StoreLoginRequired, is_login_url, product_cta, store_login_state,
-    store_signed_out,
+    StoreLoginRequired, complete_account_switch, is_login_url,
+    is_switch_account_url, product_cta, store_login_state, store_signed_out,
 )
 from services.hcaptcha_agent_service import (
     get_hcaptcha_agent,
@@ -639,6 +639,16 @@ class EpicGames:
             )
             await account_page.wait_for_timeout(3000)
             print(f"ORDER_HISTORY_SESSION:{account_page.url}", flush=True)
+            if is_switch_account_url(account_page.url):
+                # The portal answers 401 and sends the browser through its
+                # switch-account page. Confirming it is what gives the
+                # account portal the session that the order history, the
+                # checkout and the mobile precheck all run on.
+                if await complete_account_switch(account_page):
+                    print(
+                        f"ORDER_HISTORY_SESSION:after_switch:{account_page.url}",
+                        flush=True,
+                    )
             if account_page.url.startswith(URL_ACCOUNT_ORIGIN):
                 data = await EpicGames._fetch_order_history_in_page(account_page)
                 if data is not None:

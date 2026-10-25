@@ -18,6 +18,67 @@ ORDER_HISTORY_URL = (
 )
 ORDER_HISTORY_REFERER = "https://accounts.epicgames.com/account/transactions?lang=en-US"
 
+SWITCH_ACCOUNT_MARKERS = ("/id/login/switch-account", "/id/login/switch")
+SWITCH_CONFIRM_SELECTORS = (
+    "[data-testid='switch-account-continue']",
+    "button[data-testid*='continue']",
+    "button:has-text('Continue')",
+    "button:has-text('继续')",
+    "#continue",
+    "#link-success",
+    "a:has-text('Continue')",
+    "main button",
+)
+
+
+def is_switch_account_url(url: str) -> bool:
+    return any(marker in (url or "") for marker in SWITCH_ACCOUNT_MARKERS)
+
+
+async def _dump_page(page, label: str) -> None:
+    """Save the page of a flow that has no selector yet."""
+    with suppress(Exception):
+        from settings import RUNTIME_DIR
+
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        RUNTIME_DIR.joinpath(f"{label}.html").write_text(
+            await page.content(), encoding="utf-8"
+        )
+        await page.screenshot(path=str(RUNTIME_DIR.joinpath(f"{label}.png")))
+        print(f"PAGE_DUMP:{label}:{page.url}", flush=True)
+
+
+async def complete_account_switch(page) -> bool:
+    """Confirm the signed-in account on Epic's switch-account page.
+
+    A Store session does not give the account portal a session of its own.
+    `accounts.epicgames.com` answers 401 and sends the browser through
+    `/id/login/switch-account`, which asks which account to continue with.
+    The order history and the checkout run on that portal session, so until
+    this page is confirmed every claim reports `cookie_invalid` while the
+    Store itself still says the visitor is signed in.
+    """
+    if not is_switch_account_url(page.url):
+        return False
+    await _dump_page(page, "account_switch")
+    for selector in SWITCH_CONFIRM_SELECTORS:
+        with suppress(Exception):
+            candidate = page.locator(selector).first
+            if await candidate.count() == 0:
+                continue
+            if not await candidate.is_visible(timeout=1500):
+                continue
+            await candidate.click(timeout=5000)
+            await page.wait_for_timeout(2500)
+            print(
+                f"ACCOUNT_SWITCH:clicked:{selector}:{page.url}",
+                flush=True,
+            )
+            if not is_switch_account_url(page.url):
+                return True
+    print("ACCOUNT_SWITCH:no_confirm_control", flush=True)
+    return False
+
 
 class StoreLoginRequired(Exception):
     """The product session needs authentication, not another checkout click."""
