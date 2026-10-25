@@ -130,49 +130,55 @@ def merge_mobile_evidence(current: dict, incoming: dict) -> dict:
     return merged
 
 
-def has_complete_account_evidence(
-    desktop_evidence: dict,
-    mobile_evidence: dict,
-    mobile_offers: list[dict],
-) -> bool:
-    return not ownership_failure_reasons(
-        desktop_evidence, mobile_evidence, mobile_offers
-    )
+def is_settled(account_result: dict) -> bool:
+    """Whether the account needs no further attempt in this run.
 
-
-def ownership_failure_reasons(
-    desktop_evidence: dict,
-    mobile_evidence: dict,
-    mobile_offers: list[dict],
-) -> list[str]:
-    """The ownership failures of one attempt, if the attempt proves nothing.
-
-    The two channels hand out the same weekly games. A desktop claim that
-    proves the library holds every offer is a completed account even when the
-    mobile offer asked for its own login, and a mobile claim is a completed
-    account when the desktop store page was the one that failed.
-
-    Only an attempt that proves nothing failed. A missing mobile proof used
-    to fail the account, and the retry it caused threw away a profile whose
-    desktop session was working, so the next run had to solve a captcha for
-    a session it already had.
+    Both `completed` and `completed_desktop_only` are final: the desktop
+    channel is what an attempt can still change, and the mobile channel
+    needs a login of its own that the next attempt would pay for with the
+    session this one just established.
     """
-    missing_desktop = [
+    return account_result.get("status") in {"completed", "completed_desktop_only"}
+
+
+def has_complete_desktop_evidence(desktop_evidence: dict) -> bool:
+    """Whether the desktop store proved every promotion is in the library."""
+    return bool(desktop_evidence) and not missing_desktop_evidence(desktop_evidence)
+
+
+def missing_desktop_evidence(desktop_evidence: dict) -> list[str]:
+    return [
         title
         for title, item in desktop_evidence.items()
         if item.get("status") not in SUCCESS_EVIDENCE_STATUSES
     ]
-    missing_mobile = missing_mobile_evidence(mobile_offers, mobile_evidence)
-    desktop_complete = bool(desktop_evidence) and not missing_desktop
-    mobile_complete = bool(mobile_evidence) and not missing_mobile
-    if desktop_complete or mobile_complete:
-        return []
-    reasons = []
-    if missing_desktop:
-        reasons.append("missing_desktop_ownership_evidence")
-    if missing_mobile:
-        reasons.append("missing_mobile_ownership_evidence")
-    return reasons
+
+
+def attempt_outcome(
+    desktop_evidence: dict,
+    mobile_evidence: dict,
+    mobile_offers: list[dict],
+) -> dict:
+    """What each channel of one attempt still has to claim.
+
+    The two channels hand out different games: the desktop store has its own
+    weekly promotions, and the mobile store has its own Android and iOS
+    offers. A proof from one channel says nothing about the games of the
+    other, so each channel is judged on its own evidence.
+
+    Only the desktop channel decides whether the attempt failed. The mobile
+    channel needs a login of its own, and that login replaces the session of
+    the profile the desktop claim runs on, so a mobile miss is reported and
+    not repeated.
+    """
+    desktop_missing = missing_desktop_evidence(desktop_evidence)
+    mobile_missing = missing_mobile_evidence(mobile_offers, mobile_evidence)
+    return {
+        "desktop_complete": bool(desktop_evidence) and not desktop_missing,
+        "mobile_complete": bool(mobile_evidence) and not mobile_missing,
+        "desktop_missing": desktop_missing,
+        "mobile_missing": mobile_missing,
+    }
 
 
 def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
@@ -385,26 +391,22 @@ def run_account(
     desktop_evidence = parse_claim_evidence(output)
     mobile_evidence = parse_mobile_evidence(output)
     error_markers = parse_error_markers(output)
-    missing_desktop_evidence = [
-        title
-        for title, item in desktop_evidence.items()
-        if item["status"] not in SUCCESS_EVIDENCE_STATUSES
-    ]
-    missing_mobile = missing_mobile_evidence(mobile_offers, mobile_evidence)
-    if missing_desktop_evidence:
+    outcome = attempt_outcome(desktop_evidence, mobile_evidence, mobile_offers)
+    if outcome["desktop_missing"]:
         print(
             "Missing strict desktop ownership evidence for: "
-            + ", ".join(missing_desktop_evidence),
+            + ", ".join(outcome["desktop_missing"]),
             flush=True,
         )
-    if missing_mobile:
-        # The mobile channel repeats the same weekly offers. It needs a login
-        # of its own on the mobile store, and that login is what used to end
-        # a working desktop session, so a missing mobile proof is reported
-        # and not counted as a failed account.
+    if outcome["mobile_missing"]:
+        # The mobile store hands out its own games, so a missing mobile proof
+        # is a game that was not claimed. It is not a reason to repeat the
+        # attempt: the mobile channel needs a login of its own, that login
+        # replaces the session of the profile, and the desktop claim of this
+        # attempt already ran on it.
         print(
-            "Mobile offers without ownership evidence (not a failure): "
-            + ", ".join(missing_mobile),
+            "Mobile offers without ownership evidence: "
+            + ", ".join(outcome["mobile_missing"]),
             flush=True,
         )
 
@@ -413,13 +415,8 @@ def run_account(
         failure_reasons.append(f"process_timeout:{timeout_seconds}s")
     if proc.returncode != 0:
         failure_reasons.append(f"returncode:{proc.returncode}")
-    failure_reasons.extend(
-        ownership_failure_reasons(
-            desktop_evidence,
-            mobile_evidence,
-            mobile_offers,
-        )
-    )
+    if outcome["desktop_missing"]:
+        failure_reasons.append("missing_desktop_ownership_evidence")
     failure_reasons.extend(
         f"{marker['kind']}:{marker['value']}" for marker in error_markers
     )
@@ -456,8 +453,10 @@ def run_account(
         "failed": failed,
         "failure_reasons": failure_reasons,
         "error_markers": error_markers,
-        "missing_desktop_evidence": missing_desktop_evidence,
-        "missing_mobile_evidence": missing_mobile,
+        "missing_desktop_evidence": outcome["desktop_missing"],
+        "missing_mobile_evidence": outcome["mobile_missing"],
+        "desktop_complete": outcome["desktop_complete"],
+        "mobile_complete": outcome["mobile_complete"],
         "desktop_evidence": desktop_evidence,
         "mobile_evidence": mobile_evidence,
     }
@@ -584,7 +583,7 @@ def main() -> int:
         pending_indexes = [
             original_index
             for original_index, _ in indexed_accounts
-            if account_results[original_index]["status"] != "completed"
+            if not is_settled(account_results[original_index])
         ]
         if not pending_indexes:
             break
@@ -599,7 +598,7 @@ def main() -> int:
 
         for original_index, account in indexed_accounts:
             account_result = account_results[original_index]
-            if account_result["status"] == "completed":
+            if is_settled(account_result):
                 continue
             if past_deadline():
                 break
@@ -619,18 +618,32 @@ def main() -> int:
                 account_result["mobile_evidence"],
                 attempt_result["mobile_evidence"],
             )
-            cumulative_complete = has_complete_account_evidence(
-                attempt_result["desktop_evidence"],
-                account_result["mobile_evidence"],
-                mobile_offers,
+            # The desktop channel is the one that decides the account. Its
+            # evidence is kept across attempts, so a promotion claimed by an
+            # earlier attempt of this run still counts.
+            desktop_complete = (
+                ok or has_complete_desktop_evidence(account_result["desktop_evidence"])
             )
-            if ok or cumulative_complete:
-                account_result["status"] = "completed"
+            mobile_missing = missing_mobile_evidence(
+                mobile_offers, account_result["mobile_evidence"]
+            )
+            account_result["mobile_missing"] = mobile_missing
+            if desktop_complete:
+                if mobile_missing:
+                    account_result["status"] = "completed_desktop_only"
+                    print(
+                        f"Account {original_index} claimed the desktop promotions; "
+                        "the mobile offers are still missing: "
+                        + ", ".join(mobile_missing),
+                        flush=True,
+                    )
+                else:
+                    account_result["status"] = "completed"
                 if not ok:
                     attempt_result["completed_from_cumulative_evidence"] = True
                     print(
                         f"Account {original_index} has ownership evidence for every "
-                        "weekly offer across its attempts.",
+                        "desktop promotion across its attempts.",
                         flush=True,
                     )
             else:
@@ -658,7 +671,7 @@ def main() -> int:
     for original_index, _ in indexed_accounts:
         account_result = account_results[original_index]
         masked = account_result["email"]
-        if account_result["status"] != "completed":
+        if not is_settled(account_result):
             account_result["status"] = "failed"
             failures += 1
             append_summary(
@@ -667,9 +680,15 @@ def main() -> int:
             )
         else:
             attempt_count = len(account_result["attempts"])
+            mobile_missing = account_result.get("mobile_missing") or []
+            suffix = (
+                " (desktop only; mobile not claimed: " + ", ".join(mobile_missing) + ")"
+                if mobile_missing
+                else ""
+            )
             append_summary(
                 f"- account {original_index} {masked}: completed "
-                f"after {attempt_count} attempt(s)\n"
+                f"after {attempt_count} attempt(s){suffix}\n"
             )
             for title, item in account_result["desktop_evidence"].items():
                 append_summary(

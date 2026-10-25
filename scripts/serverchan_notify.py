@@ -25,6 +25,13 @@ def load_summary(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def account_status_text(status: str) -> str:
+    return {
+        "completed": "已完成（电脑端 + 移动端）",
+        "completed_desktop_only": "电脑端已完成，移动端未领取",
+    }.get(status, "失败")
+
+
 def account_sections(summary: dict) -> tuple[int, int, list[str]]:
     accounts = summary.get("accounts") or []
     completed = 0
@@ -32,18 +39,24 @@ def account_sections(summary: dict) -> tuple[int, int, list[str]]:
 
     for account in accounts:
         status = account.get("status", "unknown")
-        if status == "completed":
+        settled = status in {"completed", "completed_desktop_only"}
+        if settled:
             completed += 1
 
         attempts = account.get("attempts") or []
         email = account.get("email", "unknown")
-        status_text = "已完成" if status == "completed" else "失败"
+        status_text = account_status_text(status)
         block = [
             f"### 账号 {account.get('index')}：{email}",
             "",
             f"状态：{status_text} ｜ 尝试：{len(attempts)} 次",
             "",
         ]
+        mobile_missing = account.get("mobile_missing") or []
+        if mobile_missing:
+            block.extend(
+                ["移动端未领取：" + "、".join(mobile_missing), ""]
+            )
 
         desktop_evidence = (
             account.get("desktop_evidence")

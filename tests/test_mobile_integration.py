@@ -228,68 +228,86 @@ class CumulativeEvidenceTests(unittest.TestCase):
         }
         merged = claim_once.merge_mobile_evidence(first, second)
 
-        self.assertTrue(
-            claim_once.has_complete_account_evidence(
-                {"Desktop Weekly": {"status": "already_owned"}},
-                merged,
-                offers,
-            )
+        outcome = claim_once.attempt_outcome(
+            {"Desktop Weekly": {"status": "already_owned"}},
+            merged,
+            offers,
         )
 
-    def test_unverified_checkout_never_completes_account(self):
+        self.assertTrue(outcome["desktop_complete"])
+        self.assertTrue(outcome["mobile_complete"])
+
+    def test_unverified_checkout_never_completes_the_mobile_channel(self):
         offers = [{"platform": "Android", "title": "Mobile Weekly"}]
 
-        self.assertFalse(
-            claim_once.has_complete_account_evidence(
-                {},
-                {
-                    "Android": {
-                        "Mobile Weekly": {
-                            "status": "checkout_submitted_unverified"
-                        }
+        outcome = claim_once.attempt_outcome(
+            {"Desktop Weekly": {"status": "verified_owned"}},
+            {
+                "Android": {
+                    "Mobile Weekly": {
+                        "status": "checkout_submitted_unverified"
                     }
-                },
-                offers,
-            )
+                }
+            },
+            offers,
         )
 
-    def test_desktop_proof_completes_account_without_the_mobile_offer(self):
-        """The two channels hand out the same game; one proof is enough."""
+        self.assertTrue(outcome["desktop_complete"])
+        self.assertFalse(outcome["mobile_complete"])
+        self.assertEqual(
+            outcome["mobile_missing"], ["Android:Mobile Weekly"]
+        )
+
+    def test_a_mobile_proof_never_stands_in_for_a_desktop_promotion(self):
+        """The two channels hand out different games."""
+        offers = [{"platform": "Android", "title": "Mobile Weekly"}]
+
+        outcome = claim_once.attempt_outcome(
+            {"Sker Ritual": {"status": "unknown"}},
+            {"Android": {"Mobile Weekly": {"status": "verified_owned"}}},
+            offers,
+        )
+
+        self.assertFalse(outcome["desktop_complete"])
+        self.assertTrue(outcome["mobile_complete"])
+        self.assertEqual(outcome["desktop_missing"], ["Sker Ritual"])
+
+    def test_a_desktop_proof_never_stands_in_for_a_mobile_offer(self):
         offers = [
             {"platform": "Android", "title": "Mobile Weekly"},
             {"platform": "iOS", "title": "Mobile Weekly"},
         ]
 
-        self.assertEqual(
-            claim_once.ownership_failure_reasons(
-                {"Desktop Weekly": {"status": "verified_owned"}},
-                {"Android": {"Mobile Weekly": {"status": "login_required"}}},
-                offers,
-            ),
-            [],
+        outcome = claim_once.attempt_outcome(
+            {"Sker Ritual": {"status": "verified_owned"}},
+            {"Android": {"Mobile Weekly": {"status": "login_required"}}},
+            offers,
         )
 
-    def test_attempt_without_any_proof_is_a_failure(self):
+        self.assertTrue(outcome["desktop_complete"])
+        self.assertFalse(outcome["mobile_complete"])
+        self.assertEqual(
+            outcome["mobile_missing"],
+            ["Android:Mobile Weekly", "iOS:Mobile Weekly"],
+        )
+
+    def test_an_empty_attempt_completes_neither_channel(self):
         offers = [{"platform": "Android", "title": "Mobile Weekly"}]
 
-        self.assertEqual(
-            claim_once.ownership_failure_reasons(
-                {"Desktop Weekly": {"status": "unknown"}},
-                {},
-                offers,
-            ),
-            [
-                "missing_desktop_ownership_evidence",
-                "missing_mobile_ownership_evidence",
-            ],
-        )
+        outcome = claim_once.attempt_outcome({}, {}, offers)
 
-    def test_empty_attempt_is_never_complete(self):
-        offers = [{"platform": "Android", "title": "Mobile Weekly"}]
+        self.assertFalse(outcome["desktop_complete"])
+        self.assertFalse(outcome["mobile_complete"])
 
-        self.assertFalse(
-            claim_once.has_complete_account_evidence({}, {}, offers)
+    def test_a_settled_account_is_not_retried(self):
+        # The mobile channel needs a login of its own, and repeating the
+        # attempt would pay for it with the session the desktop claim used.
+        self.assertTrue(claim_once.is_settled({"status": "completed"}))
+        self.assertTrue(
+            claim_once.is_settled({"status": "completed_desktop_only"})
         )
+        self.assertFalse(claim_once.is_settled({"status": "pending"}))
+        self.assertFalse(claim_once.is_settled({"status": "failed"}))
 
 
 class NotificationTests(unittest.TestCase):
