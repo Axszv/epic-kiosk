@@ -130,17 +130,6 @@ def merge_mobile_evidence(current: dict, incoming: dict) -> dict:
     return merged
 
 
-def is_settled(account_result: dict) -> bool:
-    """Whether the account needs no further attempt in this run.
-
-    Both `completed` and `completed_desktop_only` are final: the desktop
-    channel is what an attempt can still change, and the mobile channel
-    needs a login of its own that the next attempt would pay for with the
-    session this one just established.
-    """
-    return account_result.get("status") in {"completed", "completed_desktop_only"}
-
-
 def has_complete_desktop_evidence(desktop_evidence: dict) -> bool:
     """Whether the desktop store proved every promotion is in the library."""
     return bool(desktop_evidence) and not missing_desktop_evidence(desktop_evidence)
@@ -161,15 +150,15 @@ def attempt_outcome(
 ) -> dict:
     """What each channel of one attempt still has to claim.
 
-    The two channels hand out different games: the desktop store has its own
-    weekly promotions, and the mobile store has its own Android and iOS
-    offers. A proof from one channel says nothing about the games of the
-    other, so each channel is judged on its own evidence.
+    The two channels hand out different games: the desktop promotions of the
+    week are not the Android and iOS offers. A proof from one channel says
+    nothing about the games of the other, so each channel is judged on its
+    own evidence and both are required for a completed account.
 
-    Only the desktop channel decides whether the attempt failed. The mobile
-    channel needs a login of its own, and that login replaces the session of
-    the profile the desktop claim runs on, so a mobile miss is reported and
-    not repeated.
+    Both channels claim on the same `store.epicgames.com/p/<slug>` page with
+    the same cookies; `mobile_offer_discovery` builds the URL from the same
+    Store origin. A mobile result of `login_required` is therefore this code
+    reading the product page as signed out, not a second login.
     """
     desktop_missing = missing_desktop_evidence(desktop_evidence)
     mobile_missing = missing_mobile_evidence(mobile_offers, mobile_evidence)
@@ -179,6 +168,11 @@ def attempt_outcome(
         "desktop_missing": desktop_missing,
         "mobile_missing": mobile_missing,
     }
+
+
+def is_settled(account_result: dict) -> bool:
+    """Whether the account needs no further attempt in this run."""
+    return account_result.get("status") == "completed"
 
 
 def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
@@ -399,13 +393,11 @@ def run_account(
             flush=True,
         )
     if outcome["mobile_missing"]:
-        # The mobile store hands out its own games, so a missing mobile proof
-        # is a game that was not claimed. It is not a reason to repeat the
-        # attempt: the mobile channel needs a login of its own, that login
-        # replaces the session of the profile, and the desktop claim of this
-        # attempt already ran on it.
+        # The mobile offers are games of their own, and they are claimed on
+        # the same product page as the desktop promotions, so a missing one
+        # is a game that was not claimed.
         print(
-            "Mobile offers without ownership evidence: "
+            "Missing strict mobile ownership evidence for: "
             + ", ".join(outcome["mobile_missing"]),
             flush=True,
         )
@@ -417,6 +409,8 @@ def run_account(
         failure_reasons.append(f"returncode:{proc.returncode}")
     if outcome["desktop_missing"]:
         failure_reasons.append("missing_desktop_ownership_evidence")
+    if outcome["mobile_missing"]:
+        failure_reasons.append("missing_mobile_ownership_evidence")
     failure_reasons.extend(
         f"{marker['kind']}:{marker['value']}" for marker in error_markers
     )
@@ -495,11 +489,11 @@ def main() -> int:
     clean_directory(Path("app/volumes/runtime"))
 
     append_summary("## Epic Kiosk run\n\n")
-    # The mobile collection opens the mobile store, which sends the browser
-    # through its own login page when that store does not accept the session
-    # of the desktop claim. Those pages are the one step of a run that
-    # touches the session it just used, so a run has to be able to leave the
-    # mobile channel out.
+    # The mobile offers are claimed on the same product page as the desktop
+    # promotions, and that page sends the browser to Epic's login page when
+    # it does not accept the session for the claim. Those navigations are
+    # the one step of a run that touches the session the desktop claim just
+    # used, so a run has to be able to leave the mobile channel out.
     skip_mobile = os.getenv("EPIC_SKIP_MOBILE", "false").strip().casefold() in {
         "1",
         "true",
@@ -636,35 +630,36 @@ def main() -> int:
                 account_result["mobile_evidence"],
                 attempt_result["mobile_evidence"],
             )
-            # The desktop channel is the one that decides the account. Its
-            # evidence is kept across attempts, so a promotion claimed by an
-            # earlier attempt of this run still counts.
-            desktop_complete = (
-                ok or has_complete_desktop_evidence(account_result["desktop_evidence"])
+            # Evidence is kept across attempts, so a game claimed by an
+            # earlier attempt of this run still counts. An account is only
+            # completed when both channels proved every one of their games.
+            desktop_complete = has_complete_desktop_evidence(
+                account_result["desktop_evidence"]
             )
             mobile_missing = missing_mobile_evidence(
                 mobile_offers, account_result["mobile_evidence"]
             )
+            account_result["desktop_missing"] = missing_desktop_evidence(
+                account_result["desktop_evidence"]
+            )
             account_result["mobile_missing"] = mobile_missing
-            if desktop_complete:
-                if mobile_missing:
-                    account_result["status"] = "completed_desktop_only"
-                    print(
-                        f"Account {original_index} claimed the desktop promotions; "
-                        "the mobile offers are still missing: "
-                        + ", ".join(mobile_missing),
-                        flush=True,
-                    )
-                else:
-                    account_result["status"] = "completed"
+            if desktop_complete and not mobile_missing:
+                account_result["status"] = "completed"
                 if not ok:
                     attempt_result["completed_from_cumulative_evidence"] = True
                     print(
                         f"Account {original_index} has ownership evidence for every "
-                        "desktop promotion across its attempts.",
+                        "desktop and mobile offer across its attempts.",
                         flush=True,
                     )
             else:
+                if desktop_complete:
+                    print(
+                        f"Account {original_index} claimed every desktop promotion; "
+                        "the mobile offers are still missing: "
+                        + ", ".join(mobile_missing),
+                        flush=True,
+                    )
                 # The profile is never thrown away here. It holds the session
                 # the account logs in with, and a login that fails is a lost
                 # captcha round rather than a broken profile: the retry needs
@@ -698,15 +693,9 @@ def main() -> int:
             )
         else:
             attempt_count = len(account_result["attempts"])
-            mobile_missing = account_result.get("mobile_missing") or []
-            suffix = (
-                " (desktop only; mobile not claimed: " + ", ".join(mobile_missing) + ")"
-                if mobile_missing
-                else ""
-            )
             append_summary(
                 f"- account {original_index} {masked}: completed "
-                f"after {attempt_count} attempt(s){suffix}\n"
+                f"after {attempt_count} attempt(s)\n"
             )
             for title, item in account_result["desktop_evidence"].items():
                 append_summary(

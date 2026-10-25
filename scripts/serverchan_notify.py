@@ -28,7 +28,6 @@ def load_summary(path: Path) -> dict:
 def account_status_text(status: str) -> str:
     return {
         "completed": "已完成（电脑端 + 移动端）",
-        "completed_desktop_only": "电脑端已完成，移动端未领取",
     }.get(status, "失败")
 
 
@@ -39,8 +38,7 @@ def account_sections(summary: dict) -> tuple[int, int, list[str]]:
 
     for account in accounts:
         status = account.get("status", "unknown")
-        settled = status in {"completed", "completed_desktop_only"}
-        if settled:
+        if status == "completed":
             completed += 1
 
         attempts = account.get("attempts") or []
@@ -53,6 +51,11 @@ def account_sections(summary: dict) -> tuple[int, int, list[str]]:
             "",
         ]
         mobile_missing = account.get("mobile_missing") or []
+        desktop_missing = account.get("desktop_missing") or []
+        if desktop_missing:
+            block.extend(
+                ["电脑端未领取：" + "、".join(desktop_missing), ""]
+            )
         if mobile_missing:
             block.extend(
                 ["移动端未领取：" + "、".join(mobile_missing), ""]

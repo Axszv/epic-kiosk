@@ -300,10 +300,10 @@ class CumulativeEvidenceTests(unittest.TestCase):
         self.assertFalse(outcome["mobile_complete"])
 
     def test_a_settled_account_is_not_retried(self):
-        # The mobile channel needs a login of its own, and repeating the
-        # attempt would pay for it with the session the desktop claim used.
+        # Both channels are required, so only a fully completed account is
+        # settled; a missing mobile offer repeats the attempt.
         self.assertTrue(claim_once.is_settled({"status": "completed"}))
-        self.assertTrue(
+        self.assertFalse(
             claim_once.is_settled({"status": "completed_desktop_only"})
         )
         self.assertFalse(claim_once.is_settled({"status": "pending"}))
