@@ -63,6 +63,10 @@ on:
         description: "Restore this exact browser-state cache instead of the newest one."
         required: false
         default: ""
+      skip_mobile:
+        description: "Leave the mobile channel out; it opens its own login pages."
+        required: false
+        default: "false"
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -216,6 +220,7 @@ jobs:
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
+          EPIC_SKIP_MOBILE: ${{ github.event.inputs.skip_mobile || 'false' }}
         run: |
           if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
             echo "::warning::No browser proxy is available; continuing with the runner's direct connection"

@@ -495,43 +495,61 @@ def main() -> int:
     clean_directory(Path("app/volumes/runtime"))
 
     append_summary("## Epic Kiosk run\n\n")
-    try:
-        mobile_discovery = discover_mobile_offers()
-        mobile_offers = mobile_discovery["offers"]
-        if not mobile_offers:
-            raise RuntimeError("official Epic mobile discovery returned no weekly free offers")
-    except Exception as err:
-        message = f"Mobile offer discovery failed: {type(err).__name__}: {err}"
-        print(message, flush=True)
-        summary = {
-            "accounts": [],
-            "mobile_discovery": {"status": "failed", "error": message},
-        }
-        write_run_summary(
-            Path("app/volumes/runtime/github_actions_summary.json"),
-            summary,
-        )
-        append_summary(f"- {message}\n")
-        return 1
+    # The mobile collection opens the mobile store, which sends the browser
+    # through its own login page when that store does not accept the session
+    # of the desktop claim. Those pages are the one step of a run that
+    # touches the session it just used, so a run has to be able to leave the
+    # mobile channel out.
+    skip_mobile = os.getenv("EPIC_SKIP_MOBILE", "false").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if skip_mobile:
+        mobile_discovery = {"status": "skipped", "offers": []}
+        mobile_offers = []
+        print("Mobile collection is skipped for this run", flush=True)
+        append_summary("- Mobile collection: skipped for this run\n\n")
+    else:
+        try:
+            mobile_discovery = discover_mobile_offers()
+            mobile_offers = mobile_discovery["offers"]
+            if not mobile_offers:
+                raise RuntimeError("official Epic mobile discovery returned no weekly free offers")
+        except Exception as err:
+            message = f"Mobile offer discovery failed: {type(err).__name__}: {err}"
+            print(message, flush=True)
+            summary = {
+                "accounts": [],
+                "mobile_discovery": {"status": "failed", "error": message},
+            }
+            write_run_summary(
+                Path("app/volumes/runtime/github_actions_summary.json"),
+                summary,
+            )
+            append_summary(f"- {message}\n")
+            return 1
 
     Path("app/volumes/runtime/mobile_discovery_summary.json").write_text(
         json.dumps(mobile_discovery, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(
-        "Discovered mobile weekly free offers: "
-        + ", ".join(
-            f"{offer['platform']}:{offer['title']}" for offer in mobile_offers
-        ),
-        flush=True,
-    )
-    append_summary(
-        "- Mobile discovery: "
-        + ", ".join(
-            f"{offer['platform']} {offer['title']}" for offer in mobile_offers
+    if mobile_offers:
+        print(
+            "Discovered mobile weekly free offers: "
+            + ", ".join(
+                f"{offer['platform']}:{offer['title']}" for offer in mobile_offers
+            ),
+            flush=True,
         )
-        + "\n\n"
-    )
+        append_summary(
+            "- Mobile discovery: "
+            + ", ".join(
+                f"{offer['platform']} {offer['title']}" for offer in mobile_offers
+            )
+            + "\n\n"
+        )
 
     failures = 0
     max_attempts = max(1, int(os.getenv("EPIC_ACCOUNT_MAX_ATTEMPTS", "3")))
