@@ -59,6 +59,10 @@ on:
         description: "Captcha model for a manual A/B diagnostic run."
         required: false
         default: "agnes-3.0-flash"
+      restore_state_key:
+        description: "Restore this exact browser-state cache instead of the newest one."
+        required: false
+        default: ""
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -183,7 +187,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
-          key: epic-state-v2-${{ github.run_id }}
+          # A manual run can ask for one exact cache. The profiles in it are
+          # the sessions of the accounts, so an older cache is the only copy
+          # of a session that a later run replaced.
+          key: ${{ github.event.inputs.restore_state_key || format('epic-state-v2-{0}', github.run_id) }}
           restore-keys: |
             epic-state-v2-
 

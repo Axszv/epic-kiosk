@@ -503,9 +503,14 @@ class EpicAgentV(AgentV):
             return []
         boxes = list(getattr(response, "boxes", []) or [])
         centers = self._box_centers(boxes, size)
-        logger.debug(
-            f"hCaptcha box answer: {len(boxes)} boxes -> "
-            f"{[(round(x), round(y)) for x, y in centers]}"
+        # The answer has to be readable in the run log: a rejected round is
+        # only diagnosable against what the model was asked and what it
+        # pointed at.
+        logger.info(
+            "HCAPTCHA_BOX_ANSWER:"
+            f"instruction={instruction[:120]!r}:"
+            f"boxes={len(boxes)}:"
+            f"centers={[(round(x), round(y)) for x, y in centers]}"
         )
         if cache_key is not None:
             with suppress(Exception):
@@ -691,8 +696,9 @@ class EpicAgentV(AgentV):
             if source is None or target is None:
                 continue
             paths.append((source, target))
-        logger.debug(
-            f"hCaptcha drag box answer: {len(paths)} drags -> "
+        logger.info(
+            "HCAPTCHA_DRAG_BOX_ANSWER:"
+            f"drags={len(paths)}:"
             f"{[(tuple(round(v) for v in s), tuple(round(v) for v in t)) for s, t in paths]}"
         )
         return paths
@@ -804,7 +810,7 @@ class EpicAgentV(AgentV):
                     prompt += f"\nYour previous answer was invalid: {err}. Re-read the grid. {coordinate_prompt}"
                     continue
                 break
-            logger.debug(f"[{cid + 1}/{crumb_count}] Local point answer: {response.log_message}")
+            logger.info(f"HCAPTCHA_POINT_ANSWER:[{cid + 1}/{crumb_count}] {response.log_message}")
             await self._click_image_points(frame, response.points, size)
             await arm.click_by_mouse(frame.locator("div.button-submit.button"))
 
