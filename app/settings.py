@@ -290,6 +290,23 @@ def _apply_openai_compatible_patch():
         logger.warning("⚠️ 未配置 API_KEY，请从 https://cloud.siliconflow.cn/i/OVI2n57p 获取 SiliconFlow API Key")
         return
 
+    # hcaptcha-challenger ships with Gemini as its own provider, and its
+    # default model is the strongest vision model the library knows about.
+    # The compatible layer exists for gateways that only speak the OpenAI
+    # protocol; when a Gemini key is present the library is left to use it.
+    if API_PROVIDER.strip().lower() == "gemini":
+        gemini_key = settings.GEMINI_API_KEY
+        value = (
+            gemini_key.get_secret_value()
+            if hasattr(gemini_key, "get_secret_value")
+            else str(gemini_key or "")
+        )
+        if value and value.strip() and value.strip() != "not_used":
+            logger.info("🎯 使用原生 Gemini 通道（跳过 OpenAI 兼容补丁）")
+            return
+        logger.warning(
+            "API_PROVIDER=gemini 但没有可用的 GEMINI_API_KEY，回退到 OpenAI 兼容通道"
+        )
     try:
         from google import genai
         from google.genai import types

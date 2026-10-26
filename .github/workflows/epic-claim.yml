@@ -75,6 +75,10 @@ on:
         description: "Clear the Epic cookies of the profile before the login form starts."
         required: false
         default: "true"
+      api_provider:
+        description: "openai_compatible, or gemini to use the library's own provider."
+        required: false
+        default: "openai_compatible"
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -98,10 +102,10 @@ jobs:
     # limit that leaves a week with a single chance.
 
     env:
-      API_PROVIDER: openai_compatible
+      API_PROVIDER: ${{ github.event.inputs.api_provider || 'openai_compatible' }}
       API_BASE_URL: ${{ secrets.API_BASE_URL }}
       API_KEY: ${{ secrets.API_KEY }}
-      GEMINI_API_KEY: not_used
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'not_used' }}
       PRIMARY_MODEL: agnes-2.5-flash
       PRIMARY_MODEL_FALLBACK: agnes-2.5-flash
       CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || 'agnes-3.0-flash' }}
