@@ -71,6 +71,10 @@ on:
         description: "Session seed mode: auto (empty profiles only), always or off."
         required: false
         default: "auto"
+      reset_login_cookies:
+        description: "Clear the Epic cookies of the profile before the login form starts."
+        required: false
+        default: "true"
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -227,6 +231,7 @@ jobs:
           EPIC_SKIP_MOBILE: ${{ github.event.inputs.skip_mobile || 'false' }}
           EPIC_SESSIONS_JSON: ${{ secrets.EPIC_SESSIONS_JSON }}
           EPIC_SEED_SESSIONS: ${{ github.event.inputs.seed_sessions || 'auto' }}
+          EPIC_RESET_LOGIN_COOKIES: ${{ github.event.inputs.reset_login_cookies || 'true' }}
         run: |
           if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
             echo "::warning::No browser proxy is available; continuing with the runner's direct connection"
