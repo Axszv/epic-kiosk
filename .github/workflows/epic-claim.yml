@@ -67,6 +67,10 @@ on:
         description: "Leave the mobile channel out; it opens its own login pages."
         required: false
         default: "false"
+      seed_sessions:
+        description: "Session seed mode: auto (empty profiles only), always or off."
+        required: false
+        default: "auto"
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -221,6 +225,8 @@ jobs:
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
           EPIC_SKIP_MOBILE: ${{ github.event.inputs.skip_mobile || 'false' }}
+          EPIC_SESSIONS_JSON: ${{ secrets.EPIC_SESSIONS_JSON }}
+          EPIC_SEED_SESSIONS: ${{ github.event.inputs.seed_sessions || 'auto' }}
         run: |
           if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
             echo "::warning::No browser proxy is available; continuing with the runner's direct connection"
