@@ -115,7 +115,7 @@ jobs:
       RESPONSE_TIMEOUT: "90"
       API_MAX_RETRIES: "2"
       CAPTCHA_MAX_OUTPUT_TOKENS: "8192"
-      TASK_TIMEOUT_SECONDS: "1200"
+      TASK_TIMEOUT_SECONDS: "1500"
       EXECUTION_TIMEOUT: ${{ github.event.inputs.execution_timeout || '300' }}
       LOGIN_RESULT_TIMEOUT_SECONDS: ${{ github.event.inputs.login_result_timeout || '600' }}
       CAPTCHA_FAILURE_MAX_RETRIES: "0"

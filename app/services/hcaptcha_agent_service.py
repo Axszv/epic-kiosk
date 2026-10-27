@@ -1674,7 +1674,22 @@ class EpicAgentV(AgentV):
         document_key = self.page.url
         async with self._hsw_lock:
             if document_key == self._hsw_document_key:
-                return
+                # The URL is not the document. A reload keeps the URL and
+                # throws the injected script away, so the cached key said
+                # "already injected" for a document that had no `hsw` at all.
+                # Every captcha after that reload then failed to reverse and
+                # fell back to visual only, and the portal refused the
+                # transactions built from it: run 40535177292 answered the
+                # email step 204 while `hsw` was present and failed the next
+                # eight attempts after the first reload.
+                present = False
+                with suppress(Exception):
+                    present = bool(
+                        await self.page.evaluate("typeof hsw === 'function'")
+                    )
+                if present:
+                    return
+                logger.warning("hsw.js is gone from this document; injecting it again")
             try:
                 hsw_text = await load_hsw_script(self.page, response.url)
                 await self.page.evaluate(hsw_text)

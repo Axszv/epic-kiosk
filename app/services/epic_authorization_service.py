@@ -1588,7 +1588,7 @@ class EpicAuthorization:
         # email step recovers because a refusal reloads the page, which is a
         # new widget with a clean plan; the password step had no such reload.
         max_captcha_sessions = max(
-            1, int(os.getenv("EPIC_CAPTCHA_SESSIONS", "3") or 3)
+            1, int(os.getenv("EPIC_CAPTCHA_SESSIONS", "2") or 2)
         )
         max_cloudflare_retries = max(
             0, int(os.getenv("EPIC_CLOUDFLARE_RETRIES", "2") or 2)
