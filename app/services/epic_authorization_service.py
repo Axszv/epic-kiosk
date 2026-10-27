@@ -29,6 +29,7 @@ from services.hcaptcha_agent_service import (
     get_login_hcaptcha_agent,
     replace_login_hcaptcha_agent,
 )
+from services import hcaptcha_agent_service as captcha_module
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 
@@ -356,7 +357,11 @@ class EpicAuthorization:
         The comparison is exact and needs no guess about how Epic wraps the
         token: the issued token either appears in the body or it does not.
         """
-        issued = str(getattr(getattr(self, "_login_agent", None), "_last_pass_token", "") or "")
+        issued = str(
+            getattr(captcha_module, "LAST_PASS_TOKEN", "")
+            or getattr(getattr(self, "_login_agent", None), "_last_pass_token", "")
+            or ""
+        )
         with suppress(Exception):
             payload = json.loads(body or "{}")
             raw = payload.get("captcha")

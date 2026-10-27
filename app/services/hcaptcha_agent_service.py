@@ -19,6 +19,12 @@ from pydantic import BaseModel
 
 from settings import settings
 
+# The last token hCaptcha issued, whoever produced it. A login replaces its
+# agent between rounds, so the token cannot live on one agent: the request
+# that carries it is handled by the authorization service, which has no way
+# to know which agent answered.
+LAST_PASS_TOKEN = ""
+
 
 class AreaBox(BaseModel):
     """A rectangle of the challenge image, in image pixels."""
@@ -818,10 +824,12 @@ class EpicAgentV(AgentV):
             await arm.click_by_mouse(frame.locator("div.button-submit.button"))
 
     def _captcha_pass_metadata(self, response) -> str:
+        global LAST_PASS_TOKEN
         token = str(getattr(response, "generated_pass_UUID", "") or "")
         # The login transaction is checked against the token hCaptcha issued,
         # so the token itself has to outlive this log line.
         self._last_pass_token = token
+        LAST_PASS_TOKEN = token
         fingerprint = (
             hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
         )

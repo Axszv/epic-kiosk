@@ -33,6 +33,7 @@ namespace = {
     "re": re,
     "urlsplit": __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit,
     "print": lambda *a, **k: None,
+    "captcha_module": types.SimpleNamespace(LAST_PASS_TOKEN=""),
 }
 exec(compile(ast.Module(body=[cls, fingerprint], type_ignores=[]), str(SOURCE), "exec"), namespace)
 
