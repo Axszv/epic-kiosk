@@ -371,12 +371,21 @@ class EpicAuthorization:
             # in the body as sent and in the body decoded. A raw substring
             # test alone reported False for a transaction Epic answered 204.
             decoded = unquote(raw)
+            # The shape names the format without printing the secret: long
+            # runs are cut to six characters, so a JSON wrapper keeps its
+            # keys and a bare token keeps its prefix.
+            shape = re.sub(
+                r"[A-Za-z0-9_\-\.]{12,}",
+                lambda found: found.group(0)[:6] + "~",
+                raw[:180],
+            )
             print(
                 f"LOGIN_CAPTCHA_TOKEN:path={urlsplit(url).path}:"
                 f"field_len={len(raw)}:"
                 f"issued_len={len(issued)}:"
                 f"raw={bool(issued) and issued in body}:"
-                f"decoded={bool(issued) and issued in decoded}",
+                f"decoded={bool(issued) and issued in decoded}:"
+                f"shape={shape}",
                 flush=True,
             )
 

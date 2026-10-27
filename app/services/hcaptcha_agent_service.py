@@ -1432,7 +1432,7 @@ class EpicAgentV(AgentV):
         try:
             report = await self.page.evaluate(
                 """({token, widgetId}) => {
-                    const out = {api: false, textareas: 0, frames: 0};
+                    const out = {api: false, textareas: 0, frames: 0, globals: []};
                     const api = window.hcaptcha;
                     if (api && typeof api.setResponse === 'function') {
                         try {
@@ -1442,6 +1442,12 @@ class EpicAgentV(AgentV):
                         } catch (err) {
                             out.apiError = String(err).slice(0, 80);
                         }
+                    }
+                    // Epic runs hCaptcha through Talon, and the portal reads
+                    // the pass from Talon's own state. Naming the globals the
+                    // page exposes says whether that state can be reached.
+                    for (const key of Object.keys(window)) {
+                        if (/captcha|talon|hsw/i.test(key)) { out.globals.push(key); }
                     }
                     for (const node of document.querySelectorAll(
                         'textarea[id^="h-captcha-response-"], textarea[id^="g-recaptcha-response-"]'
@@ -1468,7 +1474,8 @@ class EpicAgentV(AgentV):
             print(
                 f"HCAPTCHA_TOKEN_HANDOVER:widget={widget_id[:12]}:"
                 f"api={report.get('api')}:textareas={report.get('textareas')}:"
-                f"frames={report.get('frames')}",
+                f"frames={report.get('frames')}:"
+                f"globals={','.join(report.get('globals') or [])[:120]}",
                 flush=True,
             )
         except Exception as err:
