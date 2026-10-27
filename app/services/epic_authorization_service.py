@@ -13,7 +13,7 @@ import re
 import time
 from contextlib import suppress
 from enum import Enum
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from hcaptcha_challenger.agent import AgentV
 from loguru import logger
@@ -367,11 +367,16 @@ class EpicAuthorization:
             raw = payload.get("captcha")
             if not isinstance(raw, str):
                 return
+            # The portal encodes the captcha blob, so the token is looked for
+            # in the body as sent and in the body decoded. A raw substring
+            # test alone reported False for a transaction Epic answered 204.
+            decoded = unquote(raw)
             print(
                 f"LOGIN_CAPTCHA_TOKEN:path={urlsplit(url).path}:"
                 f"field_len={len(raw)}:"
                 f"issued_len={len(issued)}:"
-                f"carries_issued={bool(issued) and issued in body}",
+                f"raw={bool(issued) and issued in body}:"
+                f"decoded={bool(issued) and issued in decoded}",
                 flush=True,
             )
 

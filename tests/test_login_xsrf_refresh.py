@@ -32,6 +32,7 @@ namespace = {
     "os": os,
     "re": re,
     "urlsplit": __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit,
+    "unquote": __import__("urllib.parse", fromlist=["unquote"]).unquote,
     "print": lambda *a, **k: None,
     "captcha_module": types.SimpleNamespace(LAST_PASS_TOKEN=""),
 }
