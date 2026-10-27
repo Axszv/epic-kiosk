@@ -1588,12 +1588,26 @@ class EpicAuthorization:
         # email step recovers because a refusal reloads the page, which is a
         # new widget with a clean plan; the password step had no such reload.
         max_captcha_sessions = max(
-            1, int(os.getenv("EPIC_CAPTCHA_SESSIONS", "2") or 2)
+            1, int(os.getenv("EPIC_CAPTCHA_SESSIONS", "3") or 3)
+        )
+        max_cloudflare_retries = max(
+            0, int(os.getenv("EPIC_CLOUDFLARE_RETRIES", "2") or 2)
         )
         captcha_sessions = 0
+        cloudflare_retries = 0
 
-        for attempt in range(3):
-            logger.info(f"🔄 登录尝试 [{attempt + 1}/3]")
+        # Two very different failures share this loop, and each needs its own
+        # budget: a Cloudflare interstitial costs about a minute to wait out
+        # and a captcha session costs several. A single counter let a
+        # Cloudflare retry spend a captcha session and the other way round,
+        # and run 40533185174 ended on Cloudflare with the captcha budget
+        # already gone.
+        for attempt in range(max_captcha_sessions + max_cloudflare_retries + 1):
+            logger.info(
+                f"🔄 登录尝试 [{attempt + 1}] "
+                f"(captcha sessions {captcha_sessions}/{max_captcha_sessions}, "
+                f"cloudflare retries {cloudflare_retries}/{max_cloudflare_retries})"
+            )
 
             try:
                 await self.page.goto(URL_CLAIM, wait_until="domcontentloaded")
@@ -1635,7 +1649,8 @@ class EpicAuthorization:
             # 检查登录状态（增加超时处理）
             try:
                 if not await self._wait_for_cloudflare_auto_pass():
-                    if attempt < 2:
+                    cloudflare_retries += 1
+                    if cloudflare_retries <= max_cloudflare_retries:
                         delay_seconds = 10 * (attempt + 1)
                         logger.warning(
                             "Cloudflare check is still active; retrying navigation "
@@ -1690,7 +1705,12 @@ class EpicAuthorization:
                         await self.page.wait_for_timeout(2000)
                         continue
                     return error_type
-                if error_type == ErrorType.CLOUDFLARE_BLOCKED and attempt < 2:
+                if error_type == ErrorType.CLOUDFLARE_BLOCKED:
+                    cloudflare_retries += 1
+                if (
+                    error_type == ErrorType.CLOUDFLARE_BLOCKED
+                    and cloudflare_retries <= max_cloudflare_retries
+                ):
                     delay_seconds = 10 * (attempt + 1)
                     logger.warning(
                         "Cloudflare blocked the login form; retrying navigation "
