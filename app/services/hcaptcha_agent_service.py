@@ -168,6 +168,8 @@ class EpicAgentV(AgentV):
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
         self._reported_sitekeys: set[tuple[str, str]] = set()
+        self._challenge_widget_id = ""
+        self._challenge_sitekey = ""
         self._last_pass_token = ""
         super().__init__(*args, **kwargs)
         # Upstream requires an exact visible `.challenge-view`, which misses
@@ -1379,6 +1381,9 @@ class EpicAgentV(AgentV):
         The challenge frame keeps its parameters in the URL fragment
         (`#frame=challenge&id=...&sitekey=...`), so the whole URL is searched
         and not only its query.
+
+        The widget id is also kept on the agent: it names the textarea the
+        token has to be handed to.
         """
         with suppress(Exception):
             url = frame.url
@@ -1390,6 +1395,9 @@ class EpicAgentV(AgentV):
                     break
             widget = re.search(r"[?#&]id=([^&#]+)", url)
             widget_id = widget.group(1) if widget else ""
+            if widget_id:
+                self._challenge_widget_id = widget_id
+            self._challenge_sitekey = sitekey
             key = (sitekey, widget_id)
             if not sitekey or key in self._reported_sitekeys:
                 return
@@ -1399,6 +1407,72 @@ class EpicAgentV(AgentV):
                 f"page={self.page.url[:80]}",
                 flush=True,
             )
+
+    async def _hand_over_pass_token(self, token: str) -> None:
+        """Put the pass token where the portal reads it.
+
+        hCaptcha answers with `generated_pass_UUID`, and the page is supposed
+        to learn it from the widget callback: the widget writes it into
+        `#h-captcha-response-<widget>` and Epic submits the login with it.
+
+        Run 40517281544 showed that the token never reaches Epic. hCaptcha
+        issued 5266, 5324, 4578, 5291 and 5362 characters, and none of them
+        appears in the transaction, in the body as sent or in its decoded
+        form; the portal answered `captcha_invalid` every time. When the page
+        obtained the token itself, the same portal answered 204.
+
+        So the token is handed over here, in all three places the widget
+        keeps it. `hcaptcha.setResponse` is the documented way and fires the
+        widget callback as well; the textareas and the frame attribute are
+        the state that callback would have written.
+        """
+        if not token:
+            return
+        widget_id = getattr(self, "_challenge_widget_id", "") or ""
+        try:
+            report = await self.page.evaluate(
+                """({token, widgetId}) => {
+                    const out = {api: false, textareas: 0, frames: 0};
+                    const api = window.hcaptcha;
+                    if (api && typeof api.setResponse === 'function') {
+                        try {
+                            if (widgetId) { api.setResponse(token, widgetId); }
+                            else { api.setResponse(token); }
+                            out.api = true;
+                        } catch (err) {
+                            out.apiError = String(err).slice(0, 80);
+                        }
+                    }
+                    for (const node of document.querySelectorAll(
+                        'textarea[id^="h-captcha-response-"], textarea[id^="g-recaptcha-response-"]'
+                    )) {
+                        const id = node.id.replace(/^(h|g)-captcha-response-/, '');
+                        if (widgetId && id !== widgetId) { continue; }
+                        node.value = token;
+                        node.dispatchEvent(new Event('input', {bubbles: true}));
+                        node.dispatchEvent(new Event('change', {bubbles: true}));
+                        out.textareas += 1;
+                    }
+                    for (const frame of document.querySelectorAll(
+                        'iframe[data-hcaptcha-widget-id]'
+                    )) {
+                        const id = frame.getAttribute('data-hcaptcha-widget-id') || '';
+                        if (widgetId && id !== widgetId) { continue; }
+                        frame.setAttribute('data-hcaptcha-response', token);
+                        out.frames += 1;
+                    }
+                    return out;
+                }""",
+                {"token": token, "widgetId": widget_id},
+            )
+            print(
+                f"HCAPTCHA_TOKEN_HANDOVER:widget={widget_id[:12]}:"
+                f"api={report.get('api')}:textareas={report.get('textareas')}:"
+                f"frames={report.get('frames')}",
+                flush=True,
+            )
+        except Exception as err:
+            logger.warning(f"Could not hand the captcha token to the page: {err}")
 
     async def _get_nested_challenge_frame_locator(self):
         deadline = time.monotonic() + 10
@@ -1468,6 +1542,9 @@ class EpicAgentV(AgentV):
                 if response and response.is_pass:
                     logger.success(
                         f"Challenge success: {self._captcha_pass_metadata(response)}"
+                    )
+                    await self._hand_over_pass_token(
+                        str(getattr(response, "generated_pass_UUID", "") or "")
                     )
                     self._cache_validated_captcha_response(response)
                     return ChallengeSignal.SUCCESS
