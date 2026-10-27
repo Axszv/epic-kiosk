@@ -123,6 +123,28 @@ class LoginTransactionRefusalTests(unittest.IsolatedAsyncioTestCase):
         # Only the refusals of the email transaction count against the login.
         self.assertIn('"source": "login",', source)
 
+    def test_a_refused_captcha_plan_opens_a_new_session(self):
+        """A refused plan cannot be repaired on the page that holds it.
+
+        hCaptcha keeps every answer of one widget in its plan and the
+        transaction carries it as `plan_results`. Epic refuses a transaction
+        whose plan holds a wrong answer, and the plan only grows: run
+        40525966041 sent 16440, 16868, 17192 and 17344 bytes of it and every
+        one was refused. The email step recovers because a refusal reloads
+        the page; the password step had no such reload.
+        """
+        source = SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("epic_login_captcha_plan_rejected", source)
+        self.assertIn('if "captcha_invalid" in body:', source)
+        # A stale XSRF token keeps the plan clean, so that refusal still only
+        # resubmits the password.
+        self.assertIn("await retrigger_security_check()", source)
+        # The caller starts the session over, and the number of sessions is
+        # bounded.
+        self.assertIn("EPIC_CAPTCHA_SESSIONS", source)
+        self.assertIn("captcha_sessions < max_captcha_sessions", source)
+
 
 if __name__ == "__main__":
     unittest.main()

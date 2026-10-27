@@ -1190,9 +1190,30 @@ class EpicAuthorization:
                 while not result_task.done():
                     login_rejection = await self._take_login_transaction_failure()
                     if login_rejection:
-                        # The login transaction carries its own captcha, and
-                        # Epic refused it. The password is submitted again and
-                        # the portal asks for a new captcha.
+                        body = str(login_rejection.get("body") or "")
+                        if "captcha_invalid" in body:
+                            # Epic refused the captcha of the login
+                            # transaction, so the plan of this widget holds a
+                            # wrong answer and every later transaction that
+                            # carries it is refused as well. Submitting again
+                            # on the same page only appends more wrong
+                            # answers, so the attempt ends here and the caller
+                            # opens a session with a clean plan.
+                            logger.warning(
+                                "Epic refused the captcha plan of this login; "
+                                "leaving this session"
+                            )
+                            if not result_task.done():
+                                self._is_login_success_signal.put_nowait(
+                                    {
+                                        "error": True,
+                                        "code": "epic_login_captcha_plan_rejected",
+                                        "full_response": login_rejection,
+                                    }
+                                )
+                            return
+                        # A stale XSRF token is a different refusal: the plan
+                        # is still clean and the password is submitted again.
                         await retrigger_security_check()
                         continue
 
@@ -1568,6 +1589,18 @@ class EpicAuthorization:
         """
         self.page.on("response", self._on_response_anything)
 
+        # hCaptcha keeps every answer of one widget in its plan, and the
+        # transaction carries that plan as `plan_results` inside a
+        # `session_wrapper`. Epic refuses a transaction whose plan holds a
+        # wrong answer, and the plan only grows: run 40525966041 sent 16440,
+        # 16868, 17192 and 17344 bytes of it and every one was refused. The
+        # email step recovers because a refusal reloads the page, which is a
+        # new widget with a clean plan; the password step had no such reload.
+        max_captcha_sessions = max(
+            1, int(os.getenv("EPIC_CAPTCHA_SESSIONS", "2") or 2)
+        )
+        captcha_sessions = 0
+
         for attempt in range(3):
             logger.info(f"🔄 登录尝试 [{attempt + 1}/3]")
 
@@ -1655,6 +1688,17 @@ class EpicAuthorization:
                 if success:
                     return ErrorType.SUCCESS
                 await self._restore_session_cookies(session_cookies)
+                if error_type == ErrorType.CAPTCHA_FAILED:
+                    captcha_sessions += 1
+                    if captcha_sessions < max_captcha_sessions:
+                        logger.warning(
+                            "The captcha plan of this session holds a wrong "
+                            "answer; opening a new one "
+                            f"[{captcha_sessions + 1}/{max_captcha_sessions}]"
+                        )
+                        await self.page.wait_for_timeout(2000)
+                        continue
+                    return error_type
                 if error_type == ErrorType.CLOUDFLARE_BLOCKED and attempt < 2:
                     delay_seconds = 10 * (attempt + 1)
                     logger.warning(
