@@ -5,10 +5,10 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from contextlib import suppress
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
 from weakref import WeakKeyDictionary
 
 from hcaptcha_challenger.agent import AgentV
@@ -161,7 +161,7 @@ class EpicAgentV(AgentV):
         self._decode_payloads = os.getenv("HCAPTCHA_VISUAL_ONLY", "false").lower() != "true"
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
-        self._reported_sitekeys: set[str] = set()
+        self._reported_sitekeys: set[tuple[str, str]] = set()
         super().__init__(*args, **kwargs)
         # Upstream requires an exact visible `.challenge-view`, which misses
         # Epic's hCaptcha when it is nested inside the purchase iframe.
@@ -1364,14 +1364,28 @@ class EpicAgentV(AgentV):
         token it produces is refused as `captcha_invalid` while hCaptcha
         itself reports a success. The sitekey is what tells the two widgets
         apart, so it goes to the run log.
+
+        The challenge frame keeps its parameters in the URL fragment
+        (`#frame=challenge&id=...&sitekey=...`), so the whole URL is searched
+        and not only its query.
         """
         with suppress(Exception):
-            sitekey = parse_qs(urlsplit(frame.url).query).get("sitekey", [""])[0]
-            if not sitekey or sitekey in self._reported_sitekeys:
+            url = frame.url
+            sitekey = ""
+            for name in ("sitekey", "siteKey"):
+                found = re.search(rf"[?#&]{name}=([^&#]+)", url)
+                if found:
+                    sitekey = found.group(1)
+                    break
+            widget = re.search(r"[?#&]id=([^&#]+)", url)
+            widget_id = widget.group(1) if widget else ""
+            key = (sitekey, widget_id)
+            if not sitekey or key in self._reported_sitekeys:
                 return
-            self._reported_sitekeys.add(sitekey)
+            self._reported_sitekeys.add(key)
             print(
-                f"HCAPTCHA_CHALLENGE_SITEKEY:{sitekey}:page={self.page.url[:90]}",
+                f"HCAPTCHA_CHALLENGE_SITEKEY:{sitekey}:widget={widget_id[:12]}:"
+                f"page={self.page.url[:80]}",
                 flush=True,
             )
 
