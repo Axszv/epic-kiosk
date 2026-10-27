@@ -118,8 +118,9 @@ class LoginTransactionRefusalTests(unittest.IsolatedAsyncioTestCase):
         # coordinator, which submits the password again.
         self.assertIn("_take_login_transaction_failure()", source)
         self.assertIn("retrigger_security_check()", source)
-        # A wrong answer is a lost round, not a lost login.
-        self.assertIn("Epic 拒绝了验证码答案，等待下一轮挑战", source)
+        # A refused plan is never patched in place: the page is reloaded for
+        # the email step and the session is reopened for the password step.
+        self.assertIn("Epic refused the captcha plan; reloading the login", source)
         # Only the refusals of the email transaction count against the login.
         self.assertIn('"source": "login",', source)
 

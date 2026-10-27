@@ -1114,30 +1114,21 @@ class EpicAuthorization:
                 email_transaction_retries = 0
                 captcha_attempt = 0
 
-                async def wait_for_new_challenge(timeout_ms: int = 12000) -> bool:
-                    """Whether the portal asks for another challenge."""
-                    deadline = time.monotonic() + timeout_ms / 1000
-                    while time.monotonic() < deadline:
-                        if result_task.done():
-                            return False
-                        if await self._has_hcaptcha_challenge():
-                            return True
-                        await self.page.wait_for_timeout(500)
-                    return False
-
                 async def recover_email_transaction(rejection) -> bool:
                     nonlocal agent, email_transaction_retries, captcha_success
                     status = int(rejection.get("status") or 0)
                     if status and status != 409:
-                        # Epic refused the captcha itself, so the answer was
-                        # wrong. The portal asks for a new challenge and the
-                        # login goes on; only the answer of this round is
-                        # lost.
+                        # Epic refused the captcha itself. The plan of this
+                        # widget now holds a wrong answer, and Epic refuses
+                        # every transaction that carries that plan, so asking
+                        # for another challenge on the same page can only add
+                        # more wrong answers to it. A reload is a new plan,
+                        # which is the only clean one available.
                         captcha_success = False
-                        logger.warning("Epic 拒绝了验证码答案，等待下一轮挑战")
-                        if await wait_for_new_challenge():
-                            return True
-                        logger.warning("页面没有给出新的挑战，重新载入登录页")
+                        logger.warning(
+                            "Epic refused the captcha plan; reloading the login "
+                            "page for a clean one"
+                        )
                     email_transaction_retries += 1
                     if email_transaction_retries > 3:
                         logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务，停止本次登录")
