@@ -344,6 +344,40 @@ class EpicAuthorization:
                 return value
         return ""
 
+    def _report_sent_captcha_token(self, url: str, body: str) -> None:
+        """Report which hCaptcha token the portal actually sent.
+
+        hCaptcha can issue a token that the portal refuses with
+        `captcha_invalid`, and there are two very different reasons. Either
+        the portal does not accept the answer, or the portal sent a token
+        other than the one hCaptcha just issued, because the page reads it
+        from a widget that belongs to another step.
+
+        The digest of the token inside the request separates the two, and it
+        is compared by eye against the `token_sha256` of the last
+        `Challenge success` line.
+        """
+        with suppress(Exception):
+            payload = json.loads(body or "{}")
+            raw = payload.get("captcha")
+            if not isinstance(raw, str):
+                return
+            token = raw
+            with suppress(Exception):
+                inner = json.loads(raw)
+                if isinstance(inner, dict):
+                    for key in ("captcha", "token", "response"):
+                        value = inner.get(key)
+                        if isinstance(value, str) and len(value) > 200:
+                            token = value
+                            break
+            print(
+                f"LOGIN_CAPTCHA_TOKEN:path={urlsplit(url).path}:"
+                f"len={len(token)}:"
+                f"sha={hashlib.sha256(token.encode()).hexdigest()[:12]}",
+                flush=True,
+            )
+
     async def _install_live_xsrf_route(self) -> None:
         """Send Epic's live XSRF cookie with the login transaction.
 
@@ -365,6 +399,7 @@ class EpicAuthorization:
             request = route.request
             header = request.headers.get("x-xsrf-token", "")
             body = request.post_data or ""
+            self._report_sent_captcha_token(request.url, body)
             # The state belongs to one endpoint: the email transaction and the
             # login transaction are two different requests.
             key = request.url.split("?")[0]
