@@ -345,36 +345,28 @@ class EpicAuthorization:
         return ""
 
     def _report_sent_captcha_token(self, url: str, body: str) -> None:
-        """Report which hCaptcha token the portal actually sent.
+        """Report whether the transaction carries the token hCaptcha issued.
 
         hCaptcha can issue a token that the portal refuses with
         `captcha_invalid`, and there are two very different reasons. Either
-        the portal does not accept the answer, or the portal sent a token
-        other than the one hCaptcha just issued, because the page reads it
-        from a widget that belongs to another step.
+        the portal does not accept the answer, or the transaction carries a
+        token other than the one hCaptcha just issued, because the page reads
+        the response of the widget an earlier step left behind.
 
-        The digest of the token inside the request separates the two, and it
-        is compared by eye against the `token_sha256` of the last
-        `Challenge success` line.
+        The comparison is exact and needs no guess about how Epic wraps the
+        token: the issued token either appears in the body or it does not.
         """
+        issued = str(getattr(getattr(self, "_login_agent", None), "_last_pass_token", "") or "")
         with suppress(Exception):
             payload = json.loads(body or "{}")
             raw = payload.get("captcha")
             if not isinstance(raw, str):
                 return
-            token = raw
-            with suppress(Exception):
-                inner = json.loads(raw)
-                if isinstance(inner, dict):
-                    for key in ("captcha", "token", "response"):
-                        value = inner.get(key)
-                        if isinstance(value, str) and len(value) > 200:
-                            token = value
-                            break
             print(
                 f"LOGIN_CAPTCHA_TOKEN:path={urlsplit(url).path}:"
-                f"len={len(token)}:"
-                f"sha={hashlib.sha256(token.encode()).hexdigest()[:12]}",
+                f"field_len={len(raw)}:"
+                f"issued_len={len(issued)}:"
+                f"carries_issued={bool(issued) and issued in body}",
                 flush=True,
             )
 

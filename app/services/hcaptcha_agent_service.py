@@ -162,6 +162,7 @@ class EpicAgentV(AgentV):
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
         self._reported_sitekeys: set[tuple[str, str]] = set()
+        self._last_pass_token = ""
         super().__init__(*args, **kwargs)
         # Upstream requires an exact visible `.challenge-view`, which misses
         # Epic's hCaptcha when it is nested inside the purchase iframe.
@@ -816,9 +817,11 @@ class EpicAgentV(AgentV):
             await self._click_image_points(frame, response.points, size)
             await arm.click_by_mouse(frame.locator("div.button-submit.button"))
 
-    @staticmethod
-    def _captcha_pass_metadata(response) -> str:
+    def _captcha_pass_metadata(self, response) -> str:
         token = str(getattr(response, "generated_pass_UUID", "") or "")
+        # The login transaction is checked against the token hCaptcha issued,
+        # so the token itself has to outlive this log line.
+        self._last_pass_token = token
         fingerprint = (
             hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
         )

@@ -260,16 +260,20 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
     def test_captcha_pass_metadata_fingerprints_without_exposing_token(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
         response = types.SimpleNamespace(
             generated_pass_UUID="P1_secret-value",
             expiration=120,
         )
 
-        metadata = module.EpicAgentV._captcha_pass_metadata(response)
+        metadata = agent._captcha_pass_metadata(response)
 
         self.assertIn("token_present=True", metadata)
         self.assertIn("token_length=15", metadata)
         self.assertNotIn("P1_secret-value", metadata)
+        # The transaction is checked against the token itself, so the agent
+        # keeps it for the request that carries it.
+        self.assertEqual(agent._last_pass_token, "P1_secret-value")
 
     def test_agent_continues_when_hcaptcha_issues_another_round(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
