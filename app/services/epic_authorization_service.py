@@ -489,12 +489,24 @@ class EpicAuthorization:
                     return True
         return False
 
-    async def _take_email_transaction_failure(self):
+    async def _take_email_transaction_failure(self, allow_body_fallback: bool = True):
+        """The refusal of the email transaction, if the portal sent one.
+
+        The body-text fallback covers a refusal that only appears on the
+        page. It must be off once the password is submitted: the login
+        transaction is refused with the same sentence, and the fallback then
+        turns one refusal into an unlimited supply of them. Every waiter
+        reads the same page, so a single refusal was recovered four times in
+        the same millisecond and each recovery threw away a challenge the
+        other three were still using.
+        """
         rejection = None
         while not self._email_transaction_failure_signal.empty():
             rejection = self._email_transaction_failure_signal.get_nowait()
         if rejection:
             return rejection
+        if not allow_body_fallback:
+            return None
 
         body_text = ""
         with suppress(Exception):
@@ -1134,7 +1146,9 @@ class EpicAuthorization:
                         await retrigger_security_check()
                         continue
 
-                    rejection = await self._take_email_transaction_failure()
+                    rejection = await self._take_email_transaction_failure(
+                        allow_body_fallback=False
+                    )
                     if rejection:
                         if not await recover_email_transaction(rejection):
                             return
@@ -1147,7 +1161,9 @@ class EpicAuthorization:
                     for _ in range(20):
                         if result_task.done():
                             return
-                        rejection = await self._take_email_transaction_failure()
+                        rejection = await self._take_email_transaction_failure(
+                            allow_body_fallback=False
+                        )
                         if rejection:
                             break
                         if await self._has_hcaptcha_challenge():
@@ -1195,7 +1211,9 @@ class EpicAuthorization:
                         captcha_in_progress = False
 
                     await self.page.wait_for_timeout(2000)
-                    rejection = await self._take_email_transaction_failure()
+                    rejection = await self._take_email_transaction_failure(
+                        allow_body_fallback=False
+                    )
                     if rejection:
                         if not await recover_email_transaction(rejection):
                             return

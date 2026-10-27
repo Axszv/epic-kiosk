@@ -8,6 +8,7 @@ import os
 import time
 from contextlib import suppress
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 from weakref import WeakKeyDictionary
 
 from hcaptcha_challenger.agent import AgentV
@@ -160,6 +161,7 @@ class EpicAgentV(AgentV):
         self._decode_payloads = os.getenv("HCAPTCHA_VISUAL_ONLY", "false").lower() != "true"
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
+        self._reported_sitekeys: set[str] = set()
         super().__init__(*args, **kwargs)
         # Upstream requires an exact visible `.challenge-view`, which misses
         # Epic's hCaptcha when it is nested inside the purchase iframe.
@@ -1349,8 +1351,29 @@ class EpicAgentV(AgentV):
                     continue
                 challenge_view = frame.locator(".challenge-view")
                 if await challenge_view.is_visible(timeout=250):
+                    self._report_challenge_sitekey(frame)
                     return frame
         return None
+
+    def _report_challenge_sitekey(self, frame) -> None:
+        """Name the widget whose challenge is on screen, once per widget.
+
+        Epic renders one invisible hCaptcha per step, and a step that is
+        already finished can leave its frame behind. The claim then answers
+        the challenge of a widget the portal is no longer checking, and the
+        token it produces is refused as `captcha_invalid` while hCaptcha
+        itself reports a success. The sitekey is what tells the two widgets
+        apart, so it goes to the run log.
+        """
+        with suppress(Exception):
+            sitekey = parse_qs(urlsplit(frame.url).query).get("sitekey", [""])[0]
+            if not sitekey or sitekey in self._reported_sitekeys:
+                return
+            self._reported_sitekeys.add(sitekey)
+            print(
+                f"HCAPTCHA_CHALLENGE_SITEKEY:{sitekey}:page={self.page.url[:90]}",
+                flush=True,
+            )
 
     async def _get_nested_challenge_frame_locator(self):
         deadline = time.monotonic() + 10

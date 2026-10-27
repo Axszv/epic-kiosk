@@ -46,7 +46,7 @@ on:
       browser_headless:
         description: "Run the browser headless. The Xvfb display is used otherwise."
         required: false
-        default: "true"
+        default: "false"
       let_page_solve_captcha:
         description: "Let the page answer Epic's invisible hCaptcha on its own."
         required: false
@@ -227,7 +227,7 @@ jobs:
           EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_LET_PAGE_SOLVE_CAPTCHA: ${{ github.event.inputs.let_page_solve_captcha || 'false' }}
           EPIC_LIVE_XSRF_ROUTE: ${{ github.event.inputs.live_xsrf_route || 'true' }}
-          EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'true' }}
+          EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'false' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}

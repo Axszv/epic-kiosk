@@ -20,6 +20,17 @@ cls.body = [n for n in cls.body
             if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
             and n.name in {"__init__", "_take_login_transaction_failure",
                            "_take_email_transaction_failure"}]
+# The page-text fallback needs the marker test, and the marker test needs the
+# marker table, so both come along with the class.
+markers = next(
+    n for n in tree.body
+    if isinstance(n, ast.Assign)
+    and any(getattr(t, "id", "") == "EPIC_EMAIL_TRANSACTION_ERROR_MARKERS" for t in n.targets)
+)
+matcher = next(
+    n for n in tree.body
+    if isinstance(n, ast.FunctionDef) and n.name == "is_epic_email_transaction_failure"
+)
 namespace = {
     "asyncio": asyncio,
     "Page": object,
@@ -29,7 +40,14 @@ namespace = {
     "os": os,
     "re": re,
 }
-exec(compile(ast.Module(body=[cls], type_ignores=[]), str(SOURCE), "exec"), namespace)
+exec(
+    compile(
+        ast.Module(body=[markers, matcher, cls], type_ignores=[]),
+        str(SOURCE),
+        "exec",
+    ),
+    namespace,
+)
 
 
 class LoginTransactionRefusalTests(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +76,40 @@ class LoginTransactionRefusalTests(unittest.IsolatedAsyncioTestCase):
         auth = self.build()
 
         self.assertIsNone(await auth._take_login_transaction_failure())
+
+    async def test_the_page_sentence_is_not_a_refusal_once_the_password_is_in(self):
+        """One refusal of the login transaction must stay one refusal.
+
+        Epic refuses a stale captcha with the same sentence it uses for the
+        email transaction, and that sentence stays on the page. Every waiter
+        that reads the page then reports a refusal of its own, and the run of
+        2026-10-26 recovered a single refusal four times in the same
+        millisecond, each recovery replacing the challenge the others were
+        still answering.
+        """
+        auth = self.build()
+        auth.page = types.SimpleNamespace(
+            locator=MagicMock(return_value=types.SimpleNamespace(
+                inner_text=AsyncMock(return_value="Your captcha was invalid. Please refresh the page.")
+            ))
+        )
+
+        self.assertIsNone(
+            await auth._take_email_transaction_failure(allow_body_fallback=False)
+        )
+        # The email stage still reads the page, because that refusal can
+        # arrive only as text.
+        self.assertEqual(
+            (await auth._take_email_transaction_failure())["status"], 200
+        )
+
+    async def test_a_reported_refusal_is_read_even_without_the_page(self):
+        auth = self.build()
+        auth._email_transaction_failure_signal.put_nowait({"status": 409})
+
+        refusal = await auth._take_email_transaction_failure(allow_body_fallback=False)
+
+        self.assertEqual(refusal["status"], 409)
 
     def test_the_refusal_of_the_login_does_not_end_the_login(self):
         source = SOURCE.read_text(encoding="utf-8")
