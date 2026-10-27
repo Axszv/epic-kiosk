@@ -6,6 +6,7 @@
 @Desc    :
 """
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -367,25 +368,28 @@ class EpicAuthorization:
             raw = payload.get("captcha")
             if not isinstance(raw, str):
                 return
-            # The portal encodes the captcha blob, so the token is looked for
-            # in the body as sent and in the body decoded. A raw substring
-            # test alone reported False for a transaction Epic answered 204.
+            # The portal sends the captcha as base64 (`eyJzZX...` decodes to
+            # `{"se...`), so the token is looked for in the text as sent, in
+            # its percent-decoded form and in its base64 payload. The last one
+            # is where it lives.
             decoded = unquote(raw)
-            # The shape names the format without printing the secret: long
-            # runs are cut to six characters, so a JSON wrapper keeps its
-            # keys and a bare token keeps its prefix.
-            shape = re.sub(
-                r"[A-Za-z0-9_\-\.]{12,}",
-                lambda found: found.group(0)[:6] + "~",
-                raw[:180],
-            )
+            inner = ""
+            inner_keys = ""
+            with suppress(Exception):
+                padded = raw + "=" * (-len(raw) % 4)
+                inner = base64.urlsafe_b64decode(padded).decode("utf-8", "replace")
+                with suppress(Exception):
+                    parsed = json.loads(inner)
+                    if isinstance(parsed, dict):
+                        inner_keys = ",".join(list(parsed)[:8])
             print(
                 f"LOGIN_CAPTCHA_TOKEN:path={urlsplit(url).path}:"
                 f"field_len={len(raw)}:"
                 f"issued_len={len(issued)}:"
                 f"raw={bool(issued) and issued in body}:"
                 f"decoded={bool(issued) and issued in decoded}:"
-                f"shape={shape}",
+                f"base64={bool(issued) and issued in inner}:"
+                f"keys={inner_keys[:90]}",
                 flush=True,
             )
 

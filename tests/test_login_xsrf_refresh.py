@@ -28,6 +28,7 @@ namespace = {
     "suppress": suppress,
     "logger": MagicMock(),
     "hashlib": hashlib,
+    "base64": __import__("base64"),
     "json": json,
     "os": os,
     "re": re,
