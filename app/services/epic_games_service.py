@@ -1544,8 +1544,46 @@ class EpicGames:
                 continue
 
             if "CART" in btn_text_upper:
-                logger.info(f"🛒 加入购物车")
-                await purchase_btn.click()
+                # A click that lands before Epic's page is hydrated does
+                # nothing at all, and the cart stays empty. Run 40696732890
+                # clicked `Add to Cart` twice and reached the cart with
+                # `items=0`, so the click is repeated until the page says the
+                # game left the shelf, and the state after each click is
+                # logged for the run that still fails.
+                added = False
+                for add_attempt in range(1, 4):
+                    logger.info(f"🛒 加入购物车 [{add_attempt}/3]")
+                    with suppress(Exception):
+                        await purchase_btn.click()
+                    await page.wait_for_timeout(2500)
+                    with suppress(Exception):
+                        after = (await purchase_btn.text_content() or "").strip()
+                        dialog = await page.evaluate(
+                            """() => {
+                                const node = document.querySelector(
+                                    '[role=dialog], [aria-modal=true]'
+                                );
+                                return node ? (node.innerText || '').trim().slice(0, 120) : '';
+                            }"""
+                        )
+                        logger.info(
+                            f"🛒 加购后按钮: {after!r} | 弹窗: {dialog!r}"
+                        )
+                        if after and "CART" not in after.upper():
+                            added = True
+                            break
+                    with suppress(Exception):
+                        await page.reload(wait_until="load")
+                        await page.wait_for_timeout(3000)
+                        purchase_btn = await product_cta(page)
+                        if purchase_btn is None:
+                            added = True
+                            break
+                        current = (await purchase_btn.text_content() or "").strip()
+                        if "CART" not in current.upper():
+                            added = True
+                            break
+                logger.info(f"🛒 加购结果: added={added}")
                 has_pending_cart_items = True
                 continue
 
