@@ -1734,6 +1734,14 @@ class EpicGames:
 
     CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")
 
+    async def _cart_item_count(self) -> int:
+        count = 0
+        with suppress(Exception):
+            count = await self.page.locator(
+                "//div[@data-testid='offer-card-layout-wrapper']"
+            ).count()
+        return count
+
     async def _click_checkout(self) -> None:
         """Press the cart's checkout control whatever the markup is now.
 
@@ -1774,6 +1782,19 @@ class EpicGames:
             )
         element = handle.as_element() if handle is not None else None
         if element is not None:
+            # Epic disables the cart's checkout until its own summary settles,
+            # and a click on a disabled control only times out: run 40718120106
+            # logged `text='Check Out', ..., disabled=True` and then ten
+            # seconds of "element is not enabled". Wait for it instead.
+            for _ in range(15):
+                if not await element.is_disabled():
+                    break
+                await self.page.wait_for_timeout(1000)
+            else:
+                raise TimeoutError(
+                    "the cart's checkout control stayed disabled "
+                    f"(items={await self._cart_item_count()})"
+                )
             # A click that lands but leaves the cart where it was is the
             # failure run 40716550293 hit: the cart page still had `Check Out`
             # in its markup after the click, and the run then looked for the
@@ -1870,7 +1891,24 @@ class EpicGames:
         has_cart_items = await self.add_promotion_to_cart(self.page, promotions)
 
         if has_cart_items:
-            await self._purchase_free_game()
+            try:
+                await self._purchase_free_game()
+            except Exception:
+                # The cart could not be checked out. A stale entry for a game
+                # the account already owns looks exactly like that — the
+                # control stays disabled — so the order history is asked
+                # before the game is reported as lost.
+                owned = []
+                for promotion in promotions:
+                    if await self._owned_from_order_history(self.page, promotion):
+                        owned.append(promotion.title)
+                        emit_desktop_result(promotion.title, "verified_owned")
+                if owned:
+                    logger.success(
+                        "🎉 订单历史确认已领取: " + ", ".join(owned)
+                    )
+                    return
+                raise
             try:
                 await self.page.wait_for_url(URL_CART_SUCCESS)
                 logger.success("🎉 购物车游戏领取成功")
