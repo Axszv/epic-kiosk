@@ -168,6 +168,11 @@ class EpicAgentV(AgentV):
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
         self._reported_sitekeys: set[tuple[str, str]] = set()
+        # The checkout captcha keeps every answer in the plan of one widget,
+        # and Epic refuses a plan that holds a wrong answer, so answering more
+        # rounds on the same widget cannot help. The checkout sets this and
+        # reopens its widget instead.
+        self._stop_after_rejection = False
         self._challenge_widget_id = ""
         self._challenge_sitekey = ""
         self._last_pass_token = ""
@@ -1555,6 +1560,12 @@ class EpicAgentV(AgentV):
                     )
                     self._cache_validated_captcha_response(response)
                     return ChallengeSignal.SUCCESS
+                if self._stop_after_rejection:
+                    logger.warning(
+                        "hCaptcha rejected this round; the plan of this widget "
+                        "is spent, so the attempt ends here"
+                    )
+                    return ChallengeSignal.FAILURE
                 logger.warning("hCaptcha rejected the submitted round; checking for the next round")
 
             round_number += 1
@@ -1758,6 +1769,7 @@ def get_legacy_checkout_agent(page: Page) -> AgentV:
         logger.debug("Detached page-scoped Epic hCaptcha agent for legacy checkout")
 
     agent = EpicAgentV(page=page, agent_config=settings)
+    agent._stop_after_rejection = True
     _AGENTS[page] = agent
     return agent
 

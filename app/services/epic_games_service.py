@@ -1117,6 +1117,11 @@ class EpicGames:
                 f"CHECKOUT_CAPTCHA_RESULT:{getattr(challenge_result, 'value', challenge_result)}",
                 flush=True,
             )
+            if str(getattr(challenge_result, "value", challenge_result)) != "success":
+                # The plan of this widget holds a wrong answer now, so the
+                # checkout is reopened for a widget with a clean one.
+                logger.warning("结账验证码未通过，重新打开结账流程")
+                return False
         except asyncio.TimeoutError:
             logger.warning("Checkout hCaptcha exceeded its time budget")
             return False
@@ -1186,6 +1191,9 @@ class EpicGames:
                     f"CHECKOUT_CAPTCHA_RESULT:{getattr(challenge_result, 'value', challenge_result)}",
                     flush=True,
                 )
+                if str(getattr(challenge_result, "value", challenge_result)) != "success":
+                    logger.warning("结账验证码未通过，重新打开结账流程")
+                    return False
             except asyncio.TimeoutError:
                 logger.warning("Checkout hCaptcha exceeded its time budget")
                 return False

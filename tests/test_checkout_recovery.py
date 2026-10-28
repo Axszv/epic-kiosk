@@ -306,5 +306,28 @@ class CheckoutControlTests(unittest.TestCase):
         self.assertIn("controls={labels}", source)
 
 
+class CheckoutPlanTests(unittest.TestCase):
+    def test_one_wrong_answer_reopens_the_checkout(self):
+        """The checkout plan cannot be repaired on the widget that holds it.
+
+        Run 40705669872 answered `image_label_single_select` and then
+        `image_drag_single` on the same checkout widget, both refused, and
+        the challenge then disappeared with
+        `Cannot find a visible nested hCaptcha challenge frame`. The plan of
+        a widget keeps every answer, so a refused round is the end of that
+        widget: the checkout reopens it instead of answering more rounds.
+        """
+        agent_source = (
+            ROOT / "app" / "services" / "hcaptcha_agent_service.py"
+        ).read_text(encoding="utf-8")
+        service_source = SERVICE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("self._stop_after_rejection = False", agent_source)
+        self.assertIn("agent._stop_after_rejection = True", agent_source)
+        self.assertIn("return ChallengeSignal.FAILURE", agent_source)
+        # The checkout treats a refused captcha as a failed attempt.
+        self.assertIn("结账验证码未通过，重新打开结账流程", service_source)
+
+
 if __name__ == "__main__":
     unittest.main()
