@@ -1774,16 +1774,48 @@ class EpicGames:
             )
         element = handle.as_element() if handle is not None else None
         if element is not None:
-            try:
-                await element.click(timeout=10000)
-                logger.debug("Clicked the cart's checkout control")
-                return
-            except Exception as err:
-                logger.warning(f"Checkout control would not take a click: {err}")
-                with suppress(Exception):
-                    await element.click(timeout=5000, force=True)
-                    logger.debug("Clicked the cart's checkout control with force")
+            # A click that lands but leaves the cart where it was is the
+            # failure run 40716550293 hit: the cart page still had `Check Out`
+            # in its markup after the click, and the run then looked for the
+            # order form on the cart itself. So each click is checked by
+            # whether the page left the cart, and a click that does nothing is
+            # repeated with more force.
+            for label, click in (
+                ("a plain click", lambda: element.click(timeout=10000)),
+                ("a forced click", lambda: element.click(timeout=5000, force=True)),
+                ("a DOM click", lambda: element.evaluate("node => node.click()")),
+            ):
+                try:
+                    await click()
+                except Exception as err:
+                    logger.warning(f"Checkout control refused {label}: {err}")
+                    continue
+                await self.page.wait_for_timeout(2500)
+                if not self.page.url.rstrip("/").endswith("/cart"):
+                    logger.debug(f"The cart handed over after {label}")
                     return
+                # The checkout may also open inside the cart instead of
+                # navigating, so the order form itself counts as success.
+                with suppress(Exception):
+                    opened = await self.page.evaluate(
+                        """() => {
+                            const wanted = ['place order', 'get', 'add to library',
+                                            'buy now', 'confirm', 'confirm order',
+                                            'complete order', 'submit order'];
+                            return Array.from(document.querySelectorAll('button'))
+                                .some(node => {
+                                    const text = (node.innerText || '')
+                                        .replace(/\\s+/g, ' ').trim().toLowerCase();
+                                    return text && wanted.some(w => text === w || text.startsWith(w));
+                                });
+                        }"""
+                    )
+                    if opened:
+                        logger.debug(f"The order form opened after {label}")
+                        return
+                logger.warning(
+                    f"The cart did not hand over after {label}; trying again"
+                )
         labels: list[str] = []
         with suppress(Exception):
             labels = await self.page.evaluate(
