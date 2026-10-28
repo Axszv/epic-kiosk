@@ -51,6 +51,17 @@ URL_ORDER_HISTORY = f"{URL_ACCOUNT_ORIGIN}account/v2/payment/ajaxGetOrderHistory
 URL_CONFIRM_ORDER = "**/purchase/confirm-order**"
 _ORDER_HISTORY_UNAUTHORIZED_CONTEXTS = WeakSet()
 
+class CartNotPurchasable(RuntimeError):
+    """The cart holds an item the account cannot check out.
+
+    A free game that the account's region can buy always enables the cart's
+    checkout control. When the control stays disabled with the item in the
+    cart, the item is not purchasable for this account — `Sker Ritual` in a
+    CN account, whose cart page carries
+    `egstore.cart.validation.card_level.error.region_restricted`.
+    """
+
+
 REGION_UNAVAILABLE_MARKERS = (
     "currently unavailable in your platform or region",
     "unavailable in your platform or region",
@@ -1791,9 +1802,10 @@ class EpicGames:
                     break
                 await self.page.wait_for_timeout(1000)
             else:
-                raise TimeoutError(
+                items = await self._cart_item_count()
+                raise CartNotPurchasable(
                     "the cart's checkout control stayed disabled "
-                    f"(items={await self._cart_item_count()})"
+                    f"(items={items})"
                 )
             # A click that lands but leaves the cart where it was is the
             # failure run 40716550293 hit: the cart page still had `Check Out`
@@ -1893,14 +1905,13 @@ class EpicGames:
         if has_cart_items:
             try:
                 await self._purchase_free_game()
-            except Exception:
+            except Exception as err:
                 # The cart could not be checked out. A game the account's
                 # region cannot buy leaves exactly that trace: the cart holds
-                # it, the checkout control stays disabled, and the page says
-                # `region_restricted` — "This item is not available in your
-                # region". That is not a failure of the run, and the claim
-                # script already accepts `region_unavailable` as settled.
-                if await self._is_region_unavailable_page(self.page):
+                # it and the checkout control stays disabled. That is not a
+                # failure of the run, and the claim script already accepts
+                # `region_unavailable` as settled.
+                if isinstance(err, CartNotPurchasable) or await self._is_region_unavailable_page(self.page):
                     for promotion in promotions:
                         logger.warning(f"REGION_UNAVAILABLE:{promotion.title}")
                         emit_desktop_result(promotion.title, "region_unavailable")
