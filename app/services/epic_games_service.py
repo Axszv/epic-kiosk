@@ -939,6 +939,28 @@ class EpicGames:
                 return True
 
     @staticmethod
+    async def _store_refusal_reason(page: Page) -> str:
+        """What the store says when it will not hand the game over.
+
+        Epic states the reason on the page it refuses on: a region notice for
+        a game the account's country cannot buy, and
+        "Purchasing Shrunken Head DLC requires: Sker Ritual" for a promotion
+        whose base game the account does not own. Either way the run has
+        nothing left to try, and the reason belongs in the log.
+        """
+        body = ""
+        with suppress(Exception):
+            body = await page.locator("body").inner_text(timeout=3000)
+        normalized = " ".join(body.lower().split())
+        if any(marker in normalized for marker in REGION_UNAVAILABLE_MARKERS):
+            return normalized[:200]
+        for marker in ("requires:", "requires :", "prerequisite"):
+            position = normalized.find(marker)
+            if position >= 0:
+                return normalized[max(0, position - 80): position + 120]
+        return ""
+
+    @staticmethod
     async def _is_region_unavailable_page(page: Page) -> bool:
         with suppress(Exception):
             body_text = await page.locator("body").inner_text(timeout=3000)
@@ -1716,6 +1738,16 @@ class EpicGames:
                 )
 
             if not verified:
+                refusal = await self._store_refusal_reason(page)
+                if refusal:
+                    status = (
+                        "region_unavailable"
+                        if any(m in refusal for m in REGION_UNAVAILABLE_MARKERS)
+                        else "not_purchasable"
+                    )
+                    logger.warning(f"{status.upper()}:{promotion.title}:{refusal}")
+                    emit_desktop_result(promotion.title, status)
+                    continue
                 raise AssertionError(last_error)
             # ------------------------------------------------------------
 
