@@ -103,13 +103,13 @@ jobs:
 
     env:
       API_PROVIDER: ${{ github.event.inputs.api_provider || 'openai_compatible' }}
-      API_BASE_URL: ${{ secrets.API_BASE_URL }}
-      API_KEY: ${{ secrets.API_KEY }}
+      API_BASE_URL: ${{ secrets.CAPTCHA_API_BASE_URL || secrets.API_BASE_URL }}
+      API_KEY: ${{ secrets.CAPTCHA_API_KEY || secrets.API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'not_used' }}
       PRIMARY_MODEL: agnes-2.5-flash
       PRIMARY_MODEL_FALLBACK: agnes-2.5-flash
-      CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || 'agnes-3.0-flash' }}
-      CAPTCHA_MODEL_FALLBACK: agnes-2.5-flash
+      CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || vars.CAPTCHA_MODEL || 'agnes-3.0-flash' }}
+      CAPTCHA_MODEL_FALLBACK: ${{ github.event.inputs.captcha_model_fallback || github.event.inputs.captcha_model || vars.CAPTCHA_MODEL_FALLBACK || 'agnes-2.5-flash' }}
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
       RESPONSE_TIMEOUT: "90"
