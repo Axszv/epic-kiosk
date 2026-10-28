@@ -1591,7 +1591,7 @@ class EpicAuthorization:
             1, int(os.getenv("EPIC_CAPTCHA_SESSIONS", "2") or 2)
         )
         max_cloudflare_retries = max(
-            0, int(os.getenv("EPIC_CLOUDFLARE_RETRIES", "2") or 2)
+            0, int(os.getenv("EPIC_CLOUDFLARE_RETRIES", "3") or 3)
         )
         captcha_sessions = 0
         cloudflare_retries = 0

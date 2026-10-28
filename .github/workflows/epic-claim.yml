@@ -58,7 +58,7 @@ on:
       captcha_model:
         description: "Captcha model for a manual A/B diagnostic run."
         required: false
-        default: "agnes-3.0-flash"
+        default: ""
       restore_state_key:
         description: "Restore this exact browser-state cache instead of the newest one."
         required: false
