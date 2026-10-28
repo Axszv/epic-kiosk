@@ -319,10 +319,15 @@ def _apply_openai_compatible_patch():
             api_key = str(settings.API_KEY)
 
         base_url = settings.API_BASE_URL.rstrip('/')
-        if base_url.endswith('/v1'):
-            base_url = base_url[:-3]
+        # The API version is part of the gateway's path, not a constant: Z.AI
+        # serves the same OpenAI-compatible shape under `/v4`, so a hardcoded
+        # `/v1` asked it for `/v4/v1/chat/completions` and every call came
+        # back 404 (run 40617588808).
+        api_version = (os.getenv("API_VERSION", "v1") or "v1").strip().strip("/")
+        if api_version and base_url.endswith('/' + api_version):
+            base_url = base_url[: -(len(api_version) + 1)]
 
-        logger.info(f"🚀 OpenAI 兼容补丁加载中... | 地址: {base_url}")
+        logger.info(f"🚀 OpenAI 兼容补丁加载中... | 地址: {base_url} | 版本: {api_version}")
 
         # ==========================================
         # 辅助函数：将 Gemini contents 转换为 OpenAI messages
@@ -471,7 +476,7 @@ def _apply_openai_compatible_patch():
             注意：不使用 response_format，因为部分视觉模型不支持
             """
             await wait_for_model_slot()
-            url = f"{base_url}/v1/chat/completions"
+            url = f"{base_url}/{api_version}/chat/completions"
 
             headers = {
                 "Content-Type": "application/json",

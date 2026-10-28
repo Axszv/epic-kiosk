@@ -122,5 +122,20 @@ class OpenAICompatibilityTests(unittest.TestCase):
         self.assertTrue(captcha_drag_response_is_valid(response))
 
 
+class ApiVersionTests(unittest.TestCase):
+    def test_the_version_segment_is_configurable(self):
+        """The gateway's path is not always `/v1`.
+
+        Z.AI serves the same OpenAI-compatible shape under `/v4`, and the
+        hardcoded `/v1` asked it for `/v4/v1/chat/completions`: run
+        40617588808 got 404 on every call.
+        """
+        source = SETTINGS_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn('os.getenv("API_VERSION", "v1")', source)
+        self.assertIn('url = f"{base_url}/{api_version}/chat/completions"', source)
+        self.assertNotIn('url = f"{base_url}/v1/chat/completions"', source)
+
+
 if __name__ == "__main__":
     unittest.main()
