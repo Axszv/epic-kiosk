@@ -1511,7 +1511,18 @@ class EpicGames:
                          logger.success(f"✅ 游戏已在库中")
                          emit_desktop_result(promotion.title, "already_owned")
                          continue
-                    raise AssertionError(f"Could not find purchase button for {promotion.title}")
+                    # The page may still be loading, or the game may
+                    # already sit in the cart from an earlier run, where the
+                    # shelf shows a cart-shaped control instead of a price
+                    # one. The cart step reports what it holds (`items=N`), so
+                    # the run continues there instead of losing the game
+                    # here. Run 40699854560 lost `Sker Ritual` this way after
+                    # the previous run had already put it in the cart.
+                    logger.warning(
+                        f"⚠️ 未找到购买按钮，转入购物车确认: {promotion.title}"
+                    )
+                    has_pending_cart_items = True
+                    continue
             except AssertionError:
                 raise
             except Exception:

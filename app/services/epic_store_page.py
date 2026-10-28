@@ -6,7 +6,8 @@ from urllib.parse import urlsplit
 
 
 PRODUCT_CTA_TEXT = re.compile(
-    r"^(Get|Install|Claim|In Library|Owned|Buy Now|Purchase|Add to Cart|View in Cart)$",
+    r"^(Get|Install|Claim|In Library|Owned|Buy Now|Purchase|Pre-Purchase"
+    r"|Add to Cart|View in Cart|In Cart|Go to Cart|Cart)$",
     re.I,
 )
 SIGN_IN_TEXT = re.compile(r"^(Sign in|Log in)$", re.I)
