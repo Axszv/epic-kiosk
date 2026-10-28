@@ -1666,13 +1666,60 @@ class EpicGames:
             logger.warning(f"清空购物车失败: {err}")
             return False
 
+    CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")
+
+    async def _click_checkout(self) -> None:
+        """Press the cart's checkout control whatever the label is now.
+
+        The cart used to say exactly `Check Out` inside a button's span, and
+        run 40690090051 waited thirty seconds for that string on a cart page
+        that no longer offered it, so the second promotion of the week was
+        lost with `Page.click: Timeout 30000ms exceeded`. The label is
+        matched case-insensitively and a button, a link and a span are all
+        accepted.
+
+        When nothing matches, the page's own labels are reported, so the next
+        run names the right control instead of guessing at it.
+        """
+        await self.page.wait_for_timeout(1500)
+        lower = "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+        for label in self.CHECKOUT_LABELS:
+            for shape in ("//button[contains({lower}, '{label}')]",
+                          "//a[contains({lower}, '{label}')]",
+                          "//*[@role='button'][contains({lower}, '{label}')]"):
+                selector = shape.format(lower=lower, label=label)
+                with suppress(Exception):
+                    locator = self.page.locator(selector).first
+                    if await locator.is_visible(timeout=2000):
+                        await locator.click(timeout=10000)
+                        logger.debug(f"Clicked the cart control matching {label!r}")
+                        return
+        labels: list[str] = []
+        with suppress(Exception):
+            labels = await self.page.evaluate(
+                """() => Array.from(document.querySelectorAll('button, a'))
+                    .filter(el => el.offsetParent)
+                    .map(el => (el.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 40))
+                    .filter(Boolean)
+                    .slice(0, 25)"""
+            )
+        cards = 0
+        with suppress(Exception):
+            cards = await self.page.locator(
+                "//div[@data-testid='offer-card-layout-wrapper']"
+            ).count()
+        raise TimeoutError(
+            "no checkout control on the cart page "
+            f"(items={cards}, controls={labels})"
+        )
+
     async def _purchase_free_game(self):
         await self.page.goto(URL_CART, wait_until="domcontentloaded")
         logger.debug("Move ALL paid games from the shopping cart out")
         await self._empty_cart(self.page)
 
         agent = get_hcaptcha_agent(self.page)
-        await self.page.click("//button//span[text()='Check Out']")
+        await self._click_checkout()
         await self._agree_license(self.page)
 
         try:

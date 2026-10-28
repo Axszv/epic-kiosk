@@ -278,5 +278,25 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertNotIn(token, json.dumps(summary))
 
 
+class CheckoutControlTests(unittest.TestCase):
+    def test_the_cart_button_is_found_by_label_not_by_exact_markup(self):
+        """The cart stopped offering `Check Out` as a button span.
+
+        Run 40690090051 waited thirty seconds for
+        `//button//span[text()='Check Out']` on a cart page that no longer
+        had it, and the second promotion of the week was lost.
+        """
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("async def _click_checkout", source)
+        self.assertIn('CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")', source)
+        # The exact-text selector is gone.
+        self.assertNotIn('span[text()=\'Check Out\']', source)
+        # Case-insensitive matching, and the failure names what the page has.
+        self.assertIn("translate(normalize-space(.)", source)
+        self.assertIn("no checkout control on the cart page", source)
+        self.assertIn("controls={labels}", source)
+
+
 if __name__ == "__main__":
     unittest.main()
