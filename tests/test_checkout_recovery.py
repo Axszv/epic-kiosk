@@ -329,5 +329,27 @@ class CheckoutPlanTests(unittest.TestCase):
         self.assertIn("结账验证码未通过，重新打开结账流程", service_source)
 
 
+class CartRegionTests(unittest.TestCase):
+    def test_a_region_restricted_cart_is_settled_not_failed(self):
+        """`Sker Ritual` is not sold in the account's region.
+
+        The cart holds it, the checkout control stays disabled, and the page
+        carries `egstore.cart.validation.card_level.error.region_restricted`
+        — "This item is not available in your region". The claim script
+        already accepts `region_unavailable` as settled, so the game is
+        reported that way instead of failing the account.
+        """
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        claim = (
+            ROOT / "scripts" / "github_actions_claim_once.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("_is_region_unavailable_page(self.page)", source)
+        self.assertIn('emit_desktop_result(promotion.title, "region_unavailable")', source)
+        self.assertIn('"region_unavailable"', claim)
+        self.assertIn("REGION_UNAVAILABLE_MARKERS", source)
+        self.assertIn("not available in your region", source)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1894,10 +1894,21 @@ class EpicGames:
             try:
                 await self._purchase_free_game()
             except Exception:
-                # The cart could not be checked out. A stale entry for a game
-                # the account already owns looks exactly like that — the
-                # control stays disabled — so the order history is asked
-                # before the game is reported as lost.
+                # The cart could not be checked out. A game the account's
+                # region cannot buy leaves exactly that trace: the cart holds
+                # it, the checkout control stays disabled, and the page says
+                # `region_restricted` — "This item is not available in your
+                # region". That is not a failure of the run, and the claim
+                # script already accepts `region_unavailable` as settled.
+                if await self._is_region_unavailable_page(self.page):
+                    for promotion in promotions:
+                        logger.warning(f"REGION_UNAVAILABLE:{promotion.title}")
+                        emit_desktop_result(promotion.title, "region_unavailable")
+                    await self._save_debug_page(self.page, "cart_region_unavailable")
+                    return
+                # A stale entry for a game the account already owns looks the
+                # same way, so the order history is asked before the game is
+                # reported as lost.
                 owned = []
                 for promotion in promotions:
                     if await self._owned_from_order_history(self.page, promotion):
