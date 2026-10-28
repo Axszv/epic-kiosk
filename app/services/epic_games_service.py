@@ -1554,7 +1554,7 @@ class EpicGames:
                 emit_desktop_result(promotion.title, "already_owned")
                 continue
 
-            if "CART" in btn_text_upper:
+            if "ADD TO CART" in btn_text_upper or "PRE-PURCHASE" in btn_text_upper:
                 # A click that lands before Epic's page is hydrated does
                 # nothing at all, and the cart stays empty. Run 40696732890
                 # clicked `Add to Cart` twice and reached the cart with
@@ -1595,6 +1595,15 @@ class EpicGames:
                             added = True
                             break
                 logger.info(f"🛒 加购结果: added={added}")
+                has_pending_cart_items = True
+                continue
+
+            if "CART" in btn_text_upper:
+                # `View in Cart` and `In Cart` mean the game is already in the
+                # cart. Clicking them navigates away from the shelf, which is
+                # what run 40700908238 did before spending twenty-four minutes
+                # in the checkout, so the run goes straight to the cart.
+                logger.info(f"🛒 游戏已在购物车，直接结账: {btn_text!r}")
                 has_pending_cart_items = True
                 continue
 
@@ -1786,7 +1795,15 @@ class EpicGames:
             f"(items={cards}, controls={labels})"
         )
 
-    async def _purchase_free_game(self):
+    async def _purchase_free_game(self, attempt: int = 1) -> None:
+        """Check the cart out, retrying a bounded number of times.
+
+        The retry used to call itself without a limit, so a checkout that
+        kept failing kept reloading: run 40700908238 logged its last line at
+        13:57:45 and then nothing for twenty-four minutes, until the task
+        timeout ended the run.
+        """
+        max_attempts = max(1, int(settings.CHECKOUT_MAX_ATTEMPTS or 1))
         await self.page.goto(URL_CART, wait_until="domcontentloaded")
         logger.debug("Move ALL paid games from the shopping cart out")
         await self._empty_cart(self.page)
@@ -1802,9 +1819,11 @@ class EpicGames:
             await self._uk_confirm_order(wpc)
             await agent.wait_for_challenge()
         except Exception as err:
-            logger.warning(f"验证码解决失败: {err}")
+            logger.warning(f"验证码解决失败 [{attempt}/{max_attempts}]: {err}")
+            if attempt >= max_attempts:
+                raise
             await self.page.reload()
-            return await self._purchase_free_game()
+            return await self._purchase_free_game(attempt + 1)
 
     @retry(retry=retry_if_exception_type(TimeoutError), stop=stop_after_attempt(2), reraise=True)
     async def collect_weekly_games(self, promotions: List[PromotionGame]):
