@@ -279,21 +279,29 @@ class CheckoutRecoveryTests(unittest.TestCase):
 
 
 class CheckoutControlTests(unittest.TestCase):
-    def test_the_cart_button_is_found_by_label_not_by_exact_markup(self):
+    def test_the_cart_button_is_found_by_label_not_by_markup(self):
         """The cart stopped offering `Check Out` as a button span.
 
         Run 40690090051 waited thirty seconds for
-        `//button//span[text()='Check Out']` on a cart page that no longer
-        had it, and the second promotion of the week was lost.
+        `//button//span[text()='Check Out']` and lost the week's second game.
+        Run 40698238507 then reached the cart with the game in it (`items=1`)
+        and `'Check Out'` in the control list, so the control was there and
+        the XPath was what failed: `normalize-space()` does not treat a
+        non-breaking space as whitespace, and the label is built from one.
         """
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn("async def _click_checkout", source)
         self.assertIn('CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")', source)
-        # The exact-text selector is gone.
-        self.assertNotIn('span[text()=\'Check Out\']', source)
-        # Case-insensitive matching, and the failure names what the page has.
-        self.assertIn("translate(normalize-space(.)", source)
+        # The exact-text click is gone; the string survives only in the
+        # docstring that explains why.
+        self.assertNotIn('self.page.click("//button//span', source)
+        # The label is normalised in the page, where `\s` covers NBSP.
+        self.assertIn("replace(/\\\\s+/g, ' ').trim().toLowerCase()", source)
+        self.assertIn("evaluate_handle", source)
+        # A real click first, a forced one if the page will not take it.
+        self.assertIn("force=True", source)
+        # The failure names what the page has.
         self.assertIn("no checkout control on the cart page", source)
         self.assertIn("controls={labels}", source)
 

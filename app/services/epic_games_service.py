@@ -1707,31 +1707,55 @@ class EpicGames:
     CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")
 
     async def _click_checkout(self) -> None:
-        """Press the cart's checkout control whatever the label is now.
+        """Press the cart's checkout control whatever the markup is now.
 
-        The cart used to say exactly `Check Out` inside a button's span, and
-        run 40690090051 waited thirty seconds for that string on a cart page
-        that no longer offered it, so the second promotion of the week was
-        lost with `Page.click: Timeout 30000ms exceeded`. The label is
-        matched case-insensitively and a button, a link and a span are all
-        accepted.
+        Run 40696732890 waited thirty seconds for
+        `//button//span[text()='Check Out']` and run 40698238507 found the
+        cart holding the game (`items=1`) with `'Check Out'` among its
+        controls, so the control was there and the selector was what failed.
 
-        When nothing matches, the page's own labels are reported, so the next
-        run names the right control instead of guessing at it.
+        The label is looked up in the page instead of in XPath, because
+        `normalize-space()` does not treat a non-breaking space as
+        whitespace while the label is built from one, and because the label
+        no longer sits in a span of a button. The click itself stays a real
+        one, so the page receives the events it expects.
+
+        When nothing matches, the cart's own controls are reported, so the
+        next run names the right one instead of guessing again.
         """
         await self.page.wait_for_timeout(1500)
-        lower = "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
-        for label in self.CHECKOUT_LABELS:
-            for shape in ("//button[contains({lower}, '{label}')]",
-                          "//a[contains({lower}, '{label}')]",
-                          "//*[@role='button'][contains({lower}, '{label}')]"):
-                selector = shape.format(lower=lower, label=label)
+        handle = None
+        with suppress(Exception):
+            handle = await self.page.evaluate_handle(
+                """(labels) => {
+                    const norm = value => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const nodes = Array.from(
+                        document.querySelectorAll('button, a, [role=button]')
+                    );
+                    for (const label of labels) {
+                        for (const node of nodes) {
+                            if (!node.offsetParent) continue;
+                            const text = norm(node.innerText);
+                            if (!text) continue;
+                            if (text === label || text.startsWith(label)) return node;
+                        }
+                    }
+                    return null;
+                }""",
+                list(self.CHECKOUT_LABELS),
+            )
+        element = handle.as_element() if handle is not None else None
+        if element is not None:
+            try:
+                await element.click(timeout=10000)
+                logger.debug("Clicked the cart's checkout control")
+                return
+            except Exception as err:
+                logger.warning(f"Checkout control would not take a click: {err}")
                 with suppress(Exception):
-                    locator = self.page.locator(selector).first
-                    if await locator.is_visible(timeout=2000):
-                        await locator.click(timeout=10000)
-                        logger.debug(f"Clicked the cart control matching {label!r}")
-                        return
+                    await element.click(timeout=5000, force=True)
+                    logger.debug("Clicked the cart's checkout control with force")
+                    return
         labels: list[str] = []
         with suppress(Exception):
             labels = await self.page.evaluate(
