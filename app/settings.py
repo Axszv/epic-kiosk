@@ -538,6 +538,10 @@ JSON Schema:
 
             retryable_statuses = {408, 409, 429, 500, 502, 503, 504}
             max_attempts = int(os.getenv("API_MAX_RETRIES", "3"))
+            # A capacity refusal is not a rate limit: Z.AI answers `1305` for
+            # minutes at a time on its free vision model (run 40620943997 saw
+            # it 180 times), and an eight second pause never outlasts it.
+            backoff_cap = float(os.getenv("API_RETRY_BACKOFF_MAX", "8"))
             for attempt in range(1, max_attempts + 1):
                 try:
                     async with httpx.AsyncClient(timeout=settings.RESPONSE_TIMEOUT) as client:
@@ -565,7 +569,7 @@ JSON Schema:
                         logger.warning(
                             f"{error_msg}; retrying attempt {attempt}/{max_attempts}"
                         )
-                        await asyncio.sleep(min(2 * attempt, 8))
+                        await asyncio.sleep(min(2 * attempt, backoff_cap))
                         continue
 
                     body_preview = response.text[:500].replace("\n", " ")
@@ -584,7 +588,7 @@ JSON Schema:
                         raise Exception(error_msg) from exc
                     logger.warning(f"{error_msg}; retrying attempt {attempt}/{max_attempts}")
 
-                await asyncio.sleep(min(2 * attempt, 8))
+                await asyncio.sleep(min(2 * attempt, backoff_cap))
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(url, headers=headers, json=payload)
