@@ -550,7 +550,14 @@ JSON Schema:
 
             if settings.API_SERVICE_TIER:
                 payload["service_tier"] = settings.API_SERVICE_TIER
-            if enable_thinking is not None:
+            # `chat_template_kwargs` is a thinking switch of the gateways that
+            # accept it. Google's OpenAI-compatible endpoint rejects the whole
+            # request over it, and a rejected call still spends a request of a
+            # 500-a-day allowance, so it is only sent when the gateway takes
+            # it.
+            if enable_thinking is not None and os.getenv(
+                "API_SEND_THINKING_KWARG", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"}:
                 payload["chat_template_kwargs"] = {
                     "enable_thinking": enable_thinking,
                 }
@@ -593,6 +600,22 @@ JSON Schema:
 
                     body_preview = response.text[:500].replace("\n", " ")
                     error_msg = f"API call failed: {response.status_code} - {body_preview}"
+                    # `chat_template_kwargs` is a thinking switch of the
+                    # gateways that accept it. Google's OpenAI-compatible
+                    # endpoint refuses the whole request with "Unknown name
+                    # chat_template_kwargs", so the field is dropped and the
+                    # same request is sent again instead of losing the round.
+                    if (
+                        response.status_code == 400
+                        and "chat_template_kwargs" in response.text
+                        and "chat_template_kwargs" in payload
+                    ):
+                        logger.warning(
+                            "Gateway does not accept chat_template_kwargs; "
+                            "sending the request without it"
+                        )
+                        payload.pop("chat_template_kwargs", None)
+                        continue
                     if response.status_code not in retryable_statuses or attempt == max_attempts:
                         logger.error(f"API_ERROR:{error_msg}")
                         raise Exception(error_msg)

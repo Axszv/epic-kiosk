@@ -164,5 +164,18 @@ class CodeFenceTests(unittest.TestCase):
         self.assertEqual(extract_chat_completion_text(payload), '{"point": [1, 2]}')
 
 
+class ThinkingKwargTests(unittest.TestCase):
+    def test_the_thinking_switch_can_be_left_out(self):
+        """Google rejects the whole request over `chat_template_kwargs`.
+
+        A rejected call still spends one of 500 daily requests, so the field
+        has to be left out rather than sent and retried.
+        """
+        source = SETTINGS_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn('os.getenv(\n                "API_SEND_THINKING_KWARG", "true"\n            )', source)
+        self.assertIn('payload.pop("chat_template_kwargs", None)', source)
+
+
 if __name__ == "__main__":
     unittest.main()
