@@ -1745,6 +1745,22 @@ class EpicGames:
 
     CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")
 
+    async def _cart_warnings(self) -> str:
+        """Epic's own reason why the cart cannot be checked out.
+
+        The cart renders its validation in `[data-testid='cart-warnings']`:
+        "Purchasing Shrunken Head DLC requires: Sker Ritual" for a DLC whose
+        base game is missing, and a region notice for a game the account's
+        country cannot buy. Reading that is the answer; waiting and guessing
+        is not.
+        """
+        text = ""
+        with suppress(Exception):
+            text = await self.page.locator(
+                "[data-testid='cart-warnings']"
+            ).first.inner_text(timeout=2000)
+        return " ".join((text or "").split())
+
     async def _cart_item_count(self) -> int:
         count = 0
         with suppress(Exception):
@@ -1793,19 +1809,25 @@ class EpicGames:
             )
         element = handle.as_element() if handle is not None else None
         if element is not None:
-            # Epic disables the cart's checkout until its own summary settles,
-            # and a click on a disabled control only times out: run 40718120106
-            # logged `text='Check Out', ..., disabled=True` and then ten
-            # seconds of "element is not enabled". Wait for it instead.
-            for _ in range(15):
+            # Epic disables the cart's checkout when its own validation
+            # refuses the cart, and a click on a disabled control only times
+            # out: run 40718120106 logged `text='Check Out', ..., disabled=True`
+            # and then ten seconds of "element is not enabled". So the cart's
+            # verdict is read while the control settles, and the control is
+            # only ever clicked once Epic has enabled it.
+            warnings = ""
+            for _ in range(20):
                 if not await element.is_disabled():
                     break
-                await self.page.wait_for_timeout(1000)
+                warnings = await self._cart_warnings()
+                if warnings:
+                    raise CartNotPurchasable(warnings)
+                await self.page.wait_for_timeout(500)
             else:
-                items = await self._cart_item_count()
                 raise CartNotPurchasable(
-                    "the cart's checkout control stayed disabled "
-                    f"(items={items})"
+                    warnings
+                    or "the cart's checkout control stayed disabled "
+                    f"(items={await self._cart_item_count()})"
                 )
             # A click that lands but leaves the cart where it was is the
             # failure run 40716550293 hit: the cart page still had `Check Out`
@@ -1911,11 +1933,17 @@ class EpicGames:
                 # it and the checkout control stays disabled. That is not a
                 # failure of the run, and the claim script already accepts
                 # `region_unavailable` as settled.
-                if isinstance(err, CartNotPurchasable) or await self._is_region_unavailable_page(self.page):
+                region_page = await self._is_region_unavailable_page(self.page)
+                reason = str(err) if isinstance(err, CartNotPurchasable) else ""
+                region = region_page or any(
+                    marker in reason.lower() for marker in REGION_UNAVAILABLE_MARKERS
+                )
+                if isinstance(err, CartNotPurchasable) or region_page:
+                    status = "region_unavailable" if region else "not_purchasable"
                     for promotion in promotions:
-                        logger.warning(f"REGION_UNAVAILABLE:{promotion.title}")
-                        emit_desktop_result(promotion.title, "region_unavailable")
-                    await self._save_debug_page(self.page, "cart_region_unavailable")
+                        logger.warning(f"{status.upper()}:{promotion.title}:{reason}")
+                        emit_desktop_result(promotion.title, status)
+                    await self._save_debug_page(self.page, f"cart_{status}")
                     return
                 # A stale entry for a game the account already owns looks the
                 # same way, so the order history is asked before the game is

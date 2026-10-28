@@ -88,7 +88,12 @@ DESKTOP_RESULT_RE = re.compile(r"DESKTOP_RESULT:(.*):([a-z_]+)\s*$")
 ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\-]+)")
 REGION_UNAVAILABLE_RE = re.compile(r"REGION_UNAVAILABLE:(.+)")
 MOBILE_RESULT_RE = re.compile(r"MOBILE_RESULT:([^:\r\n]+):(.*):([a-z_]+)\s*$")
-SUCCESS_EVIDENCE_STATUSES = {"already_owned", "verified_owned", "region_unavailable"}
+# `region_unavailable` and `not_purchasable` are the store refusing the
+# promotion for this account, not the run failing to claim it: a game the
+# account's country cannot buy, or a DLC whose base game it does not own.
+SUCCESS_EVIDENCE_STATUSES = {
+    "already_owned", "verified_owned", "region_unavailable", "not_purchasable"
+}
 RETRY_BACKOFF_SECONDS = {
     "cloudflare_blocked": 45,
     "captcha_failed": 20,

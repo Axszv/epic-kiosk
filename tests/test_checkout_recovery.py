@@ -329,6 +329,28 @@ class CheckoutPlanTests(unittest.TestCase):
         self.assertIn("结账验证码未通过，重新打开结账流程", service_source)
 
 
+class CartWarningsTests(unittest.TestCase):
+    def test_the_cart_says_why_it_cannot_be_checked_out(self):
+        """Epic renders its verdict in `cart-warnings`; reading it is the answer.
+
+        The cart for `Sker Ritual` held `Shrunken Head DLC` and said
+        "Purchasing Shrunken Head DLC requires: Sker Ritual", which is why the
+        checkout control stayed disabled. A timer cannot tell that apart from
+        a slow page.
+        """
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        claim = (
+            ROOT / "scripts" / "github_actions_claim_once.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("async def _cart_warnings", source)
+        self.assertIn("[data-testid='cart-warnings']", source)
+        self.assertIn("CartNotPurchasable", source)
+        # Region and prerequisite are reported apart.
+        self.assertIn('"region_unavailable" if region else "not_purchasable"', source)
+        self.assertIn('"not_purchasable"', claim)
+
+
 class CartRegionTests(unittest.TestCase):
     def test_a_region_restricted_cart_is_settled_not_failed(self):
         """`Sker Ritual` is not sold in the account's region.
@@ -345,7 +367,7 @@ class CartRegionTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("_is_region_unavailable_page(self.page)", source)
-        self.assertIn('emit_desktop_result(promotion.title, "region_unavailable")', source)
+        self.assertIn("emit_desktop_result(promotion.title, status)", source)
         self.assertIn('"region_unavailable"', claim)
         self.assertIn("REGION_UNAVAILABLE_MARKERS", source)
         self.assertIn("not available in your region", source)
