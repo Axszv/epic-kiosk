@@ -28,6 +28,23 @@ RUNTIME_DIR = VOLUMES_DIR.joinpath("runtime")
 RECORD_DIR = VOLUMES_DIR.joinpath("record")
 
 
+_CODE_FENCE = re.compile(r"^\s*```[A-Za-z0-9_+-]*\s*\r?\n(.*?)\r?\n?```\s*$", re.S)
+
+
+def strip_code_fence(text: str) -> str:
+    """Return the payload of a fenced block when the whole answer is one.
+
+    A vision model often answers a JSON request inside a ```json fence. The
+    library strips it in its own Gemini provider, but the OpenAI-compatible
+    layer hands the text straight to the parser, which then fails on the
+    fence and loses the round.
+    """
+    if not text:
+        return text
+    found = _CODE_FENCE.match(text)
+    return found.group(1).strip() if found else text
+
+
 def extract_chat_completion_text(result: dict) -> str:
     """Extract text from an OpenAI-compatible chat completion response."""
     choices = result.get("choices") or []
@@ -35,12 +52,14 @@ def extract_chat_completion_text(result: dict) -> str:
     message = first_choice.get("message") or {}
     content = message.get("content")
     if isinstance(content, str):
-        return content
+        return strip_code_fence(content)
     if isinstance(content, list):
-        return "".join(
-            str(part.get("text", ""))
-            for part in content
-            if isinstance(part, dict)
+        return strip_code_fence(
+            "".join(
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict)
+            )
         )
     return ""
 
