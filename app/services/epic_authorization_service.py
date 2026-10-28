@@ -205,7 +205,8 @@ class EpicAuthorization:
         self._email_transaction_failure_signal = asyncio.Queue()
         self._login_transaction_failure_signal = asyncio.Queue()
         self._refresh_csrf_seen = False
-        self._login_error_code = None  # 存储登录错误码
+        self._login_error_code = None
+        self._login_post_at = 0.0  # 存储登录错误码
         self._login_point_url = ""
         self._login_agent = None
 
@@ -382,6 +383,8 @@ class EpicAuthorization:
                     parsed = json.loads(inner)
                     if isinstance(parsed, dict):
                         inner_keys = ",".join(list(parsed)[:8])
+            if urlsplit(url).path.endswith("/id/api/login"):
+                self._login_post_at = time.monotonic()
             print(
                 f"LOGIN_CAPTCHA_TOKEN:path={urlsplit(url).path}:"
                 f"field_len={len(raw)}:"
@@ -1093,6 +1096,30 @@ class EpicAuthorization:
                 while not result_task.done():
                     await self.page.wait_for_timeout(8000)
                     if result_task.done():
+                        return
+                    # A login transaction that never answers leaves the page
+                    # with nothing to submit and nothing to wait for. Run
+                    # 40690090051 answered the password challenge eight more
+                    # times in that state and spent fifteen minutes on it,
+                    # while no further login transaction left the browser.
+                    if (
+                        self._login_post_at
+                        and time.monotonic() - self._login_post_at > 25
+                    ):
+                        logger.warning(
+                            "The login transaction did not answer; leaving this "
+                            "session"
+                        )
+                        if not result_task.done():
+                            self._is_login_success_signal.put_nowait(
+                                {
+                                    "error": True,
+                                    "code": "epic_login_captcha_plan_rejected",
+                                    "full_response": {
+                                        "reason": "login_transaction_silent"
+                                    },
+                                }
+                            )
                         return
                     if captcha_in_progress:
                         continue
