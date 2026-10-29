@@ -10,7 +10,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from services.epic_games_service import EpicGames, REGION_UNAVAILABLE_MARKERS
 from services.epic_store_page import is_login_url, product_cta, store_signed_out
-from settings import RUNTIME_DIR
+from settings import RUNTIME_DIR, settings
 
 
 FREE_MARKERS = ("free", "$0.00", "\u20ac0.00", "\u00a30.00", "-100%")
@@ -305,7 +305,17 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
             with suppress(Exception):
                 await epic._handle_device_not_supported_modal(page)
             result["notes"].append("reopened_after_rejected_checkout")
-            await _submit_mobile_checkout(page, epic, result)
+            # The fallback model is only reached when the API *raises*; a
+            # wrong answer never gets there. The second transaction is the
+            # one place a different reader can be tried, so it is.
+            previous_model = settings.CAPTCHA_MODEL
+            if settings.CAPTCHA_MODEL_FALLBACK != previous_model:
+                settings.CAPTCHA_MODEL = settings.CAPTCHA_MODEL_FALLBACK
+                result["notes"].append(f"captcha_model:{settings.CAPTCHA_MODEL}")
+            try:
+                await _submit_mobile_checkout(page, epic, result)
+            finally:
+                settings.CAPTCHA_MODEL = previous_model
             owned_cta = await wait_for_mobile_ownership(page)
             if owned_cta is not None:
                 result["final_cta"] = owned_cta
