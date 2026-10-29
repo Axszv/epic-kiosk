@@ -1836,13 +1836,14 @@ class EpicGames:
                         document.querySelectorAll(
                             "[data-testid='offer-card-layout-wrapper']"
                         )
-                    ).map(card => {
+                    ).map((card, index) => {
                         const link = card.querySelector("a[href*='/p/']");
                         const href = link ? link.getAttribute('href') : '';
                         const slug = href
                             ? href.split('/p/')[1].split(/[?#]/)[0]
                             : '';
                         return {
+                            index,
                             slug,
                             text: (card.innerText || '')
                                 .replace(/\\s+/g, ' ').trim().slice(0, 160),
@@ -1862,13 +1863,13 @@ class EpicGames:
         )
 
     async def _remove_cart_line(
-        self, slug: str, page: Page | None = None
+        self, slug: str, page: Page | None = None, index: int = 0
     ) -> bool:
         page = page or self.page
         clicked = False
         with suppress(Exception):
             clicked = await page.evaluate(
-                """(slug) => {
+                """([slug, index]) => {
                     const cards = Array.from(document.querySelectorAll(
                         "[data-testid='offer-card-layout-wrapper']"
                     ));
@@ -1878,17 +1879,20 @@ class EpicGames:
                             const href = link ? link.getAttribute('href') : '';
                             return href.includes('/p/' + slug);
                           })
-                        : cards[0];
+                        : cards[index];
                     if (!card) return false;
-                    const button = Array.from(card.querySelectorAll('button'))
-                        .find(node => (node.innerText || '')
-                            .replace(/\\s+/g, ' ').trim().toLowerCase()
-                            === 'remove');
+                    const label = node => (node.innerText || '')
+                        .replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const buttons = Array.from(card.querySelectorAll('button'));
+                    // A paid line goes to the wishlist rather than the bin;
+                    // a free leftover has nothing worth keeping.
+                    const button = buttons.find(node => label(node) === 'move to wishlist')
+                        || buttons.find(node => label(node) === 'remove');
                     if (!button) return false;
                     button.click();
                     return true;
                 }""",
-                slug,
+                [slug, index],
             )
         return bool(clicked)
 
@@ -1898,8 +1902,8 @@ class EpicGames:
         `_empty_cart` only moves *paid* lines to the wishlist, which is how a
         free `Shrunken Head DLC` outlived every run that tried to check out:
         Epic refuses a DLC whose base game is missing, so the cart blocked
-        itself permanently. Whatever an earlier run left behind is removed
-        here, before anything is added.
+        itself permanently. One line leaves per pass, because the list is
+        re-read after every removal and the positions shift with it.
         """
         page = page or self.page
         await page.goto(URL_CART, wait_until="domcontentloaded")
@@ -1908,23 +1912,51 @@ class EpicGames:
             lines = await self._cart_lines(page)
             if not lines:
                 return True
-            removed = 0
-            for line in lines:
-                if await self._remove_cart_line(line.get("slug") or "", page):
-                    removed += 1
-                await page.wait_for_timeout(600)
-            if not removed:
+            line = lines[0]
+            if not await self._remove_cart_line(
+                line.get("slug") or "", page, line.get("index") or 0
+            ):
                 logger.warning(
                     "清空购物车失败: "
-                    + "; ".join((line.get("text") or "")[:60] for line in lines)
+                    + "; ".join((item.get("text") or "")[:60] for item in lines)
                 )
                 return False
-            logger.info(
-                f"🛒 移除购物车残留 {removed} 项: "
-                + "; ".join((line.get("text") or "")[:60] for line in lines)
-            )
+            logger.info(f"🛒 移除购物车残留: {(line.get('text') or '')[:60]}")
             await page.wait_for_timeout(1500)
         return not await self._cart_lines(page)
+
+    async def _keep_only_cart(self, page: Page, promotions) -> bool:
+        """Leave only the games this run means to check out.
+
+        `_empty_cart` moves *paid* lines to the wishlist and keeps the free
+        ones, which is how a free `Shrunken Head DLC` outlived every run that
+        followed it: Epic refuses a DLC whose base game is missing, so the
+        cart blocked itself for good and `Sker Ritual` was never added again.
+        Everything that is not one of this week's promotions leaves the cart,
+        free or paid.
+        """
+        wanted = {self._promotion_slug(promotion) for promotion in promotions}
+        wanted.discard("")
+        for _ in range(12):
+            lines = await self._cart_lines(page)
+            stale = [
+                line for line in lines
+                if (line.get("slug") or "") not in wanted
+            ]
+            if not stale:
+                return True
+            line = stale[0]
+            if not await self._remove_cart_line(
+                line.get("slug") or "", page, line.get("index") or 0
+            ):
+                logger.warning(
+                    "移出购物车残留失败: "
+                    + "; ".join((item.get("text") or "")[:60] for item in lines)
+                )
+                return False
+            logger.info(f"🛒 移出购物车残留: {(line.get('text') or '')[:60]}")
+            await page.wait_for_timeout(1500)
+        return True
 
     async def _cart_item_count(self) -> int:
         count = 0
@@ -2065,8 +2097,8 @@ class EpicGames:
         """
         max_attempts = max(1, int(settings.CHECKOUT_MAX_ATTEMPTS or 1))
         await self.page.goto(URL_CART, wait_until="domcontentloaded")
-        logger.debug("Move ALL paid games from the shopping cart out")
-        await self._empty_cart(self.page)
+        logger.debug("Move everything that is not this week's games out")
+        await self._keep_only_cart(self.page, getattr(self, "_cart_targets", []))
 
         agent = get_hcaptcha_agent(self.page)
         await self._click_checkout()
@@ -2087,13 +2119,11 @@ class EpicGames:
 
     @retry(retry=retry_if_exception_type(TimeoutError), stop=stop_after_attempt(2), reraise=True)
     async def collect_weekly_games(self, promotions: List[PromotionGame]):
-        # Whatever an earlier run left in the cart is removed before anything
-        # is added. A free `Shrunken Head DLC` from a previous attempt made
-        # Epic refuse the checkout outright, and `_empty_cart` kept it because
-        # it only clears paid lines — which is why every run after the first
-        # failed on the same cart while `main` sailed through with an empty
-        # one.
-        await self._clear_cart(self.page)
+        # The games this run means to buy. `_purchase_free_game` keeps these
+        # and nothing else, so a leftover from an earlier attempt cannot make
+        # Epic refuse the checkout — which is exactly how a free
+        # `Shrunken Head DLC` blocked every run that came after it.
+        self._cart_targets = promotions
         has_cart_items = await self.add_promotion_to_cart(self.page, promotions)
 
         if has_cart_items:

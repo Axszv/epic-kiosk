@@ -340,19 +340,17 @@ class CartPurgeTests(unittest.TestCase):
         claimed both games.
         """
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
-        start = source.index("async def collect_weekly_games")
-        body = source[start: start + 1200]
+        start = source.index("async def _purchase_free_game")
+        body = source[start: start + 1400]
 
-        self.assertLess(
-            body.index("_clear_cart(self.page)"),
-            body.index("add_promotion_to_cart"),
-            "the cart has to be emptied before the promotions are added",
-        )
-        self.assertIn("def _clear_cart", source)
+        self.assertIn("_keep_only_cart", body)
+        self.assertIn("def _keep_only_cart", source)
         self.assertIn("def _cart_lines", source)
         self.assertIn("def _remove_cart_line", source)
+        # The target list reaches the cart through the run that owns it.
+        self.assertIn("self._cart_targets = promotions", source)
         # Free lines are removed too, not only the paid ones.
-        self.assertIn("=== 'remove'", source)
+        self.assertIn("=== 'move to wishlist'", source)
 
     def test_view_in_cart_is_checked_against_the_cart_itself(self):
         """The CTA is Epic's cart affordance, not a statement about this game."""
