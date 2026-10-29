@@ -103,6 +103,7 @@ jobs:
     env:
       API_BASE_URL: ${{ secrets.CAPTCHA_API_BASE_URL || secrets.API_BASE_URL }}
       API_KEY: ${{ secrets.CAPTCHA_API_KEY || secrets.API_KEY }}
+      API_VERSION: ${{ vars.API_VERSION || 'v1' }}
     steps:
       - name: List the models the gateway serves
         run: |
@@ -133,7 +134,12 @@ jobs:
               "agnes-3.5-flash",
           ]
 
-          for model in CANDIDATES:
+          version = (os.environ.get("API_VERSION") or "").strip("/")
+
+          def endpoint(root: str, path: str) -> str:
+              return root + (f"/{version}" if version else "") + path
+
+          def probe(url: str, model: str):
               body = json.dumps(
                   {
                       "model": model,
@@ -142,7 +148,7 @@ jobs:
                   }
               ).encode("utf-8")
               request = urllib.request.Request(
-                  base + "/chat/completions",
+                  url,
                   data=body,
                   headers={
                       "Authorization": f"Bearer {key}",
@@ -152,12 +158,37 @@ jobs:
               )
               try:
                   with urllib.request.urlopen(request, timeout=60) as response:
-                      print(f"OK    {model}  (HTTP {response.status})")
+                      return f"OK    {model}  (HTTP {response.status})"
               except urllib.error.HTTPError as err:
                   detail = err.read().decode("utf-8", "replace")
-                  print(f"HTTP {err.code}  {model}  {detail[:160]}")
+                  return f"HTTP {err.code}  {model}  {detail[:120]}"
               except Exception as err:  # noqa: BLE001
-                  print(f"FAIL  {model}  {type(err).__name__}: {err}")
+                  return f"FAIL  {model}  {type(err).__name__}: {err}"
+
+          # The control decides which endpoint is the real one: a path that
+          # cannot answer for a model known to work cannot answer for any.
+          control = "gemini-3.5-flash-lite"
+          chosen = None
+          for root in (base, base[: -len(version)] if version and base.endswith(version) else base):
+              for path in ("/chat/completions", "/v1beta/openai/chat/completions"):
+                  url = endpoint(root, path)
+                  verdict = probe(url, control)
+                  print(f"CONTROL {verdict}  {url}")
+                  if verdict.startswith("OK"):
+                      chosen = (root, path)
+                      break
+              if chosen:
+                  break
+          if not chosen:
+              raise SystemExit("no endpoint answered for the control model")
+
+          root, path = chosen
+          print(f"USING {endpoint(root, path)}")
+          for model in CANDIDATES:
+              if model == control:
+                  print(f"OK    {model}  (control)")
+                  continue
+              print(probe(endpoint(root, path), model))
           PY
 
   claim:
