@@ -508,3 +508,28 @@ class MobileObservabilityTests(unittest.TestCase):
 
         self.assertIn("MOBILE_UNCLAIMED:", source)
         self.assertIn("buttons={result.get('final_buttons')}", source)
+
+
+class MobilePlatformBrowserTests(unittest.TestCase):
+    """An iOS offer opened by a desktop browser is refused by Epic.
+
+    The page says `Device not supported — This product is not compatible with
+    your current device`, and the claim stops there: run 40883991382 lost
+    `Home` on iOS, and every iOS offer of run 40904600195 ended
+    `web_claim_not_available`.
+    """
+
+    def setUp(self):
+        self.source = (
+            ROOT / "app" / "services" / "epic_mobile_service.py"
+        ).read_text(encoding="utf-8")
+
+    def test_the_offer_is_opened_as_the_device_it_is_sold_for(self):
+        self.assertIn("MOBILE_USER_AGENTS", self.source)
+        self.assertIn("iPhone", self.source)
+        self.assertIn("await use_platform_browser(page, platform)", self.source)
+
+    def test_the_header_hcaptcha_needs_is_not_dropped(self):
+        # Camoufox cannot read the compressed hCaptcha scripts.
+        self.assertIn('"Accept-Encoding": "identity"', self.source)
+        self.assertIn('"User-Agent": user_agent', self.source)
