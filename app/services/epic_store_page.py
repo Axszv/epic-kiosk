@@ -21,6 +21,13 @@ ORDER_HISTORY_REFERER = "https://accounts.epicgames.com/account/transactions?lan
 
 SWITCH_ACCOUNT_MARKERS = ("/id/login/switch-account", "/id/login/switch")
 SWITCH_CONFIRM_SELECTORS = (
+    # The "Welcome back" card lists the account as a list item that behaves
+    # like a button: `<div role="button" id="account-…" data-account-id="…">`
+    # around the avatar and the masked address. It is the control to press;
+    # `main button` used to match `Use another account` instead, which sends
+    # the run to a login form for an account it already has a session for.
+    "[data-account-id]",
+    "[role=button][id^='account-']",
     "[data-testid='switch-account-continue']",
     "button[data-testid*='continue']",
     "button:has-text('Continue')",
@@ -28,7 +35,6 @@ SWITCH_CONFIRM_SELECTORS = (
     "#continue",
     "#link-success",
     "a:has-text('Continue')",
-    "main button",
 )
 
 

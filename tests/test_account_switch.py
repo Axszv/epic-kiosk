@@ -104,6 +104,27 @@ class SwitchAccountTests(unittest.TestCase):
         self.assertFalse(run(complete_account_switch(page)))
         self.assertEqual(page.clicked, [])
 
+    def test_the_welcome_back_account_row_is_the_control_that_is_pressed(self):
+        """Run 40876818530 dumped the page and gave up on it.
+
+        The card lists the account as `<div role="button" data-account-id=…>`
+        around the avatar and the masked address — no `Continue` anywhere. The
+        old selector list ended with `main button`, which matched
+        `Use another account` and would have sent the run to a login form for
+        an account it already had a session for.
+        """
+        page = FakePage(OBSERVED, {"[data-account-id]": "continue"})
+
+        self.assertTrue(run(complete_account_switch(page)))
+        self.assertEqual(page.clicked, ["[data-account-id]"])
+        self.assertEqual(page.url, ACCOUNT_PAGE)
+
+    def test_the_catch_all_button_selector_is_gone(self):
+        self.assertNotIn("main button", epic_store_page.SWITCH_CONFIRM_SELECTORS)
+        self.assertEqual(
+            epic_store_page.SWITCH_CONFIRM_SELECTORS[0], "[data-account-id]"
+        )
+
     def test_a_page_that_is_not_the_switch_page_is_left_alone(self):
         page = FakePage(ACCOUNT_PAGE, {"button:has-text('Continue')": "continue"})
 
