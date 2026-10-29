@@ -18,6 +18,7 @@ from services.epic_store_page import (  # noqa: E402
     ORDER_HISTORY_URL,
     account_session_alive,
     store_login_state,
+    store_signed_out,
 )
 
 
@@ -121,6 +122,60 @@ class StoreLoginStateTests(unittest.TestCase):
         )
 
         self.assertFalse(run(account_session_alive(page)))
+
+
+class FakeSignInLink:
+    def __init__(self, page):
+        self.page = page
+        self.first = self
+
+    async def is_visible(self, timeout=0):
+        return self.page.sign_in_visible
+
+
+class SignInPage(FakePage):
+    def __init__(
+        self,
+        states,
+        response=None,
+        sign_in=True,
+        url="https://store.epicgames.com/en-US/p/sker-ritual-aac702",
+    ):
+        super().__init__(states, response)
+        self.sign_in_visible = sign_in
+        self.url = url
+
+    def get_by_role(self, role, name=None):
+        return FakeSignInLink(self)
+
+
+class StoreSignedOutTests(unittest.TestCase):
+    def test_a_sign_in_link_alone_does_not_mean_signed_out(self):
+        """The header paints `Sign In` before the client knows the session.
+
+        Run 40875112742 logged in, opened the `Sker Ritual` product page and
+        two seconds later reported "Store product session requires
+        reauthentication" — a working session thrown away because the header
+        had not caught up with it.
+        """
+        page = SignInPage([], FakeResponse(200, ORDER_HISTORY_URL))
+
+        self.assertFalse(run(store_signed_out(page)))
+        self.assertEqual(page.context.request.calls, 1)
+
+    def test_a_dead_session_is_still_reported_as_signed_out(self):
+        page = SignInPage(
+            [],
+            FakeResponse(401, "https://www.epicgames.com/id/login"),
+        )
+
+        self.assertTrue(run(store_signed_out(page)))
+
+    def test_a_page_without_a_sign_in_link_is_not_asked_at_all(self):
+        page = SignInPage([], sign_in=False)
+
+        self.assertFalse(run(store_signed_out(page)))
+        self.assertEqual(page.context.request.calls, 0)
 
 
 if __name__ == "__main__":

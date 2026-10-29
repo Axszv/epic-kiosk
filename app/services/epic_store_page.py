@@ -94,11 +94,26 @@ def is_login_url(url: str) -> bool:
 
 
 async def store_signed_out(page) -> bool:
+    """Whether the visitor is signed out, confirmed by the session itself.
+
+    The header paints `Sign In` before the client has fetched the auth state,
+    so a read taken right after navigation says "signed out" while the
+    session is perfectly alive: run 40875112742 lost `Sker Ritual` that way,
+    two seconds after the product page opened and long after the login had
+    succeeded. The account API answers from the session itself, so it decides
+    before the run throws a working session away.
+    """
     if is_login_url(page.url):
         return True
+    visible = False
     with suppress(Exception):
-        return await page.get_by_role("link", name=SIGN_IN_TEXT).first.is_visible()
-    return False
+        visible = await page.get_by_role("link", name=SIGN_IN_TEXT).first.is_visible()
+    if not visible:
+        return False
+    if await account_session_alive(page):
+        print("SESSION_PROBE:sign_in_link_is_a_render_race", flush=True)
+        return False
+    return True
 
 
 async def read_store_login_state(page) -> str:
