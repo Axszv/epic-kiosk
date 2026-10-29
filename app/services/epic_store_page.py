@@ -191,11 +191,76 @@ async def store_login_state(page, reloads: int = 2, wait_ms: int = 2500) -> str:
 
 
 async def product_cta(page, timeout: int = 10000):
+    """The control that buys *this* product, not an add-on beside it.
+
+    A product page repeats the same label on everything it sells: `Sker
+    Ritual` and its `Shrunken Head DLC` both say `Add to Cart`, and the DLC's
+    card can be on screen before the game's own purchase area has hydrated.
+    Choosing the first match by label alone then buys the add-on — which is
+    what happened on 2026-10-28 at 21:40 (`POST /proxy/api/cart` → 201, and
+    the cart's only line was the DLC), and a free DLC whose base game is
+    missing disables the checkout for every run that follows.
+
+    A control inside a card that links to a different product is an add-on's
+    control and is skipped. The plain label lookup stays as the fallback, so
+    a page this cannot read behaves exactly as it did before.
+    """
     # CSS/role locators pierce open shadow roots; XPath does not. Restrict the
     # text fallback to main content so global navigation cannot be selected.
     legacy = page.locator("button[data-testid='purchase-cta-button']:visible")
+    with suppress(Exception):
+        if await legacy.count():
+            candidate = legacy.first
+            await candidate.wait_for(state="visible", timeout=timeout)
+            return candidate
+
+    handle = None
+    with suppress(Exception):
+        handle = await page.evaluate_handle(
+            """(pattern) => {
+                const re = new RegExp(pattern, 'i');
+                const slug = (location.pathname.split('/p/')[1] || '')
+                    .split(/[?#]/)[0];
+                // An add-on's button sits inside a card that links to another
+                // product. Only a few levels are walked: further up is the
+                // whole page, which links everywhere.
+                const own = node => {
+                    let el = node;
+                    for (let depth = 0; el && depth < 5; depth += 1) {
+                        const link = el.querySelector
+                            ? el.querySelector("a[href*='/p/']")
+                            : null;
+                        if (link) {
+                            const href = link.getAttribute('href') || '';
+                            const other = (href.split('/p/')[1] || '')
+                                .split(/[?#]/)[0];
+                            if (other && slug && other !== slug) return false;
+                        }
+                        el = el.parentElement;
+                    }
+                    return true;
+                };
+                const buttons = Array.from(
+                    document.querySelectorAll('main button')
+                ).filter(node => node.offsetParent);
+                for (const node of buttons) {
+                    const name = (
+                        node.getAttribute('aria-label') || node.innerText || ''
+                    ).replace(/\\s+/g, ' ').trim();
+                    if (!re.test(name)) continue;
+                    if (!own(node)) continue;
+                    return node;
+                }
+                return null;
+            }""",
+            PRODUCT_CTA_TEXT.pattern,
+        )
+    element = handle.as_element() if handle is not None else None
+    if element is not None:
+        return element
+
     current = page.locator("main").get_by_role("button", name=PRODUCT_CTA_TEXT)
-    candidate = legacy.or_(current).filter(visible=True).first
+    candidate = current.filter(visible=True).first
     with suppress(Exception):
         await candidate.wait_for(state="visible", timeout=timeout)
         return candidate
