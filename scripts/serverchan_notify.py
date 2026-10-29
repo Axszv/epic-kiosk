@@ -15,6 +15,7 @@ def evidence_status_text(status: str) -> str:
         "already_owned": "已在库",
         "verified_owned": "已入库",
         "region_unavailable": "锁区跳过（未领取）",
+        "not_purchasable": "商店拒绝（前置条件缺失，未领取）",
         "checkout_submitted_unverified": "已提交但未确认入库",
     }.get(status, status)
 
@@ -157,6 +158,20 @@ def send_serverchan(title: str, content: str) -> None:
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        # `HTTP Error 400` says nothing on its own; the body says whether the
+        # sendkey was rejected, the message was too long, or the account was
+        # rate limited.
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        print(
+            f"ServerChan request failed: {exc}; body={body[:400]!r}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     except urllib.error.URLError as exc:
         print(f"ServerChan request failed: {exc}", file=sys.stderr)
         raise SystemExit(1)
