@@ -79,6 +79,10 @@ on:
         description: "openai_compatible, or gemini to use the library's own provider."
         required: false
         default: "openai_compatible"
+      list_models:
+        description: "Only list the models the gateway serves, then stop."
+        required: false
+        default: "false"
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -92,7 +96,76 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  models:
+    if: github.event.inputs.list_models == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      API_BASE_URL: ${{ secrets.CAPTCHA_API_BASE_URL || secrets.API_BASE_URL }}
+      API_KEY: ${{ secrets.CAPTCHA_API_KEY || secrets.API_KEY }}
+    steps:
+      - name: List the models the gateway serves
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          base = (os.environ.get("API_BASE_URL") or "").rstrip("/")
+          key = os.environ.get("API_KEY") or ""
+          if not base or not key:
+              raise SystemExit("API_BASE_URL / API_KEY are not configured")
+
+          roots = [base]
+          for suffix in ("/v1beta/openai", "/v1beta", "/v1", "/openai"):
+              if base.endswith(suffix):
+                  roots.append(base[: -len(suffix)])
+
+          seen = set()
+          for root in roots:
+              for path in ("/models", "/v1beta/models", "/v1/models"):
+                  url = root + path
+                  if url in seen:
+                      continue
+                  seen.add(url)
+                  request = urllib.request.Request(
+                      url,
+                      headers={
+                          "Authorization": f"Bearer {key}",
+                          "x-goog-api-key": key,
+                          "Accept": "application/json",
+                      },
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          payload = json.loads(
+                              response.read().decode("utf-8", "replace")
+                          )
+                  except urllib.error.HTTPError as err:
+                      print(f"HTTP {err.code}  {url}")
+                      continue
+                  except Exception as err:  # noqa: BLE001
+                      print(f"FAIL {type(err).__name__}  {url}")
+                      continue
+
+                  entries = payload.get("data") or payload.get("models") or []
+                  names = [
+                      str(item.get("id") or item.get("name") or "")
+                      for item in entries
+                      if isinstance(item, dict)
+                  ]
+                  names = [name for name in names if name]
+                  print(f"OK  {url}  ({len(names)} models)")
+                  for name in sorted(names):
+                      print(f"  {name}")
+                  if names:
+                      raise SystemExit(0)
+          raise SystemExit("no model list came back from any candidate endpoint")
+          PY
+
   claim:
+    if: github.event.inputs.list_models != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 330
     # The accounts run one after another in this job, the way the claim
