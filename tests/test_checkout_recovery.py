@@ -329,6 +329,51 @@ class CheckoutPlanTests(unittest.TestCase):
         self.assertIn("结账验证码未通过，重新打开结账流程", service_source)
 
 
+class ClickControlTests(unittest.TestCase):
+    def test_a_covered_purchase_control_is_pressed_with_force(self):
+        """Run 40875847206 found `Get` enabled and timed out clicking it.
+
+        The button was enabled and visible, so Playwright's actionability
+        check could only have been waiting on something lying over it. A
+        forced click goes through the overlay, and a DOM click goes through
+        even that.
+        """
+        import asyncio
+        import os
+        import sys
+        from unittest import mock
+
+        for path in (str(ROOT / "app"), str(ROOT)):
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        env = {
+            "EPIC_EMAIL": "kiosk@example.com",
+            "EPIC_PASSWORD": "secret",
+            "GEMINI_API_KEY": "key",
+        }
+        with mock.patch.dict(os.environ, env):
+            from app.services.epic_games_service import EpicGames
+
+        class Control:
+            def __init__(self):
+                self.calls = []
+
+            async def click(self, timeout=0, force=False):
+                self.calls.append(("click", force))
+                if not force:
+                    raise RuntimeError("covered by an overlay")
+
+            async def evaluate(self, script):
+                self.calls.append(("evaluate", script))
+
+        games = EpicGames.__new__(EpicGames)
+        control = Control()
+
+        asyncio.run(games._click_control(object(), control, "sker-ritual"))
+
+        self.assertEqual(control.calls, [("click", False), ("click", True)])
+
+
 class CartPurgeTests(unittest.TestCase):
     def test_the_cart_is_emptied_before_anything_is_added(self):
         """A cart left over from an earlier run blocks every later one.

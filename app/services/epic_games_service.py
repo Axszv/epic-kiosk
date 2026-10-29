@@ -1715,7 +1715,9 @@ class EpicGames:
                         )
                         continue
 
-                await purchase_btn.click()
+                await self._click_control(
+                    page, purchase_btn, promotion.namespace
+                )
                 await page.wait_for_timeout(3000)
                 if is_login_url(page.url):
                     raise StoreLoginRequired()
@@ -1770,6 +1772,33 @@ class EpicGames:
             # ------------------------------------------------------------
 
         return has_pending_cart_items
+
+    async def _click_control(self, page: Page, control, namespace: str) -> None:
+        """Press a store control whatever is lying on top of it.
+
+        A plain click waits for the element to be visible, stable and
+        unobstructed, and an overlay turns that wait into thirty seconds of
+        nothing: run 40875847206 found `Get` enabled on `Sker Ritual` and then
+        timed out clicking it. The click is retried with force and finally
+        dispatched in the page; if all three fail, the page is saved so the
+        next run can see what was in the way.
+        """
+        last_error = None
+        for how, click in (
+            ("a plain click", lambda: control.click(timeout=10000)),
+            ("a forced click", lambda: control.click(timeout=5000, force=True)),
+            ("a DOM click", lambda: control.evaluate("node => node.click()")),
+        ):
+            try:
+                await click()
+                return
+            except Exception as err:
+                last_error = err
+                logger.warning(f"购买按钮拒绝{how}: {err}")
+        await self._save_debug_page(page, f"click_failed_{namespace}")
+        raise TimeoutError(
+            f"could not press the purchase control for {namespace}: {last_error}"
+        )
 
     CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")
 
