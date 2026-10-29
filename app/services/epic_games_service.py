@@ -1919,6 +1919,10 @@ class EpicGames:
                     + "; ".join((line.get("text") or "")[:60] for line in lines)
                 )
                 return False
+            logger.info(
+                f"🛒 移除购物车残留 {removed} 项: "
+                + "; ".join((line.get("text") or "")[:60] for line in lines)
+            )
             await page.wait_for_timeout(1500)
         return not await self._cart_lines(page)
 
