@@ -329,6 +329,70 @@ class CheckoutPlanTests(unittest.TestCase):
         self.assertIn("结账验证码未通过，重新打开结账流程", service_source)
 
 
+class CartPurgeTests(unittest.TestCase):
+    def test_the_cart_is_emptied_before_anything_is_added(self):
+        """A cart left over from an earlier run blocks every later one.
+
+        Run 40724013740 read `View in Cart` on `Sker Ritual` because the cart
+        still held `Shrunken Head DLC` from a previous attempt. `_empty_cart`
+        keeps free lines, so the DLC never left and the checkout stayed
+        disabled — while `main`, on the very same models and an empty cart,
+        claimed both games.
+        """
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def collect_weekly_games")
+        body = source[start: start + 1200]
+
+        self.assertLess(
+            body.index("_clear_cart(self.page)"),
+            body.index("add_promotion_to_cart"),
+            "the cart has to be emptied before the promotions are added",
+        )
+        self.assertIn("def _clear_cart", source)
+        self.assertIn("def _cart_lines", source)
+        self.assertIn("def _remove_cart_line", source)
+        # Free lines are removed too, not only the paid ones.
+        self.assertIn("=== 'remove'", source)
+
+    def test_view_in_cart_is_checked_against_the_cart_itself(self):
+        """The CTA is Epic's cart affordance, not a statement about this game."""
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        start = source.index('if "CART" in btn_text_upper:')
+        branch = source[start: start + 1400]
+
+        self.assertIn("await self._cart_holds(promotion)", branch)
+        self.assertIn("_clear_cart(page)", branch)
+
+    def test_a_promotion_url_yields_its_store_slug(self):
+        import os
+        import sys
+        from unittest import mock
+
+        for path in (str(ROOT / "app"), str(ROOT)):
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        env = {
+            "EPIC_EMAIL": "kiosk@example.com",
+            "EPIC_PASSWORD": "secret",
+            "GEMINI_API_KEY": "key",
+        }
+        with mock.patch.dict(os.environ, env):
+            from app.services.epic_games_service import EpicGames
+
+        class Promotion:
+            url = "https://store.epicgames.com/en-US/p/sker-ritual-aac702"
+
+        class Query:
+            url = "https://store.epicgames.com/en-US/p/sker-ritual-aac702?x=1"
+
+        class Missing:
+            url = "https://store.epicgames.com/en-US/free-games"
+
+        self.assertEqual(EpicGames._promotion_slug(Promotion()), "sker-ritual-aac702")
+        self.assertEqual(EpicGames._promotion_slug(Query()), "sker-ritual-aac702")
+        self.assertEqual(EpicGames._promotion_slug(Missing()), "")
+
+
 class CartWarningsTests(unittest.TestCase):
     def test_the_cart_says_why_it_cannot_be_checked_out(self):
         """Epic renders its verdict in `cart-warnings`; reading it is the answer.

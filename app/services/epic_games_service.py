@@ -1640,11 +1640,29 @@ class EpicGames:
                 continue
 
             if "CART" in btn_text_upper:
-                # `View in Cart` and `In Cart` mean the game is already in the
-                # cart. Clicking them navigates away from the shelf, which is
-                # what run 40700908238 did before spending twenty-four minutes
-                # in the checkout, so the run goes straight to the cart.
-                logger.info(f"🛒 游戏已在购物车，直接结账: {btn_text!r}")
+                # `View in Cart` and `In Cart` are Epic's cart affordance, not
+                # proof that this game is the thing in the cart: run 40724013740
+                # read `View in Cart` on `Sker Ritual` while the cart held
+                # `Shrunken Head DLC`, so the game was never added and the
+                # checkout stayed disabled by a missing prerequisite. The cart
+                # is read before it is trusted.
+                if await self._cart_holds(promotion):
+                    logger.info(f"🛒 游戏已在购物车，直接结账: {btn_text!r}")
+                    has_pending_cart_items = True
+                    continue
+                logger.warning(
+                    f"⚠️ 购物车里不是这个游戏，清空后重新加购: {promotion.title}"
+                )
+                await self._clear_cart(page)
+                await page.goto(url, wait_until="load")
+                await page.wait_for_timeout(3000)
+                if await store_signed_out(page):
+                    raise StoreLoginRequired()
+                purchase_btn = await product_cta(page)
+                if purchase_btn is not None:
+                    with suppress(Exception):
+                        await purchase_btn.click()
+                    await page.wait_for_timeout(2500)
                 has_pending_cart_items = True
                 continue
 
@@ -1792,6 +1810,117 @@ class EpicGames:
                 "[data-testid='cart-warnings']"
             ).first.inner_text(timeout=2000)
         return " ".join((text or "").split())
+
+    @staticmethod
+    def _promotion_slug(promotion) -> str:
+        """The store slug of a promotion: `/p/sker-ritual-aac702` → its tail."""
+        path = (getattr(promotion, "url", "") or "").split("?")[0]
+        return path.split("/p/", 1)[1].strip("/") if "/p/" in path else ""
+
+    async def _cart_lines(self, page: Page | None = None) -> list[dict]:
+        """What the cart actually holds, one row per line item.
+
+        Each line is an `offer-card-layout-wrapper` whose first `/p/` link
+        names the product. Reading that is the only honest answer to "is the
+        game I want in the cart": the product page shows `View in Cart` for a
+        cart that holds something else entirely — run 40724013740 saw it on
+        `Sker Ritual` while the cart held `Shrunken Head DLC`, so the game was
+        never added and the checkout stayed disabled by a missing
+        prerequisite.
+        """
+        page = page or self.page
+        lines = []
+        with suppress(Exception):
+            lines = await page.evaluate(
+                """() => Array.from(
+                        document.querySelectorAll(
+                            "[data-testid='offer-card-layout-wrapper']"
+                        )
+                    ).map(card => {
+                        const link = card.querySelector("a[href*='/p/']");
+                        const href = link ? link.getAttribute('href') : '';
+                        const slug = href
+                            ? href.split('/p/')[1].split(/[?#]/)[0]
+                            : '';
+                        return {
+                            slug,
+                            text: (card.innerText || '')
+                                .replace(/\\s+/g, ' ').trim().slice(0, 160),
+                        };
+                    })"""
+            )
+        return lines or []
+
+    async def _cart_holds(self, promotion, page: Page | None = None) -> bool:
+        """Whether this promotion is one of the cart's own line items."""
+        slug = self._promotion_slug(promotion)
+        if not slug:
+            return False
+        return any(
+            slug in (line.get("slug") or "")
+            for line in await self._cart_lines(page)
+        )
+
+    async def _remove_cart_line(
+        self, slug: str, page: Page | None = None
+    ) -> bool:
+        page = page or self.page
+        clicked = False
+        with suppress(Exception):
+            clicked = await page.evaluate(
+                """(slug) => {
+                    const cards = Array.from(document.querySelectorAll(
+                        "[data-testid='offer-card-layout-wrapper']"
+                    ));
+                    const card = slug
+                        ? cards.find(node => {
+                            const link = node.querySelector("a[href*='/p/']");
+                            const href = link ? link.getAttribute('href') : '';
+                            return href.includes('/p/' + slug);
+                          })
+                        : cards[0];
+                    if (!card) return false;
+                    const button = Array.from(card.querySelectorAll('button'))
+                        .find(node => (node.innerText || '')
+                            .replace(/\\s+/g, ' ').trim().toLowerCase()
+                            === 'remove');
+                    if (!button) return false;
+                    button.click();
+                    return true;
+                }""",
+                slug,
+            )
+        return bool(clicked)
+
+    async def _clear_cart(self, page: Page | None = None) -> bool:
+        """Empty the cart of everything, free lines included.
+
+        `_empty_cart` only moves *paid* lines to the wishlist, which is how a
+        free `Shrunken Head DLC` outlived every run that tried to check out:
+        Epic refuses a DLC whose base game is missing, so the cart blocked
+        itself permanently. Whatever an earlier run left behind is removed
+        here, before anything is added.
+        """
+        page = page or self.page
+        await page.goto(URL_CART, wait_until="domcontentloaded")
+        await page.wait_for_timeout(2000)
+        for _ in range(12):
+            lines = await self._cart_lines(page)
+            if not lines:
+                return True
+            removed = 0
+            for line in lines:
+                if await self._remove_cart_line(line.get("slug") or "", page):
+                    removed += 1
+                await page.wait_for_timeout(600)
+            if not removed:
+                logger.warning(
+                    "清空购物车失败: "
+                    + "; ".join((line.get("text") or "")[:60] for line in lines)
+                )
+                return False
+            await page.wait_for_timeout(1500)
+        return not await self._cart_lines(page)
 
     async def _cart_item_count(self) -> int:
         count = 0
@@ -1954,6 +2083,13 @@ class EpicGames:
 
     @retry(retry=retry_if_exception_type(TimeoutError), stop=stop_after_attempt(2), reraise=True)
     async def collect_weekly_games(self, promotions: List[PromotionGame]):
+        # Whatever an earlier run left in the cart is removed before anything
+        # is added. A free `Shrunken Head DLC` from a previous attempt made
+        # Epic refuse the checkout outright, and `_empty_cart` kept it because
+        # it only clears paid lines — which is why every run after the first
+        # failed on the same cart while `main` sailed through with an empty
+        # one.
+        await self._clear_cart(self.page)
         has_cart_items = await self.add_promotion_to_cart(self.page, promotions)
 
         if has_cart_items:
