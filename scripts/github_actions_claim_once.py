@@ -91,6 +91,29 @@ MOBILE_RESULT_RE = re.compile(r"MOBILE_RESULT:([^:\r\n]+):(.*):([a-z_]+)\s*$")
 # `region_unavailable` and `not_purchasable` are the store refusing the
 # promotion for this account, not the run failing to claim it: a game the
 # account's country cannot buy, or a DLC whose base game it does not own.
+# An account is attempted more than once, and every attempt reports the same
+# games again. A later attempt that merely fails to find a purchase control
+# must not erase the ownership an earlier one confirmed: run 40744596200
+# claimed both games, then failed with "Missing strict mobile ownership
+# evidence" because its last attempt had ended on `no_purchase_cta` — the
+# state an owned game shows once the store stops offering it.
+EVIDENCE_RANK = {
+    "verified_owned": 4,
+    "already_owned": 4,
+    "region_unavailable": 3,
+    "not_purchasable": 3,
+    "no_purchase_cta": 1,
+    "cta_disabled": 1,
+    "login_required": 0,
+    "unknown": -1,
+}
+
+
+def _outranks(status: str, current: str | None) -> bool:
+    """Whether `status` says more about ownership than `current` does."""
+    return EVIDENCE_RANK.get(status, 2) > EVIDENCE_RANK.get(current or "unknown", -1)
+
+
 SUCCESS_EVIDENCE_STATUSES = {
     "already_owned", "verified_owned", "region_unavailable", "not_purchasable"
 }
@@ -219,12 +242,13 @@ def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
             if title:
                 if title not in promotions:
                     promotions.append(title)
-                ensure(title).update(
-                    {
-                        "status": status,
-                        "evidence": f"DESKTOP_RESULT:{title}:{status}",
-                    }
-                )
+                if _outranks(status, ensure(title).get("status")):
+                    ensure(title).update(
+                        {
+                            "status": status,
+                            "evidence": f"DESKTOP_RESULT:{title}:{status}",
+                        }
+                    )
             continue
 
         cta_match = OWNERSHIP_CTA_RE.search(line)
@@ -259,7 +283,10 @@ def parse_mobile_evidence(output: str) -> dict[str, dict[str, dict[str, str]]]:
         platform, title, status = (part.strip() for part in match.groups())
         if not platform or not title:
             continue
-        evidence.setdefault(platform, {})[title] = {
+        current = evidence.setdefault(platform, {}).get(title)
+        if current and not _outranks(status, current.get("status")):
+            continue
+        evidence[platform][title] = {
             "status": status,
             "evidence": f"MOBILE_RESULT:{platform}:{title}:{status}",
         }

@@ -129,6 +129,40 @@ class MobileEvidenceTests(unittest.TestCase):
             "region_unavailable",
         )
 
+    def test_a_later_attempt_cannot_erase_confirmed_ownership(self):
+        """Run 40744596200 claimed both games and still reported failure.
+
+        The account was attempted three times. The first attempts confirmed
+        `verified_owned`; the last one ended on `no_purchase_cta`, because an
+        owned game stops offering a purchase control. The last line won, so
+        the run reported "Missing strict mobile ownership evidence" for games
+        it had just bought — and the receipt arrived anyway.
+        """
+        output = "\n".join(
+            [
+                "MOBILE_RESULT:Android:Home - A Unique Horror Adventure:verified_owned",
+                "MOBILE_RESULT:Android:Home - A Unique Horror Adventure:no_purchase_cta",
+                "MOBILE_RESULT:iOS:Home - A Unique Horror Adventure:verified_owned",
+                "MOBILE_RESULT:iOS:Home - A Unique Horror Adventure:no_purchase_cta",
+            ]
+        )
+
+        evidence = claim_once.parse_mobile_evidence(output)
+
+        offers = [
+            {"platform": "Android", "title": "Home - A Unique Horror Adventure"},
+            {"platform": "iOS", "title": "Home - A Unique Horror Adventure"},
+        ]
+        self.assertEqual(
+            evidence["Android"]["Home - A Unique Horror Adventure"]["status"],
+            "verified_owned",
+        )
+        self.assertEqual(
+            evidence["iOS"]["Home - A Unique Horror Adventure"]["status"],
+            "verified_owned",
+        )
+        self.assertEqual(claim_once.missing_mobile_evidence(offers, evidence), [])
+
     def test_unverified_checkout_is_missing_strict_evidence(self):
         offers = [{"platform": "Android", "title": "Weekly Game"}]
         evidence = {
