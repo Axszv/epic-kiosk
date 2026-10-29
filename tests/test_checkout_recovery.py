@@ -184,6 +184,22 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertNotIn("retried_after_explicit_captcha_rejection", source)
         self.assertEqual(source.count("await epic._handle_instant_checkout(page)"), 1)
 
+    def test_a_second_mobile_attempt_starts_a_new_transaction(self):
+        """A spent widget cannot answer twice; a reload can.
+
+        The rule above is that a rejected round is never re-submitted. The
+        offer page is opened again instead, so the second attempt gets a
+        widget with a clean answer — the same move the desktop checkout makes
+        when it reopens after a rejection. Runs 40883991382 and 40904600195
+        both lost mobile offers to a single rejected round.
+        """
+        source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("reopened_after_rejected_checkout", source)
+        self.assertIn('await page.goto(url, wait_until="load")', source)
+
     def test_checkout_scans_rendered_buttons_before_selector_fallbacks(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _active_purchase_container")

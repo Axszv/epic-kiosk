@@ -189,6 +189,16 @@ async def use_platform_browser(page, platform: str) -> bool:
     return applied
 
 
+async def _submit_mobile_checkout(page, epic, result: dict) -> bool:
+    """Submit the checkout once, recording how it went."""
+    try:
+        result["checkout_submitted"] = await epic._handle_instant_checkout(page)
+    except Exception as err:
+        result["notes"].append(f"checkout_error:{type(err).__name__}")
+        return False
+    return bool(result["checkout_submitted"])
+
+
 async def collect_mobile_offer(page, offer: dict) -> dict:
     platform = str(offer.get("platform") or "Mobile")
     title = str(offer.get("title") or "Unknown mobile offer")
@@ -270,10 +280,7 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         if await epic._handle_device_not_supported_modal(page):
             result["notes"].append("continued_past_device_modal")
 
-    try:
-        result["checkout_submitted"] = await epic._handle_instant_checkout(page)
-    except Exception as err:
-        result["notes"].append(f"checkout_error:{type(err).__name__}")
+    await _submit_mobile_checkout(page, epic, result)
 
     # A completed checkout can take several seconds to reach the product page.
     # Refresh for evidence without submitting another order.
@@ -283,6 +290,28 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         result["status"] = "verified_owned"
         emit_result(result)
         return result
+
+    if not result["checkout_submitted"] and not is_login_url(page.url):
+        # A rejected round leaves that widget holding a wrong answer, so a
+        # second attempt has to be a new transaction — the page is opened
+        # again and the claim clicked again, never the spent widget re-submitted.
+        logger.warning(f"移动端换新事务重试领取: {platform}:{title}")
+        await page.goto(url, wait_until="load")
+        await page.wait_for_timeout(3000)
+        retry_cta = await product_cta(page)
+        if retry_cta is not None and not await retry_cta.is_disabled():
+            await retry_cta.click()
+            await page.wait_for_timeout(3000)
+            with suppress(Exception):
+                await epic._handle_device_not_supported_modal(page)
+            result["notes"].append("reopened_after_rejected_checkout")
+            await _submit_mobile_checkout(page, epic, result)
+            owned_cta = await wait_for_mobile_ownership(page)
+            if owned_cta is not None:
+                result["final_cta"] = owned_cta
+                result["status"] = "verified_owned"
+                emit_result(result)
+                return result
 
     final_text = await body_text(page)
     result["final_buttons"] = await button_texts(page)
