@@ -1771,28 +1771,6 @@ class EpicGames:
 
         return has_pending_cart_items
 
-    async def _empty_cart(self, page: Page, wait_rerender: int = 30) -> bool | None:
-        has_paid_free = False
-        try:
-            cards = await page.query_selector_all("//div[@data-testid='offer-card-layout-wrapper']")
-            for card in cards:
-                is_free = await card.query_selector("//span[text()='Free']")
-                if not is_free:
-                    has_paid_free = True
-                    wishlist_btn = await card.query_selector(
-                        "//button//span[text()='Move to wishlist']"
-                    )
-                    await wishlist_btn.click()
-
-            if has_paid_free and wait_rerender:
-                wait_rerender -= 1
-                await page.wait_for_timeout(2000)
-                return await self._empty_cart(page, wait_rerender)
-            return True
-        except TimeoutError as err:
-            logger.warning(f"清空购物车失败: {err}")
-            return False
-
     CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")
 
     async def _cart_warnings(self) -> str:
