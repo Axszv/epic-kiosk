@@ -275,6 +275,17 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         result["status"] = "checkout_submitted_unverified"
     else:
         result["status"] = "web_claim_not_available"
+        # Nothing proves what the page offered instead, and the page dump is
+        # 100 MB away in the artifact. The controls and the first line of the
+        # page say it in the log.
+        print(
+            f"MOBILE_UNCLAIMED:{platform}:{title}:"
+            f"url={page.url}:"
+            f"buttons={result.get('final_buttons')}:"
+            f"cta={result.get('final_cta')}:"
+            f"text={' '.join(final_text.split())[:200]!r}",
+            flush=True,
+        )
 
     emit_result(result)
     return result

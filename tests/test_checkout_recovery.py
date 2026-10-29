@@ -482,3 +482,29 @@ class CartRegionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MobileObservabilityTests(unittest.TestCase):
+    """The mobile channel has to say what it saw, in the run log.
+
+    `MOBILE_OFFER_URL` and `MOBILE_CTA` are INFO lines, and the console sink
+    only lets a keyword list through — so every mobile run was a black box in
+    the workflow log while the page dumps sat in a 100 MB artifact that takes
+    longer to download than the run itself.
+    """
+
+    def test_mobile_progress_is_not_filtered_out_of_the_console(self):
+        utils = (ROOT / "app" / "utils.py").read_text(encoding="utf-8")
+        start = utils.index("CONSOLE_KEYWORDS = [")
+        keywords = utils[start: utils.index("]", start)]
+
+        self.assertIn("MOBILE_OFFER_URL", keywords)
+        self.assertIn("MOBILE_CTA", keywords)
+
+    def test_an_unclaimed_mobile_offer_names_what_the_page_offered(self):
+        source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("MOBILE_UNCLAIMED:", source)
+        self.assertIn("buttons={result.get('final_buttons')}", source)
