@@ -142,53 +142,6 @@ def emit_order_check(phase: str, offer: dict, status: str) -> None:
     logger.info(marker)
 
 
-MOBILE_USER_AGENTS = {
-    "iOS": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
-        "Mobile/15E148 Safari/604.1"
-    ),
-    "Android": (
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
-    ),
-}
-
-MOBILE_VIEWPORTS = {
-    "iOS": {"width": 430, "height": 932},
-    "Android": {"width": 412, "height": 915},
-}
-
-
-async def use_platform_browser(page, platform: str) -> bool:
-    """Open a mobile offer as the device it is sold for.
-
-    Epic refuses an iOS or Android offer on a desktop browser with "Device
-    not supported — This product is not compatible with your current device",
-    and the claim stops there: run 40883991382 lost `Home` on iOS that way,
-    and every iOS offer of run 40904600195 ended `web_claim_not_available`.
-    The page is opened with the platform's own user agent and viewport
-    instead, so the Store sees a phone.
-
-    `Accept-Encoding: identity` is kept: Camoufox fails to read the
-    compressed hCaptcha scripts without it.
-    """
-    user_agent = MOBILE_USER_AGENTS.get(platform)
-    if not user_agent:
-        return False
-    applied = False
-    with suppress(Exception):
-        await page.set_extra_http_headers(
-            {"Accept-Encoding": "identity", "User-Agent": user_agent}
-        )
-        applied = True
-    with suppress(Exception):
-        await page.set_viewport_size(MOBILE_VIEWPORTS[platform])
-        applied = True
-    print(f"MOBILE_BROWSER:{platform}:ua_applied={applied}", flush=True)
-    return applied
-
-
 async def _submit_mobile_checkout(page, epic, result: dict) -> bool:
     """Submit the checkout once, recording how it went."""
     try:
@@ -215,7 +168,6 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
     }
 
     logger.info(f"MOBILE_OFFER_URL:{platform}:{title}:{url}")
-    await use_platform_browser(page, platform)
     await page.goto(url, wait_until="load")
     await page.wait_for_timeout(3000)
     await save_debug_page(page, f"mobile_initial_{suffix}")
@@ -461,9 +413,4 @@ async def collect_mobile_offers(
         if identity:
             completed_by_identity[identity] = result
         results.append(result)
-    # The offers are the last thing a run does, but the page outlives them in
-    # a process that keeps going: the phone user agent is put back so nothing
-    # after this reads the Store as an iPhone.
-    with suppress(Exception):
-        await page.set_extra_http_headers({"Accept-Encoding": "identity"})
     return results
