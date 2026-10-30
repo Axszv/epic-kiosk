@@ -549,3 +549,24 @@ class MobilePlatformBrowserTests(unittest.TestCase):
         # Camoufox cannot read the compressed hCaptcha scripts.
         self.assertIn('"Accept-Encoding": "identity"', self.source)
         self.assertIn('"User-Agent": user_agent', self.source)
+
+
+class GatewayUrlTests(unittest.TestCase):
+    """The base URL may already carry the gateway's version.
+
+    The billed gateway's base ends with `/v1`, and `API_VERSION` is
+    `v1beta/openai`, so the two were concatenated into
+    `POST /v1/v1beta/openai/chat/completions` and every captcha call came back
+    404 (run 41065132086).
+    """
+
+    def setUp(self):
+        self.source = (ROOT / "app" / "settings.py").read_text(encoding="utf-8")
+
+    def test_a_versioned_base_does_not_get_a_second_version(self):
+        self.assertIn('re.fullmatch(r"v\d+[a-z]*", tail)', self.source)
+        self.assertIn("api_version.startswith(\"v\")", self.source)
+
+    def test_an_exactly_versioned_base_is_still_unwrapped(self):
+        # Z.AI serves the OpenAI shape under /v4, so the older rule stays.
+        self.assertIn("if api_version and base_url.endswith('/' + api_version):", self.source)
