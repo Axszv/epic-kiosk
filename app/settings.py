@@ -345,6 +345,16 @@ def _apply_openai_compatible_patch():
         api_version = (os.getenv("API_VERSION", "v1") or "v1").strip().strip("/")
         if api_version and base_url.endswith('/' + api_version):
             base_url = base_url[: -(len(api_version) + 1)]
+        else:
+            # A base that already ends with a version segment must not be
+            # given a second one. The billed gateway's base ends with `/v1`,
+            # so `/v1` + `v1beta/openai` was asked for as
+            # `POST /v1/v1beta/openai/chat/completions` and every captcha call
+            # came back 404 (run 41065132086). The version belongs to the
+            # gateway, not to the base.
+            head, _, tail = base_url.rpartition('/')
+            if head and re.fullmatch(r"v\d+[a-z]*", tail) and api_version.startswith("v"):
+                base_url = head
 
         logger.info(f"🚀 OpenAI 兼容补丁加载中... | 地址: {base_url} | 版本: {api_version}")
 
