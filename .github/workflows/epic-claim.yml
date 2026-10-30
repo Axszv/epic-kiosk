@@ -94,7 +94,7 @@ jobs:
       # what `models/agnes-3.0-flash is not found for API version v1main`
       # said on run 40916650290. The names live in repository variables so
       # the next rename costs no commit.
-      CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || vars.CAPTCHA_MODEL || 'gemini-3.5-flash' }}
+      CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || vars.CAPTCHA_MODEL || 'gemini-3.5-flash-lite' }}
       CAPTCHA_MODEL_FALLBACK: ${{ github.event.inputs.captcha_model_fallback || vars.CAPTCHA_MODEL_FALLBACK || 'gemini-3.5-flash-lite' }}
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
