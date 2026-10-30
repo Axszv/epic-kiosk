@@ -28,6 +28,23 @@ RUNTIME_DIR = VOLUMES_DIR.joinpath("runtime")
 RECORD_DIR = VOLUMES_DIR.joinpath("record")
 
 
+_CODE_FENCE = re.compile(r"^\s*```[A-Za-z0-9_+-]*\s*\r?\n(.*?)\r?\n?```\s*$", re.S)
+
+
+def strip_code_fence(text: str) -> str:
+    """Return the payload of a fenced block when the whole answer is one.
+
+    A vision model often answers a JSON request inside a ```json fence. The
+    library strips it in its own Gemini provider, but the OpenAI-compatible
+    layer hands the text straight to the parser, which then fails on the
+    fence and loses the round.
+    """
+    if not text:
+        return text
+    found = _CODE_FENCE.match(text)
+    return found.group(1).strip() if found else text
+
+
 def extract_chat_completion_text(result: dict) -> str:
     """Extract text from an OpenAI-compatible chat completion response."""
     choices = result.get("choices") or []
@@ -35,12 +52,14 @@ def extract_chat_completion_text(result: dict) -> str:
     message = first_choice.get("message") or {}
     content = message.get("content")
     if isinstance(content, str):
-        return content
+        return strip_code_fence(content)
     if isinstance(content, list):
-        return "".join(
-            str(part.get("text", ""))
-            for part in content
-            if isinstance(part, dict)
+        return strip_code_fence(
+            "".join(
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict)
+            )
         )
     return ""
 
@@ -290,6 +309,23 @@ def _apply_openai_compatible_patch():
         logger.warning("⚠️ 未配置 API_KEY，请从 https://cloud.siliconflow.cn/i/OVI2n57p 获取 SiliconFlow API Key")
         return
 
+    # hcaptcha-challenger ships with Gemini as its own provider, and its
+    # default model is the strongest vision model the library knows about.
+    # The compatible layer exists for gateways that only speak the OpenAI
+    # protocol; when a Gemini key is present the library is left to use it.
+    if API_PROVIDER.strip().lower() == "gemini":
+        gemini_key = settings.GEMINI_API_KEY
+        value = (
+            gemini_key.get_secret_value()
+            if hasattr(gemini_key, "get_secret_value")
+            else str(gemini_key or "")
+        )
+        if value and value.strip() and value.strip() != "not_used":
+            logger.info("🎯 使用原生 Gemini 通道（跳过 OpenAI 兼容补丁）")
+            return
+        logger.warning(
+            "API_PROVIDER=gemini 但没有可用的 GEMINI_API_KEY，回退到 OpenAI 兼容通道"
+        )
     try:
         from google import genai
         from google.genai import types
@@ -302,10 +338,25 @@ def _apply_openai_compatible_patch():
             api_key = str(settings.API_KEY)
 
         base_url = settings.API_BASE_URL.rstrip('/')
-        if base_url.endswith('/v1'):
-            base_url = base_url[:-3]
+        # The API version is part of the gateway's path, not a constant: Z.AI
+        # serves the same OpenAI-compatible shape under `/v4`, so a hardcoded
+        # `/v1` asked it for `/v4/v1/chat/completions` and every call came
+        # back 404 (run 40617588808).
+        api_version = (os.getenv("API_VERSION", "v1") or "v1").strip().strip("/")
+        if api_version and base_url.endswith('/' + api_version):
+            base_url = base_url[: -(len(api_version) + 1)]
+        else:
+            # A base that already ends with a version segment must not be
+            # given a second one. The billed gateway's base ends with `/v1`,
+            # so `/v1` + `v1beta/openai` was asked for as
+            # `POST /v1/v1beta/openai/chat/completions` and every captcha call
+            # came back 404 (run 41065132086). The version belongs to the
+            # gateway, not to the base.
+            head, _, tail = base_url.rpartition('/')
+            if head and re.fullmatch(r"v\d+[a-z]*", tail) and api_version.startswith("v"):
+                base_url = head
 
-        logger.info(f"🚀 OpenAI 兼容补丁加载中... | 地址: {base_url}")
+        logger.info(f"🚀 OpenAI 兼容补丁加载中... | 地址: {base_url} | 版本: {api_version}")
 
         # ==========================================
         # 辅助函数：将 Gemini contents 转换为 OpenAI messages
@@ -454,7 +505,7 @@ def _apply_openai_compatible_patch():
             注意：不使用 response_format，因为部分视觉模型不支持
             """
             await wait_for_model_slot()
-            url = f"{base_url}/v1/chat/completions"
+            url = f"{base_url}/{api_version}/chat/completions"
 
             headers = {
                 "Content-Type": "application/json",
@@ -509,13 +560,24 @@ JSON Schema:
 
             if settings.API_SERVICE_TIER:
                 payload["service_tier"] = settings.API_SERVICE_TIER
-            if enable_thinking is not None:
+            # `chat_template_kwargs` is a thinking switch of the gateways that
+            # accept it. Google's OpenAI-compatible endpoint rejects the whole
+            # request over it, and a rejected call still spends a request of a
+            # 500-a-day allowance, so it is only sent when the gateway takes
+            # it.
+            if enable_thinking is not None and os.getenv(
+                "API_SEND_THINKING_KWARG", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"}:
                 payload["chat_template_kwargs"] = {
                     "enable_thinking": enable_thinking,
                 }
 
             retryable_statuses = {408, 409, 429, 500, 502, 503, 504}
             max_attempts = int(os.getenv("API_MAX_RETRIES", "3"))
+            # A capacity refusal is not a rate limit: Z.AI answers `1305` for
+            # minutes at a time on its free vision model (run 40620943997 saw
+            # it 180 times), and an eight second pause never outlasts it.
+            backoff_cap = float(os.getenv("API_RETRY_BACKOFF_MAX", "8"))
             for attempt in range(1, max_attempts + 1):
                 try:
                     async with httpx.AsyncClient(timeout=settings.RESPONSE_TIMEOUT) as client:
@@ -543,11 +605,27 @@ JSON Schema:
                         logger.warning(
                             f"{error_msg}; retrying attempt {attempt}/{max_attempts}"
                         )
-                        await asyncio.sleep(min(2 * attempt, 8))
+                        await asyncio.sleep(min(2 * attempt, backoff_cap))
                         continue
 
                     body_preview = response.text[:500].replace("\n", " ")
                     error_msg = f"API call failed: {response.status_code} - {body_preview}"
+                    # `chat_template_kwargs` is a thinking switch of the
+                    # gateways that accept it. Google's OpenAI-compatible
+                    # endpoint refuses the whole request with "Unknown name
+                    # chat_template_kwargs", so the field is dropped and the
+                    # same request is sent again instead of losing the round.
+                    if (
+                        response.status_code == 400
+                        and "chat_template_kwargs" in response.text
+                        and "chat_template_kwargs" in payload
+                    ):
+                        logger.warning(
+                            "Gateway does not accept chat_template_kwargs; "
+                            "sending the request without it"
+                        )
+                        payload.pop("chat_template_kwargs", None)
+                        continue
                     if response.status_code not in retryable_statuses or attempt == max_attempts:
                         logger.error(f"API_ERROR:{error_msg}")
                         raise Exception(error_msg)
@@ -562,7 +640,7 @@ JSON Schema:
                         raise Exception(error_msg) from exc
                     logger.warning(f"{error_msg}; retrying attempt {attempt}/{max_attempts}")
 
-                await asyncio.sleep(min(2 * attempt, 8))
+                await asyncio.sleep(min(2 * attempt, backoff_cap))
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(url, headers=headers, json=payload)
