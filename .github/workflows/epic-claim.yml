@@ -158,7 +158,30 @@ jobs:
               )
               try:
                   with urllib.request.urlopen(request, timeout=60) as response:
-                      return f"OK    {model}  (HTTP {response.status})"
+                      payload = json.loads(
+                          response.read().decode("utf-8", "replace")
+                      )
+                      # A gateway may answer 200 for a name it does not serve
+                      # and quietly route the request to its default. The
+                      # `model` field is what actually answered.
+                      answered = str(payload.get("model") or "")
+                      content = ""
+                      try:
+                          content = (
+                              payload["choices"][0]["message"]["content"] or ""
+                          )
+                      except Exception:  # noqa: BLE001
+                          pass
+                      verdict = (
+                          "OK   "
+                          if answered == model
+                          else "ALIAS"
+                      )
+                      return (
+                          f"{verdict} {model}  (HTTP {response.status}, "
+                          f"answered={answered!r}, "
+                          f"content={' '.join(content.split())[:40]!r})"
+                      )
               except urllib.error.HTTPError as err:
                   detail = err.read().decode("utf-8", "replace")
                   return f"HTTP {err.code}  {model}  {detail[:120]}"
@@ -185,9 +208,6 @@ jobs:
           root, path = chosen
           print(f"USING {endpoint(root, path)}")
           for model in CANDIDATES:
-              if model == control:
-                  print(f"OK    {model}  (control)")
-                  continue
               print(probe(endpoint(root, path), model))
           PY
 
