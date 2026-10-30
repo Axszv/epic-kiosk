@@ -263,7 +263,12 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         return result
 
     result["attempted_claim"] = True
-    await cta.click()
+    # The claim control sits in the same kind of sticky header the desktop
+    # `Get` does, and an overlay turns a plain click into thirty seconds of
+    # nothing: run 41073353234 lost both mobile offers to
+    # `ElementHandle.click: Timeout 30000ms exceeded`. The same three-step
+    # press the desktop uses is used here.
+    await EpicGames(page)._click_control(page, cta, f"{platform}-{title}")
     with suppress(PlaywrightTimeoutError):
         await page.wait_for_url(is_login_url, timeout=15000)
     await page.wait_for_timeout(3000)
@@ -300,7 +305,10 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         await page.wait_for_timeout(3000)
         retry_cta = await product_cta(page)
         if retry_cta is not None and not await retry_cta.is_disabled():
-            await retry_cta.click()
+            with suppress(Exception):
+                await EpicGames(page)._click_control(
+                    page, retry_cta, f"{platform}-{title}-retry"
+                )
             await page.wait_for_timeout(3000)
             with suppress(Exception):
                 await epic._handle_device_not_supported_modal(page)
