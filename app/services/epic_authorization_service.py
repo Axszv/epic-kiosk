@@ -6,6 +6,7 @@
 @Desc    :
 """
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -13,18 +14,23 @@ import re
 import time
 from contextlib import suppress
 from enum import Enum
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from hcaptcha_challenger.agent import AgentV
 from loguru import logger
 from playwright.async_api import expect, Page, Response, TimeoutError as PlaywrightTimeoutError
 
 from settings import RUNTIME_DIR, settings
-from services.epic_store_page import STORE_LOGIN_URL, store_signed_out
+from services.epic_store_page import (
+    STORE_LOGIN_URL,
+    store_login_state,
+    store_signed_out,
+)
 from services.hcaptcha_agent_service import (
     get_login_hcaptcha_agent,
     replace_login_hcaptcha_agent,
 )
+from services import hcaptcha_agent_service as captcha_module
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 
@@ -197,8 +203,10 @@ class EpicAuthorization:
         self._is_login_success_signal = asyncio.Queue()
         self._is_refresh_csrf_signal = asyncio.Queue()
         self._email_transaction_failure_signal = asyncio.Queue()
+        self._login_transaction_failure_signal = asyncio.Queue()
         self._refresh_csrf_seen = False
-        self._login_error_code = None  # 存储登录错误码
+        self._login_error_code = None
+        self._login_post_at = 0.0  # 存储登录错误码
         self._login_point_url = ""
         self._login_agent = None
 
@@ -274,6 +282,20 @@ class EpicAuthorization:
             )
             logger.warning("LOGIN_SESSION:stale_cookies_cleared")
 
+    async def _restore_session_cookies(self, cookies: list[dict]) -> None:
+        """Put the session of the profile back after a login that failed.
+
+        `_reset_login_cookies` clears the Epic cookies so the login form
+        starts from a clean state. A failed login leaves the profile without
+        a session, and the profile is what the next run starts from, so the
+        cookies are put back before the failure is returned.
+        """
+        if not cookies:
+            return
+        with suppress(Exception):
+            await self.page.context.add_cookies(cookies)
+            logger.warning("LOGIN_SESSION:the_session_of_the_profile_was_restored")
+
     async def _reset_xsrf_cookie(self) -> None:
         """Drop the cached XSRF cookie so the portal reads a current one.
 
@@ -325,6 +347,55 @@ class EpicAuthorization:
                 return value
         return ""
 
+    def _report_sent_captcha_token(self, url: str, body: str) -> None:
+        """Report whether the transaction carries the token hCaptcha issued.
+
+        hCaptcha can issue a token that the portal refuses with
+        `captcha_invalid`, and there are two very different reasons. Either
+        the portal does not accept the answer, or the transaction carries a
+        token other than the one hCaptcha just issued, because the page reads
+        the response of the widget an earlier step left behind.
+
+        The comparison is exact and needs no guess about how Epic wraps the
+        token: the issued token either appears in the body or it does not.
+        """
+        issued = str(
+            getattr(captcha_module, "LAST_PASS_TOKEN", "")
+            or getattr(getattr(self, "_login_agent", None), "_last_pass_token", "")
+            or ""
+        )
+        with suppress(Exception):
+            payload = json.loads(body or "{}")
+            raw = payload.get("captcha")
+            if not isinstance(raw, str):
+                return
+            # The portal sends the captcha as base64 (`eyJzZX...` decodes to
+            # `{"se...`), so the token is looked for in the text as sent, in
+            # its percent-decoded form and in its base64 payload. The last one
+            # is where it lives.
+            decoded = unquote(raw)
+            inner = ""
+            inner_keys = ""
+            with suppress(Exception):
+                padded = raw + "=" * (-len(raw) % 4)
+                inner = base64.urlsafe_b64decode(padded).decode("utf-8", "replace")
+                with suppress(Exception):
+                    parsed = json.loads(inner)
+                    if isinstance(parsed, dict):
+                        inner_keys = ",".join(list(parsed)[:8])
+            if urlsplit(url).path.endswith("/id/api/login"):
+                self._login_post_at = time.monotonic()
+            print(
+                f"LOGIN_CAPTCHA_TOKEN:path={urlsplit(url).path}:"
+                f"field_len={len(raw)}:"
+                f"issued_len={len(issued)}:"
+                f"raw={bool(issued) and issued in body}:"
+                f"decoded={bool(issued) and issued in decoded}:"
+                f"base64={bool(issued) and issued in inner}:"
+                f"keys={inner_keys[:90]}",
+                flush=True,
+            )
+
     async def _install_live_xsrf_route(self) -> None:
         """Send Epic's live XSRF cookie with the login transaction.
 
@@ -340,13 +411,17 @@ class EpicAuthorization:
         for the same transaction can only carry the token Epic already used.
         """
 
-        state = {"last_body": ""}
+        state = {"last_body": {}}
 
         async def handler(route):
             request = route.request
             header = request.headers.get("x-xsrf-token", "")
             body = request.post_data or ""
-            if body and body == state["last_body"]:
+            self._report_sent_captcha_token(request.url, body)
+            # The state belongs to one endpoint: the email transaction and the
+            # login transaction are two different requests.
+            key = request.url.split("?")[0]
+            if body and body == state["last_body"].get(key):
                 # The portal repeats the transaction when Epic refuses it. The
                 # repeat carries the same captcha token, and a token can only
                 # be handed to Epic once, so the repeat is dropped and the
@@ -354,7 +429,7 @@ class EpicAuthorization:
                 logger.warning("LOGIN_XSRF_REFRESH:repeat_transaction_dropped")
                 await route.abort()
                 return
-            state["last_body"] = body
+            state["last_body"][key] = body
             # Epic rotates the XSRF-TOKEN cookie on every response, and the
             # account portal sends the copy it read when the page started. A
             # captcha takes a minute to solve, so the copy is stale by then
@@ -375,8 +450,11 @@ class EpicAuthorization:
             logger.warning("LOGIN_XSRF_REFRESH:stale_header_replaced")
 
         with suppress(Exception):
+            # The login transaction carries a captcha of its own, and Epic
+            # refuses it with the same error when its XSRF token is stale.
             await self.page.route("**/id/api/email/exists", handler)
-            logger.debug("Login transaction now sends Epic's live XSRF cookie")
+            await self.page.route("**/id/api/login", handler)
+            logger.debug("Login transactions now send Epic's live XSRF cookie")
 
     async def _has_cloudflare_security_check(self) -> bool:
         title = ""
@@ -464,12 +542,24 @@ class EpicAuthorization:
                     return True
         return False
 
-    async def _take_email_transaction_failure(self):
+    async def _take_email_transaction_failure(self, allow_body_fallback: bool = True):
+        """The refusal of the email transaction, if the portal sent one.
+
+        The body-text fallback covers a refusal that only appears on the
+        page. It must be off once the password is submitted: the login
+        transaction is refused with the same sentence, and the fallback then
+        turns one refusal into an unlimited supply of them. Every waiter
+        reads the same page, so a single refusal was recovered four times in
+        the same millisecond and each recovery threw away a challenge the
+        other three were still using.
+        """
         rejection = None
         while not self._email_transaction_failure_signal.empty():
             rejection = self._email_transaction_failure_signal.get_nowait()
         if rejection:
             return rejection
+        if not allow_body_fallback:
+            return None
 
         body_text = ""
         with suppress(Exception):
@@ -477,6 +567,20 @@ class EpicAuthorization:
         if is_epic_email_transaction_failure(200, body_text):
             return {"status": 200, "body": body_text[:1000]}
         return None
+
+    async def _take_login_transaction_failure(self):
+        """The refusal of the login transaction, if the portal sent one.
+
+        The login transaction carries its own captcha, and Epic refuses it
+        with the same error as the email transaction. It is a separate
+        refusal though: the password is submitted again and the portal asks
+        for a new captcha, while the email transaction is the one that has
+        to start over.
+        """
+        rejection = None
+        while not self._login_transaction_failure_signal.empty():
+            rejection = self._login_transaction_failure_signal.get_nowait()
+        return rejection
 
     async def _restart_email_challenge(self) -> bool:
         """Start a fresh hCaptcha transaction for the email step.
@@ -714,10 +818,10 @@ class EpicAuthorization:
                     error_msg = result.get("errorMessage", "未知错误")
                     if is_recoverable_epic_captcha_error(self._login_error_code):
                         logger.warning(
-                            "登录 API 拒绝 captcha/CSRF 事务，准备刷新并继续本次登录: "
+                            "登录 API 拒绝 captcha/CSRF 事务，重新提交密码并继续本次登录: "
                             f"{self._login_error_code}"
                         )
-                        self._email_transaction_failure_signal.put_nowait(
+                        self._login_transaction_failure_signal.put_nowait(
                             {
                                 "status": r.status,
                                 "body": json.dumps(result, ensure_ascii=False)[:1000],
@@ -978,11 +1082,44 @@ class EpicAuthorization:
                             await self.page.wait_for_timeout(3000)
                             return
 
+                # The email step has no sign-in button. Its continue button
+                # asks the portal for a new captcha challenge.
+                with suppress(Exception):
+                    continue_button = self.page.locator("#continue").first
+                    if await continue_button.is_visible(timeout=1500):
+                        logger.debug("重新触发邮箱步骤的验证码")
+                        await continue_button.click(timeout=3000, no_wait_after=True)
+                        await self.page.wait_for_timeout(3000)
+
             async def keep_login_flow_alive():
                 """Re-submit the login form if Epic returns to the password step."""
                 while not result_task.done():
                     await self.page.wait_for_timeout(8000)
                     if result_task.done():
+                        return
+                    # A login transaction that never answers leaves the page
+                    # with nothing to submit and nothing to wait for. Run
+                    # 40690090051 answered the password challenge eight more
+                    # times in that state and spent fifteen minutes on it,
+                    # while no further login transaction left the browser.
+                    if (
+                        self._login_post_at
+                        and time.monotonic() - self._login_post_at > 25
+                    ):
+                        logger.warning(
+                            "The login transaction did not answer; leaving this "
+                            "session"
+                        )
+                        if not result_task.done():
+                            self._is_login_success_signal.put_nowait(
+                                {
+                                    "error": True,
+                                    "code": "epic_login_captcha_plan_rejected",
+                                    "full_response": {
+                                        "reason": "login_transaction_silent"
+                                    },
+                                }
+                            )
                         return
                     if captcha_in_progress:
                         continue
@@ -1006,6 +1143,19 @@ class EpicAuthorization:
 
                 async def recover_email_transaction(rejection) -> bool:
                     nonlocal agent, email_transaction_retries, captcha_success
+                    status = int(rejection.get("status") or 0)
+                    if status and status != 409:
+                        # Epic refused the captcha itself. The plan of this
+                        # widget now holds a wrong answer, and Epic refuses
+                        # every transaction that carries that plan, so asking
+                        # for another challenge on the same page can only add
+                        # more wrong answers to it. A reload is a new plan,
+                        # which is the only clean one available.
+                        captcha_success = False
+                        logger.warning(
+                            "Epic refused the captcha plan; reloading the login "
+                            "page for a clean one"
+                        )
                     email_transaction_retries += 1
                     if email_transaction_retries > 3:
                         logger.error("❌ Epic 连续拒绝邮箱/hCaptcha 事务，停止本次登录")
@@ -1056,7 +1206,38 @@ class EpicAuthorization:
                 # Keep this coordinator alive for the full login wait. Epic can
                 # reject a solved token after the challenge iframe disappears.
                 while not result_task.done():
-                    rejection = await self._take_email_transaction_failure()
+                    login_rejection = await self._take_login_transaction_failure()
+                    if login_rejection:
+                        body = str(login_rejection.get("body") or "")
+                        if "captcha_invalid" in body:
+                            # Epic refused the captcha of the login
+                            # transaction, so the plan of this widget holds a
+                            # wrong answer and every later transaction that
+                            # carries it is refused as well. Submitting again
+                            # on the same page only appends more wrong
+                            # answers, so the attempt ends here and the caller
+                            # opens a session with a clean plan.
+                            logger.warning(
+                                "Epic refused the captcha plan of this login; "
+                                "leaving this session"
+                            )
+                            if not result_task.done():
+                                self._is_login_success_signal.put_nowait(
+                                    {
+                                        "error": True,
+                                        "code": "epic_login_captcha_plan_rejected",
+                                        "full_response": login_rejection,
+                                    }
+                                )
+                            return
+                        # A stale XSRF token is a different refusal: the plan
+                        # is still clean and the password is submitted again.
+                        await retrigger_security_check()
+                        continue
+
+                    rejection = await self._take_email_transaction_failure(
+                        allow_body_fallback=False
+                    )
                     if rejection:
                         if not await recover_email_transaction(rejection):
                             return
@@ -1069,7 +1250,9 @@ class EpicAuthorization:
                     for _ in range(20):
                         if result_task.done():
                             return
-                        rejection = await self._take_email_transaction_failure()
+                        rejection = await self._take_email_transaction_failure(
+                            allow_body_fallback=False
+                        )
                         if rejection:
                             break
                         if await self._has_hcaptcha_challenge():
@@ -1098,10 +1281,18 @@ class EpicAuthorization:
                             captcha_in_progress = False
                             await self.page.wait_for_timeout(2000)
                             continue
-                        await asyncio.wait_for(
+                        round_result = await asyncio.wait_for(
                             agent.wait_for_challenge(),
                             timeout=max(settings.EXECUTION_TIMEOUT, 120) + 30,
                         )
+                        if round_result is None or str(
+                            getattr(round_result, "value", round_result)
+                        ) in {"failure", "challenge_execution_timeout"}:
+                            # The round ended without an answer: the challenge
+                            # was replaced while the model was thinking. The
+                            # page has to ask for a new one, or the login waits
+                            # for a challenge that never comes.
+                            captcha_round_failed = True
                     except Exception as e:
                         captcha_round_failed = True
                         logger.warning(f"登录 hCaptcha 处理异常 [{captcha_attempt}/12]: {e}")
@@ -1109,7 +1300,9 @@ class EpicAuthorization:
                         captcha_in_progress = False
 
                     await self.page.wait_for_timeout(2000)
-                    rejection = await self._take_email_transaction_failure()
+                    rejection = await self._take_email_transaction_failure(
+                        allow_body_fallback=False
+                    )
                     if rejection:
                         if not await recover_email_transaction(rejection):
                             return
@@ -1414,8 +1607,34 @@ class EpicAuthorization:
         """
         self.page.on("response", self._on_response_anything)
 
-        for attempt in range(3):
-            logger.info(f"🔄 登录尝试 [{attempt + 1}/3]")
+        # hCaptcha keeps every answer of one widget in its plan, and the
+        # transaction carries that plan as `plan_results` inside a
+        # `session_wrapper`. Epic refuses a transaction whose plan holds a
+        # wrong answer, and the plan only grows: run 40525966041 sent 16440,
+        # 16868, 17192 and 17344 bytes of it and every one was refused. The
+        # email step recovers because a refusal reloads the page, which is a
+        # new widget with a clean plan; the password step had no such reload.
+        max_captcha_sessions = max(
+            1, int(os.getenv("EPIC_CAPTCHA_SESSIONS", "2") or 2)
+        )
+        max_cloudflare_retries = max(
+            0, int(os.getenv("EPIC_CLOUDFLARE_RETRIES", "3") or 3)
+        )
+        captcha_sessions = 0
+        cloudflare_retries = 0
+
+        # Two very different failures share this loop, and each needs its own
+        # budget: a Cloudflare interstitial costs about a minute to wait out
+        # and a captcha session costs several. A single counter let a
+        # Cloudflare retry spend a captcha session and the other way round,
+        # and run 40533185174 ended on Cloudflare with the captcha budget
+        # already gone.
+        for attempt in range(max_captcha_sessions + max_cloudflare_retries + 1):
+            logger.info(
+                f"🔄 登录尝试 [{attempt + 1}] "
+                f"(captcha sessions {captcha_sessions}/{max_captcha_sessions}, "
+                f"cloudflare retries {cloudflare_retries}/{max_cloudflare_retries})"
+            )
 
             try:
                 await self.page.goto(URL_CLAIM, wait_until="domcontentloaded")
@@ -1457,7 +1676,8 @@ class EpicAuthorization:
             # 检查登录状态（增加超时处理）
             try:
                 if not await self._wait_for_cloudflare_auto_pass():
-                    if attempt < 2:
+                    cloudflare_retries += 1
+                    if cloudflare_retries <= max_cloudflare_retries:
                         delay_seconds = 10 * (attempt + 1)
                         logger.warning(
                             "Cloudflare check is still active; retrying navigation "
@@ -1466,7 +1686,7 @@ class EpicAuthorization:
                         await self.page.wait_for_timeout(delay_seconds * 1000)
                         continue
                     return ErrorType.CLOUDFLARE_BLOCKED
-                status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
+                status = await store_login_state(self.page)
             except Exception as e:
                 # 超时时检查是否在修正页面
                 current_url = self.page.url
@@ -1489,12 +1709,35 @@ class EpicAuthorization:
             # and the captcha of such a session is never executed by Epic's
             # Talon service, so Epic refuses the transaction with
             # `captcha_invalid`.
+            #
+            # The login clears the cookies of the profile before the form
+            # starts. A login that then fails must not leave the profile
+            # without the session it came with, or every later run of this
+            # account needs another captcha.
+            session_cookies = await self.page.context.cookies()
             login_result = await self._login(login_url=STORE_LOGIN_URL)
             if login_result:
                 success, error_type = login_result
                 if success:
                     return ErrorType.SUCCESS
-                if error_type == ErrorType.CLOUDFLARE_BLOCKED and attempt < 2:
+                await self._restore_session_cookies(session_cookies)
+                if error_type == ErrorType.CAPTCHA_FAILED:
+                    captcha_sessions += 1
+                    if captcha_sessions < max_captcha_sessions:
+                        logger.warning(
+                            "The captcha plan of this session holds a wrong "
+                            "answer; opening a new one "
+                            f"[{captcha_sessions + 1}/{max_captcha_sessions}]"
+                        )
+                        await self.page.wait_for_timeout(2000)
+                        continue
+                    return error_type
+                if error_type == ErrorType.CLOUDFLARE_BLOCKED:
+                    cloudflare_retries += 1
+                if (
+                    error_type == ErrorType.CLOUDFLARE_BLOCKED
+                    and cloudflare_retries <= max_cloudflare_retries
+                ):
                     delay_seconds = 10 * (attempt + 1)
                     logger.warning(
                         "Cloudflare blocked the login form; retrying navigation "

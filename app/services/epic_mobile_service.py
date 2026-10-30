@@ -10,7 +10,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from services.epic_games_service import EpicGames, REGION_UNAVAILABLE_MARKERS
 from services.epic_store_page import is_login_url, product_cta, store_signed_out
-from settings import RUNTIME_DIR
+from settings import RUNTIME_DIR, settings
 
 
 FREE_MARKERS = ("free", "$0.00", "\u20ac0.00", "\u00a30.00", "-100%")
@@ -142,6 +142,16 @@ def emit_order_check(phase: str, offer: dict, status: str) -> None:
     logger.info(marker)
 
 
+async def _submit_mobile_checkout(page, epic, result: dict) -> bool:
+    """Submit the checkout once, recording how it went."""
+    try:
+        result["checkout_submitted"] = await epic._handle_instant_checkout(page)
+    except Exception as err:
+        result["notes"].append(f"checkout_error:{type(err).__name__}")
+        return False
+    return bool(result["checkout_submitted"])
+
+
 async def collect_mobile_offer(page, offer: dict) -> dict:
     platform = str(offer.get("platform") or "Mobile")
     title = str(offer.get("title") or "Unknown mobile offer")
@@ -205,7 +215,12 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         return result
 
     result["attempted_claim"] = True
-    await cta.click()
+    # The claim control sits in the same kind of sticky header the desktop
+    # `Get` does, and an overlay turns a plain click into thirty seconds of
+    # nothing: run 41073353234 lost both mobile offers to
+    # `ElementHandle.click: Timeout 30000ms exceeded`. The same three-step
+    # press the desktop uses is used here.
+    await EpicGames(page)._click_control(page, cta, f"{platform}-{title}")
     with suppress(PlaywrightTimeoutError):
         await page.wait_for_url(is_login_url, timeout=15000)
     await page.wait_for_timeout(3000)
@@ -222,10 +237,7 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         if await epic._handle_device_not_supported_modal(page):
             result["notes"].append("continued_past_device_modal")
 
-    try:
-        result["checkout_submitted"] = await epic._handle_instant_checkout(page)
-    except Exception as err:
-        result["notes"].append(f"checkout_error:{type(err).__name__}")
+    await _submit_mobile_checkout(page, epic, result)
 
     # A completed checkout can take several seconds to reach the product page.
     # Refresh for evidence without submitting another order.
@@ -235,6 +247,41 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         result["status"] = "verified_owned"
         emit_result(result)
         return result
+
+    if not result["checkout_submitted"] and not is_login_url(page.url):
+        # A rejected round leaves that widget holding a wrong answer, so a
+        # second attempt has to be a new transaction — the page is opened
+        # again and the claim clicked again, never the spent widget re-submitted.
+        logger.warning(f"移动端换新事务重试领取: {platform}:{title}")
+        await page.goto(url, wait_until="load")
+        await page.wait_for_timeout(3000)
+        retry_cta = await product_cta(page)
+        if retry_cta is not None and not await retry_cta.is_disabled():
+            with suppress(Exception):
+                await EpicGames(page)._click_control(
+                    page, retry_cta, f"{platform}-{title}-retry"
+                )
+            await page.wait_for_timeout(3000)
+            with suppress(Exception):
+                await epic._handle_device_not_supported_modal(page)
+            result["notes"].append("reopened_after_rejected_checkout")
+            # The fallback model is only reached when the API *raises*; a
+            # wrong answer never gets there. The second transaction is the
+            # one place a different reader can be tried, so it is.
+            previous_model = settings.CAPTCHA_MODEL
+            if settings.CAPTCHA_MODEL_FALLBACK != previous_model:
+                settings.CAPTCHA_MODEL = settings.CAPTCHA_MODEL_FALLBACK
+                result["notes"].append(f"captcha_model:{settings.CAPTCHA_MODEL}")
+            try:
+                await _submit_mobile_checkout(page, epic, result)
+            finally:
+                settings.CAPTCHA_MODEL = previous_model
+            owned_cta = await wait_for_mobile_ownership(page)
+            if owned_cta is not None:
+                result["final_cta"] = owned_cta
+                result["status"] = "verified_owned"
+                emit_result(result)
+                return result
 
     final_text = await body_text(page)
     result["final_buttons"] = await button_texts(page)
@@ -275,6 +322,17 @@ async def collect_mobile_offer(page, offer: dict) -> dict:
         result["status"] = "checkout_submitted_unverified"
     else:
         result["status"] = "web_claim_not_available"
+        # Nothing proves what the page offered instead, and the page dump is
+        # 100 MB away in the artifact. The controls and the first line of the
+        # page say it in the log.
+        print(
+            f"MOBILE_UNCLAIMED:{platform}:{title}:"
+            f"url={page.url}:"
+            f"buttons={result.get('final_buttons')}:"
+            f"cta={result.get('final_cta')}:"
+            f"text={' '.join(final_text.split())[:200]!r}",
+            flush=True,
+        )
 
     emit_result(result)
     return result

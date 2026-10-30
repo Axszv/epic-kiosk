@@ -46,7 +46,7 @@ on:
       browser_headless:
         description: "Run the browser headless. The Xvfb display is used otherwise."
         required: false
-        default: "true"
+        default: "false"
       let_page_solve_captcha:
         description: "Let the page answer Epic's invisible hCaptcha on its own."
         required: false
@@ -58,7 +58,31 @@ on:
       captcha_model:
         description: "Captcha model for a manual A/B diagnostic run."
         required: false
-        default: "agnes-3.0-flash"
+        default: ""
+      restore_state_key:
+        description: "Restore this exact browser-state cache instead of the newest one."
+        required: false
+        default: ""
+      skip_mobile:
+        description: "Leave the mobile channel out; it opens its own login pages."
+        required: false
+        default: "false"
+      seed_sessions:
+        description: "Session seed mode: auto (empty profiles only), always or off."
+        required: false
+        default: "auto"
+      reset_login_cookies:
+        description: "Clear the Epic cookies of the profile before the login form starts."
+        required: false
+        default: "true"
+      api_provider:
+        description: "openai_compatible, or gemini to use the library's own provider."
+        required: false
+        default: "openai_compatible"
+      list_models:
+        description: "Only list the models the gateway serves, then stop."
+        required: false
+        default: "false"
   schedule:
     # 00:23 UTC = 08:23 Beijing time, Wednesday and Friday.
     - cron: "23 0 * * 3,5"
@@ -72,7 +96,123 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  models:
+    if: github.event.inputs.list_models == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      API_BASE_URL: ${{ secrets.CAPTCHA_API_BASE_URL || secrets.API_BASE_URL }}
+      API_KEY: ${{ secrets.CAPTCHA_API_KEY || secrets.API_KEY }}
+      API_VERSION: ${{ vars.API_VERSION || 'v1' }}
+    steps:
+      - name: List the models the gateway serves
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          base = (os.environ.get("API_BASE_URL") or "").rstrip("/")
+          key = os.environ.get("API_KEY") or ""
+          if not base or not key:
+              raise SystemExit("API_BASE_URL / API_KEY are not configured")
+
+          # The gateway exposes no model list: `/models` answers 404 and the
+          # native root answers 401. A one-token completion per candidate is
+          # the only honest test of whether a name exists.
+          CANDIDATES = [
+              "gemini-3.5-flash-lite",
+              "gemini-3.5-flash",
+              "gemini-3-flash",
+              "gemini-3-pro",
+              "gemini-2.5-flash",
+              "gemini-2.5-pro",
+              "gemini-2.0-flash",
+              "agnes-2.5-flash",
+              "agnes-3.0-flash",
+              "agnes-3.5-flash",
+          ]
+
+          version = (os.environ.get("API_VERSION") or "").strip("/")
+
+          def endpoint(root: str, path: str) -> str:
+              return root + (f"/{version}" if version else "") + path
+
+          def probe(url: str, model: str):
+              body = json.dumps(
+                  {
+                      "model": model,
+                      "messages": [{"role": "user", "content": "hi"}],
+                      "max_tokens": 1,
+                  }
+              ).encode("utf-8")
+              request = urllib.request.Request(
+                  url,
+                  data=body,
+                  headers={
+                      "Authorization": f"Bearer {key}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      payload = json.loads(
+                          response.read().decode("utf-8", "replace")
+                      )
+                      # A gateway may answer 200 for a name it does not serve
+                      # and quietly route the request to its default. The
+                      # `model` field is what actually answered.
+                      answered = str(payload.get("model") or "")
+                      content = ""
+                      try:
+                          content = (
+                              payload["choices"][0]["message"]["content"] or ""
+                          )
+                      except Exception:  # noqa: BLE001
+                          pass
+                      verdict = (
+                          "OK   "
+                          if answered == model
+                          else "ALIAS"
+                      )
+                      return (
+                          f"{verdict} {model}  (HTTP {response.status}, "
+                          f"answered={answered!r}, "
+                          f"content={' '.join(content.split())[:40]!r})"
+                      )
+              except urllib.error.HTTPError as err:
+                  detail = err.read().decode("utf-8", "replace")
+                  return f"HTTP {err.code}  {model}  {detail[:120]}"
+              except Exception as err:  # noqa: BLE001
+                  return f"FAIL  {model}  {type(err).__name__}: {err}"
+
+          # The control decides which endpoint is the real one: a path that
+          # cannot answer for a model known to work cannot answer for any.
+          control = "gemini-3.5-flash-lite"
+          chosen = None
+          for root in (base, base[: -len(version)] if version and base.endswith(version) else base):
+              for path in ("/chat/completions", "/v1beta/openai/chat/completions"):
+                  url = endpoint(root, path)
+                  verdict = probe(url, control)
+                  print(f"CONTROL {verdict}  {url}")
+                  if verdict.startswith("OK"):
+                      chosen = (root, path)
+                      break
+              if chosen:
+                  break
+          if not chosen:
+              raise SystemExit("no endpoint answered for the control model")
+
+          root, path = chosen
+          print(f"USING {endpoint(root, path)}")
+          for model in CANDIDATES:
+              print(probe(endpoint(root, path), model))
+          PY
+
   claim:
+    if: github.event.inputs.list_models != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 330
     # The accounts run one after another in this job, the way the claim
@@ -82,26 +222,23 @@ jobs:
     # limit that leaves a week with a single chance.
 
     env:
-      API_PROVIDER: openai_compatible
-      API_BASE_URL: ${{ secrets.API_BASE_URL }}
-      API_KEY: ${{ secrets.API_KEY }}
-      GEMINI_API_KEY: not_used
+      API_PROVIDER: ${{ github.event.inputs.api_provider || 'openai_compatible' }}
+      API_BASE_URL: ${{ secrets.CAPTCHA_API_BASE_URL || secrets.API_BASE_URL }}
+      API_KEY: ${{ secrets.CAPTCHA_API_KEY || secrets.API_KEY }}
+      API_VERSION: ${{ vars.API_VERSION || 'v1' }}
+      API_SEND_THINKING_KWARG: ${{ vars.API_SEND_THINKING_KWARG || 'true' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'not_used' }}
       PRIMARY_MODEL: agnes-2.5-flash
       PRIMARY_MODEL_FALLBACK: agnes-2.5-flash
-      # The gateway serves two models as of 2026-10-29 and neither is an
-      # `agnes-*` one: a one-token probe answered 200 for `gemini-3.5-flash`
-      # and `gemini-3.5-flash-lite` and 404 for every agnes name, which is
-      # what `models/agnes-3.0-flash is not found for API version v1main`
-      # said on run 40916650290. The names live in repository variables so
-      # the next rename costs no commit.
       CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || vars.CAPTCHA_MODEL || 'gemini-3.5-flash-lite' }}
-      CAPTCHA_MODEL_FALLBACK: ${{ github.event.inputs.captcha_model_fallback || vars.CAPTCHA_MODEL_FALLBACK || 'gemini-3.5-flash-lite' }}
+      CAPTCHA_MODEL_FALLBACK: ${{ github.event.inputs.captcha_model_fallback || github.event.inputs.captcha_model || vars.CAPTCHA_MODEL_FALLBACK || 'agnes-2.5-flash' }}
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
       RESPONSE_TIMEOUT: "90"
-      API_MAX_RETRIES: "2"
+      API_MAX_RETRIES: ${{ vars.API_MAX_RETRIES || 6 }}
+      API_RETRY_BACKOFF_MAX: ${{ vars.API_RETRY_BACKOFF_MAX || 20 }}
       CAPTCHA_MAX_OUTPUT_TOKENS: "8192"
-      TASK_TIMEOUT_SECONDS: "1200"
+      TASK_TIMEOUT_SECONDS: "1500"
       EXECUTION_TIMEOUT: ${{ github.event.inputs.execution_timeout || '300' }}
       LOGIN_RESULT_TIMEOUT_SECONDS: ${{ github.event.inputs.login_result_timeout || '600' }}
       CAPTCHA_FAILURE_MAX_RETRIES: "0"
@@ -109,6 +246,10 @@ jobs:
       CHECKOUT_CAPTCHA_TIMEOUT_SECONDS: "375"
       CHECKOUT_CONFIRM_DELAY_MS: ${{ github.event.inputs.confirm_delay_ms || '0' }}
       EPIC_ACCOUNT_MAX_ATTEMPTS: ${{ github.event.inputs.account_max_attempts || '3' }}
+      # The job is cancelled at 330 minutes, and a cancelled job does not save
+      # the browser state the next run starts from. Stop starting attempts
+      # before that.
+      EPIC_RUN_DEADLINE_MINUTES: "280"
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -185,7 +326,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: app/volumes
-          key: epic-state-v2-${{ github.run_id }}
+          # A manual run can ask for one exact cache. The profiles in it are
+          # the sessions of the accounts, so an older cache is the only copy
+          # of a session that a later run replaced.
+          key: ${{ github.event.inputs.restore_state_key || format('epic-state-v2-{0}', github.run_id) }}
           restore-keys: |
             epic-state-v2-
 
@@ -206,11 +350,15 @@ jobs:
           EPIC_USE_BROWSER_PROXY: ${{ github.event.inputs.use_browser_proxy || 'false' }}
           EPIC_LET_PAGE_SOLVE_CAPTCHA: ${{ github.event.inputs.let_page_solve_captcha || 'false' }}
           EPIC_LIVE_XSRF_ROUTE: ${{ github.event.inputs.live_xsrf_route || 'true' }}
-          EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'true' }}
+          EPIC_BROWSER_HEADLESS: ${{ github.event.inputs.browser_headless || 'false' }}
           EPIC_ACCOUNTS_JSON: ${{ secrets.EPIC_ACCOUNTS_JSON }}
           EPIC_ACCOUNT_INDEX: ${{ github.event.inputs.account_index || '' }}
           EPIC_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit || '' }}
           EPIC_FRESH_PROFILE: ${{ github.event.inputs.fresh_profile || 'false' }}
+          EPIC_SKIP_MOBILE: ${{ github.event.inputs.skip_mobile || 'false' }}
+          EPIC_SESSIONS_JSON: ${{ secrets.EPIC_SESSIONS_JSON }}
+          EPIC_SEED_SESSIONS: ${{ github.event.inputs.seed_sessions || 'auto' }}
+          EPIC_RESET_LOGIN_COOKIES: ${{ github.event.inputs.reset_login_cookies || 'true' }}
         run: |
           if [ "$EPIC_USE_BROWSER_PROXY" = "true" ] && [ -z "$EPIC_BROWSER_PROXY" ]; then
             echo "::warning::No browser proxy is available; continuing with the runner's direct connection"

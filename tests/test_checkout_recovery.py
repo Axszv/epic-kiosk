@@ -184,6 +184,22 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertNotIn("retried_after_explicit_captcha_rejection", source)
         self.assertEqual(source.count("await epic._handle_instant_checkout(page)"), 1)
 
+    def test_a_second_mobile_attempt_starts_a_new_transaction(self):
+        """A spent widget cannot answer twice; a reload can.
+
+        The rule above is that a rejected round is never re-submitted. The
+        offer page is opened again instead, so the second attempt gets a
+        widget with a clean answer — the same move the desktop checkout makes
+        when it reopens after a rejection. Runs 40883991382 and 40904600195
+        both lost mobile offers to a single rejected round.
+        """
+        source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("reopened_after_rejected_checkout", source)
+        self.assertIn('await page.goto(url, wait_until="load")', source)
+
     def test_checkout_scans_rendered_buttons_before_selector_fallbacks(self):
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         start = source.index("async def _active_purchase_container")
@@ -278,5 +294,259 @@ class CheckoutRecoveryTests(unittest.TestCase):
         self.assertNotIn(token, json.dumps(summary))
 
 
+class CheckoutControlTests(unittest.TestCase):
+    def test_the_cart_button_is_found_by_label_not_by_markup(self):
+        """The cart stopped offering `Check Out` as a button span.
+
+        Run 40690090051 waited thirty seconds for
+        `//button//span[text()='Check Out']` and lost the week's second game.
+        Run 40698238507 then reached the cart with the game in it (`items=1`)
+        and `'Check Out'` in the control list, so the control was there and
+        the XPath was what failed: `normalize-space()` does not treat a
+        non-breaking space as whitespace, and the label is built from one.
+        """
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("async def _click_checkout", source)
+        self.assertIn('CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")', source)
+        # The exact-text click is gone; the string survives only in the
+        # docstring that explains why.
+        self.assertNotIn('self.page.click("//button//span', source)
+        # The label is normalised in the page, where `\s` covers NBSP.
+        self.assertIn("replace(/\\\\s+/g, ' ').trim().toLowerCase()", source)
+        self.assertIn("evaluate_handle", source)
+        # A real click first, a forced one if the page will not take it.
+        self.assertIn("force=True", source)
+        # The failure names what the page has.
+        self.assertIn("no checkout control on the cart page", source)
+        self.assertIn("controls={labels}", source)
+
+
+class CheckoutPlanTests(unittest.TestCase):
+    def test_one_wrong_answer_reopens_the_checkout(self):
+        """The checkout plan cannot be repaired on the widget that holds it.
+
+        Run 40705669872 answered `image_label_single_select` and then
+        `image_drag_single` on the same checkout widget, both refused, and
+        the challenge then disappeared with
+        `Cannot find a visible nested hCaptcha challenge frame`. The plan of
+        a widget keeps every answer, so a refused round is the end of that
+        widget: the checkout reopens it instead of answering more rounds.
+        """
+        agent_source = (
+            ROOT / "app" / "services" / "hcaptcha_agent_service.py"
+        ).read_text(encoding="utf-8")
+        service_source = SERVICE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("self._stop_after_rejection = False", agent_source)
+        self.assertIn("agent._stop_after_rejection = True", agent_source)
+        self.assertIn("return ChallengeSignal.FAILURE", agent_source)
+        # The checkout treats a refused captcha as a failed attempt.
+        self.assertIn("结账验证码未通过，重新打开结账流程", service_source)
+
+
+class ClickControlTests(unittest.TestCase):
+    def test_a_covered_purchase_control_is_pressed_with_force(self):
+        """Run 40875847206 found `Get` enabled and timed out clicking it.
+
+        The button was enabled and visible, so Playwright's actionability
+        check could only have been waiting on something lying over it. A
+        forced click goes through the overlay, and a DOM click goes through
+        even that.
+        """
+        import asyncio
+        import os
+        import sys
+        from unittest import mock
+
+        for path in (str(ROOT / "app"), str(ROOT)):
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        env = {
+            "EPIC_EMAIL": "kiosk@example.com",
+            "EPIC_PASSWORD": "secret",
+            "GEMINI_API_KEY": "key",
+        }
+        with mock.patch.dict(os.environ, env):
+            from app.services.epic_games_service import EpicGames
+
+        class Control:
+            def __init__(self):
+                self.calls = []
+
+            async def click(self, timeout=0, force=False):
+                self.calls.append(("click", force))
+                if not force:
+                    raise RuntimeError("covered by an overlay")
+
+            async def evaluate(self, script):
+                self.calls.append(("evaluate", script))
+
+        games = EpicGames.__new__(EpicGames)
+        control = Control()
+
+        asyncio.run(games._click_control(object(), control, "sker-ritual"))
+
+        self.assertEqual(control.calls, [("click", False), ("click", True)])
+
+
+class CartPurgeTests(unittest.TestCase):
+    def test_the_cart_is_emptied_before_anything_is_added(self):
+        """A cart left over from an earlier run blocks every later one.
+
+        Run 40724013740 read `View in Cart` on `Sker Ritual` because the cart
+        still held `Shrunken Head DLC` from a previous attempt. `_empty_cart`
+        keeps free lines, so the DLC never left and the checkout stayed
+        disabled — while `main`, on the very same models and an empty cart,
+        claimed both games.
+        """
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        start = source.index("async def _purchase_free_game")
+        body = source[start: start + 1400]
+
+        self.assertIn("_keep_only_cart", body)
+        self.assertIn("def _keep_only_cart", source)
+        self.assertIn("def _cart_lines", source)
+        self.assertIn("def _remove_cart_line", source)
+        # The target list reaches the cart through the run that owns it.
+        self.assertIn("self._cart_targets = promotions", source)
+        # Free lines are removed too, not only the paid ones.
+        self.assertIn("=== 'move to wishlist'", source)
+
+    def test_view_in_cart_is_checked_against_the_cart_itself(self):
+        """The CTA is Epic's cart affordance, not a statement about this game."""
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        start = source.index('if "CART" in btn_text_upper:')
+        branch = source[start: start + 1400]
+
+        self.assertIn("await self._cart_holds(promotion)", branch)
+        self.assertIn("_clear_cart(page)", branch)
+
+    def test_a_promotion_url_yields_its_store_slug(self):
+        import os
+        import sys
+        from unittest import mock
+
+        for path in (str(ROOT / "app"), str(ROOT)):
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        env = {
+            "EPIC_EMAIL": "kiosk@example.com",
+            "EPIC_PASSWORD": "secret",
+            "GEMINI_API_KEY": "key",
+        }
+        with mock.patch.dict(os.environ, env):
+            from app.services.epic_games_service import EpicGames
+
+        class Promotion:
+            url = "https://store.epicgames.com/en-US/p/sker-ritual-aac702"
+
+        class Query:
+            url = "https://store.epicgames.com/en-US/p/sker-ritual-aac702?x=1"
+
+        class Missing:
+            url = "https://store.epicgames.com/en-US/free-games"
+
+        self.assertEqual(EpicGames._promotion_slug(Promotion()), "sker-ritual-aac702")
+        self.assertEqual(EpicGames._promotion_slug(Query()), "sker-ritual-aac702")
+        self.assertEqual(EpicGames._promotion_slug(Missing()), "")
+
+
+class CartWarningsTests(unittest.TestCase):
+    def test_the_cart_says_why_it_cannot_be_checked_out(self):
+        """Epic renders its verdict in `cart-warnings`; reading it is the answer.
+
+        The cart for `Sker Ritual` held `Shrunken Head DLC` and said
+        "Purchasing Shrunken Head DLC requires: Sker Ritual", which is why the
+        checkout control stayed disabled. A timer cannot tell that apart from
+        a slow page.
+        """
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        claim = (
+            ROOT / "scripts" / "github_actions_claim_once.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("async def _cart_warnings", source)
+        self.assertIn("[data-testid='cart-warnings']", source)
+        self.assertIn("CartNotPurchasable", source)
+        # Region and prerequisite are reported apart.
+        self.assertIn('"region_unavailable" if region else "not_purchasable"', source)
+        self.assertIn('"not_purchasable"', claim)
+
+
+class CartRegionTests(unittest.TestCase):
+    def test_a_region_restricted_cart_is_settled_not_failed(self):
+        """`Sker Ritual` is not sold in the account's region.
+
+        The cart holds it, the checkout control stays disabled, and the page
+        carries `egstore.cart.validation.card_level.error.region_restricted`
+        — "This item is not available in your region". The claim script
+        already accepts `region_unavailable` as settled, so the game is
+        reported that way instead of failing the account.
+        """
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        claim = (
+            ROOT / "scripts" / "github_actions_claim_once.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("_is_region_unavailable_page(self.page)", source)
+        self.assertIn("emit_desktop_result(promotion.title, status)", source)
+        self.assertIn('"region_unavailable"', claim)
+        self.assertIn("REGION_UNAVAILABLE_MARKERS", source)
+        self.assertIn("not available in your region", source)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class MobileObservabilityTests(unittest.TestCase):
+    """The mobile channel has to say what it saw, in the run log.
+
+    `MOBILE_OFFER_URL` and `MOBILE_CTA` are INFO lines, and the console sink
+    only lets a keyword list through — so every mobile run was a black box in
+    the workflow log while the page dumps sat in a 100 MB artifact that takes
+    longer to download than the run itself.
+    """
+
+    def test_mobile_progress_is_not_filtered_out_of_the_console(self):
+        utils = (ROOT / "app" / "utils.py").read_text(encoding="utf-8")
+        start = utils.index("CONSOLE_KEYWORDS = [")
+        keywords = utils[start: utils.index("]", start)]
+
+        self.assertIn("MOBILE_OFFER_URL", keywords)
+        self.assertIn("MOBILE_CTA", keywords)
+
+    def test_an_unclaimed_mobile_offer_names_what_the_page_offered(self):
+        source = (ROOT / "app" / "services" / "epic_mobile_service.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("MOBILE_UNCLAIMED:", source)
+        self.assertIn("buttons={result.get('final_buttons')}", source)
+
+
+class MobilePlatformBrowserTests(unittest.TestCase):
+    """The mobile page keeps the fingerprint the browser was built with.
+
+    Overriding the user agent to get past Epic's "Device not supported"
+    prompt looked like a fix and was the opposite: the account stopped
+    validating hCaptcha at all.
+
+        run 40904600195   no override   0 `without a validated response`, 4 mobile claims
+        run 41074454171   override      3 `without a validated response`, 0 mobile claims
+
+    Camoufox's fingerprint is consistent by construction; a phone user agent
+    on a desktop canvas is not, and the server rejects the answer it would
+    otherwise accept.
+    """
+
+    def setUp(self):
+        self.source = (
+            ROOT / "app" / "services" / "epic_mobile_service.py"
+        ).read_text(encoding="utf-8")
+
+    def test_the_mobile_offer_is_opened_with_the_browser_as_it_is(self):
+        self.assertNotIn("MOBILE_USER_AGENTS", self.source)
+        self.assertNotIn("use_platform_browser", self.source)
+        self.assertNotIn("set_extra_http_headers", self.source)

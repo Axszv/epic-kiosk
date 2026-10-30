@@ -25,7 +25,8 @@ from models import OrderItem, Order
 from models import PromotionGame
 from settings import settings, RUNTIME_DIR
 from services.epic_store_page import (
-    StoreLoginRequired, is_login_url, product_cta, store_signed_out,
+    StoreLoginRequired, complete_account_switch, is_login_url,
+    is_switch_account_url, product_cta, store_login_state, store_signed_out,
 )
 from services.hcaptcha_agent_service import (
     get_hcaptcha_agent,
@@ -49,6 +50,17 @@ URL_ACCOUNT_TRANSACTIONS = f"{URL_ACCOUNT_ORIGIN}account/transactions?lang=en-US
 URL_ORDER_HISTORY = f"{URL_ACCOUNT_ORIGIN}account/v2/payment/ajaxGetOrderHistory"
 URL_CONFIRM_ORDER = "**/purchase/confirm-order**"
 _ORDER_HISTORY_UNAUTHORIZED_CONTEXTS = WeakSet()
+
+class CartNotPurchasable(RuntimeError):
+    """The cart holds an item the account cannot check out.
+
+    A free game that the account's region can buy always enables the cart's
+    checkout control. When the control stays disabled with the item in the
+    cart, the item is not purchasable for this account — `Sker Ritual` in a
+    CN account, whose cart page carries
+    `egstore.cart.validation.card_level.error.region_restricted`.
+    """
+
 
 REGION_UNAVAILABLE_MARKERS = (
     "currently unavailable in your platform or region",
@@ -448,7 +460,7 @@ class EpicAgent:
 
         # 尝试获取登录状态，增加超时处理
         try:
-            status = await self.page.locator("//egs-navigation").get_attribute("isloggedin", timeout=45000)
+            status = await store_login_state(self.page)
         except Exception as e:
             # 如果超时，可能还在修正页面或有其他问题
             current_url = self.page.url
@@ -638,6 +650,16 @@ class EpicGames:
             )
             await account_page.wait_for_timeout(3000)
             print(f"ORDER_HISTORY_SESSION:{account_page.url}", flush=True)
+            if is_switch_account_url(account_page.url):
+                # The portal answers 401 and sends the browser through its
+                # switch-account page. Confirming it is what gives the
+                # account portal the session that the order history, the
+                # checkout and the mobile precheck all run on.
+                if await complete_account_switch(account_page):
+                    print(
+                        f"ORDER_HISTORY_SESSION:after_switch:{account_page.url}",
+                        flush=True,
+                    )
             if account_page.url.startswith(URL_ACCOUNT_ORIGIN):
                 data = await EpicGames._fetch_order_history_in_page(account_page)
                 if data is not None:
@@ -917,6 +939,28 @@ class EpicGames:
                 return True
 
     @staticmethod
+    async def _store_refusal_reason(page: Page) -> str:
+        """What the store says when it will not hand the game over.
+
+        Epic states the reason on the page it refuses on: a region notice for
+        a game the account's country cannot buy, and
+        "Purchasing Shrunken Head DLC requires: Sker Ritual" for a promotion
+        whose base game the account does not own. Either way the run has
+        nothing left to try, and the reason belongs in the log.
+        """
+        body = ""
+        with suppress(Exception):
+            body = await page.locator("body").inner_text(timeout=3000)
+        normalized = " ".join(body.lower().split())
+        if any(marker in normalized for marker in REGION_UNAVAILABLE_MARKERS):
+            return normalized[:200]
+        for marker in ("requires:", "requires :", "prerequisite"):
+            position = normalized.find(marker)
+            if position >= 0:
+                return normalized[max(0, position - 80): position + 120]
+        return ""
+
+    @staticmethod
     async def _is_region_unavailable_page(page: Page) -> bool:
         with suppress(Exception):
             body_text = await page.locator("body").inner_text(timeout=3000)
@@ -1106,6 +1150,11 @@ class EpicGames:
                 f"CHECKOUT_CAPTCHA_RESULT:{getattr(challenge_result, 'value', challenge_result)}",
                 flush=True,
             )
+            if str(getattr(challenge_result, "value", challenge_result)) != "success":
+                # The plan of this widget holds a wrong answer now, so the
+                # checkout is reopened for a widget with a clean one.
+                logger.warning("结账验证码未通过，重新打开结账流程")
+                return False
         except asyncio.TimeoutError:
             logger.warning("Checkout hCaptcha exceeded its time budget")
             return False
@@ -1175,6 +1224,9 @@ class EpicGames:
                     f"CHECKOUT_CAPTCHA_RESULT:{getattr(challenge_result, 'value', challenge_result)}",
                     flush=True,
                 )
+                if str(getattr(challenge_result, "value", challenge_result)) != "success":
+                    logger.warning("结账验证码未通过，重新打开结账流程")
+                    return False
             except asyncio.TimeoutError:
                 logger.warning("Checkout hCaptcha exceeded its time budget")
                 return False
@@ -1500,7 +1552,18 @@ class EpicGames:
                          logger.success(f"✅ 游戏已在库中")
                          emit_desktop_result(promotion.title, "already_owned")
                          continue
-                    raise AssertionError(f"Could not find purchase button for {promotion.title}")
+                    # The page may still be loading, or the game may
+                    # already sit in the cart from an earlier run, where the
+                    # shelf shows a cart-shaped control instead of a price
+                    # one. The cart step reports what it holds (`items=N`), so
+                    # the run continues there instead of losing the game
+                    # here. Run 40699854560 lost `Sker Ritual` this way after
+                    # the previous run had already put it in the cart.
+                    logger.warning(
+                        f"⚠️ 未找到购买按钮，转入购物车确认: {promotion.title}"
+                    )
+                    has_pending_cart_items = True
+                    continue
             except AssertionError:
                 raise
             except Exception:
@@ -1532,9 +1595,74 @@ class EpicGames:
                 emit_desktop_result(promotion.title, "already_owned")
                 continue
 
+            if "ADD TO CART" in btn_text_upper or "PRE-PURCHASE" in btn_text_upper:
+                # A click that lands before Epic's page is hydrated does
+                # nothing at all, and the cart stays empty. Run 40696732890
+                # clicked `Add to Cart` twice and reached the cart with
+                # `items=0`, so the click is repeated until the page says the
+                # game left the shelf, and the state after each click is
+                # logged for the run that still fails.
+                added = False
+                for add_attempt in range(1, 4):
+                    logger.info(f"🛒 加入购物车 [{add_attempt}/3]")
+                    with suppress(Exception):
+                        await purchase_btn.click()
+                    await page.wait_for_timeout(2500)
+                    with suppress(Exception):
+                        after = (await purchase_btn.text_content() or "").strip()
+                        dialog = await page.evaluate(
+                            """() => {
+                                const node = document.querySelector(
+                                    '[role=dialog], [aria-modal=true]'
+                                );
+                                return node ? (node.innerText || '').trim().slice(0, 120) : '';
+                            }"""
+                        )
+                        logger.info(
+                            f"🛒 加购后按钮: {after!r} | 弹窗: {dialog!r}"
+                        )
+                        if after and "CART" not in after.upper():
+                            added = True
+                            break
+                    with suppress(Exception):
+                        await page.reload(wait_until="load")
+                        await page.wait_for_timeout(3000)
+                        purchase_btn = await product_cta(page)
+                        if purchase_btn is None:
+                            added = True
+                            break
+                        current = (await purchase_btn.text_content() or "").strip()
+                        if "CART" not in current.upper():
+                            added = True
+                            break
+                logger.info(f"🛒 加购结果: added={added}")
+                has_pending_cart_items = True
+                continue
+
             if "CART" in btn_text_upper:
-                logger.info(f"🛒 加入购物车")
-                await purchase_btn.click()
+                # `View in Cart` and `In Cart` are Epic's cart affordance, not
+                # proof that this game is the thing in the cart: run 40724013740
+                # read `View in Cart` on `Sker Ritual` while the cart held
+                # `Shrunken Head DLC`, so the game was never added and the
+                # checkout stayed disabled by a missing prerequisite. The cart
+                # is read before it is trusted.
+                if await self._cart_holds(promotion):
+                    logger.info(f"🛒 游戏已在购物车，直接结账: {btn_text!r}")
+                    has_pending_cart_items = True
+                    continue
+                logger.warning(
+                    f"⚠️ 购物车里不是这个游戏，清空后重新加购: {promotion.title}"
+                )
+                await self._clear_cart(page)
+                await page.goto(url, wait_until="load")
+                await page.wait_for_timeout(3000)
+                if await store_signed_out(page):
+                    raise StoreLoginRequired()
+                purchase_btn = await product_cta(page)
+                if purchase_btn is not None:
+                    with suppress(Exception):
+                        await purchase_btn.click()
+                    await page.wait_for_timeout(2500)
                 has_pending_cart_items = True
                 continue
 
@@ -1587,7 +1715,9 @@ class EpicGames:
                         )
                         continue
 
-                await purchase_btn.click()
+                await self._click_control(
+                    page, purchase_btn, promotion.namespace
+                )
                 await page.wait_for_timeout(3000)
                 if is_login_url(page.url):
                     raise StoreLoginRequired()
@@ -1628,40 +1758,357 @@ class EpicGames:
                 )
 
             if not verified:
+                refusal = await self._store_refusal_reason(page)
+                if refusal:
+                    status = (
+                        "region_unavailable"
+                        if any(m in refusal for m in REGION_UNAVAILABLE_MARKERS)
+                        else "not_purchasable"
+                    )
+                    logger.warning(f"{status.upper()}:{promotion.title}:{refusal}")
+                    emit_desktop_result(promotion.title, status)
+                    continue
                 raise AssertionError(last_error)
             # ------------------------------------------------------------
 
         return has_pending_cart_items
 
-    async def _empty_cart(self, page: Page, wait_rerender: int = 30) -> bool | None:
-        has_paid_free = False
-        try:
-            cards = await page.query_selector_all("//div[@data-testid='offer-card-layout-wrapper']")
-            for card in cards:
-                is_free = await card.query_selector("//span[text()='Free']")
-                if not is_free:
-                    has_paid_free = True
-                    wishlist_btn = await card.query_selector(
-                        "//button//span[text()='Move to wishlist']"
-                    )
-                    await wishlist_btn.click()
+    async def _click_control(self, page: Page, control, namespace: str) -> None:
+        """Press a store control whatever is lying on top of it.
 
-            if has_paid_free and wait_rerender:
-                wait_rerender -= 1
-                await page.wait_for_timeout(2000)
-                return await self._empty_cart(page, wait_rerender)
-            return True
-        except TimeoutError as err:
-            logger.warning(f"清空购物车失败: {err}")
+        A plain click waits for the element to be visible, stable and
+        unobstructed, and an overlay turns that wait into thirty seconds of
+        nothing: run 40875847206 found `Get` enabled on `Sker Ritual` and then
+        timed out clicking it. The click is retried with force and finally
+        dispatched in the page; if all three fail, the page is saved so the
+        next run can see what was in the way.
+        """
+        last_error = None
+        for how, click in (
+            ("a plain click", lambda: control.click(timeout=10000)),
+            ("a forced click", lambda: control.click(timeout=5000, force=True)),
+            ("a DOM click", lambda: control.evaluate("node => node.click()")),
+        ):
+            try:
+                await click()
+                return
+            except Exception as err:
+                last_error = err
+                logger.warning(f"购买按钮拒绝{how}: {err}")
+        await self._save_debug_page(page, f"click_failed_{namespace}")
+        raise TimeoutError(
+            f"could not press the purchase control for {namespace}: {last_error}"
+        )
+
+    CHECKOUT_LABELS = ("check out", "checkout", "continue to checkout")
+
+    async def _cart_warnings(self) -> str:
+        """Epic's own reason why the cart cannot be checked out.
+
+        The cart renders its validation in `[data-testid='cart-warnings']`:
+        "Purchasing Shrunken Head DLC requires: Sker Ritual" for a DLC whose
+        base game is missing, and a region notice for a game the account's
+        country cannot buy. Reading that is the answer; waiting and guessing
+        is not.
+        """
+        text = ""
+        with suppress(Exception):
+            text = await self.page.locator(
+                "[data-testid='cart-warnings']"
+            ).first.inner_text(timeout=2000)
+        return " ".join((text or "").split())
+
+    @staticmethod
+    def _promotion_slug(promotion) -> str:
+        """The store slug of a promotion: `/p/sker-ritual-aac702` → its tail."""
+        path = (getattr(promotion, "url", "") or "").split("?")[0]
+        return path.split("/p/", 1)[1].strip("/") if "/p/" in path else ""
+
+    async def _cart_lines(self, page: Page | None = None) -> list[dict]:
+        """What the cart actually holds, one row per line item.
+
+        Each line is an `offer-card-layout-wrapper` whose first `/p/` link
+        names the product. Reading that is the only honest answer to "is the
+        game I want in the cart": the product page shows `View in Cart` for a
+        cart that holds something else entirely — run 40724013740 saw it on
+        `Sker Ritual` while the cart held `Shrunken Head DLC`, so the game was
+        never added and the checkout stayed disabled by a missing
+        prerequisite.
+        """
+        page = page or self.page
+        lines = []
+        with suppress(Exception):
+            lines = await page.evaluate(
+                """() => Array.from(
+                        document.querySelectorAll(
+                            "[data-testid='offer-card-layout-wrapper']"
+                        )
+                    ).map((card, index) => {
+                        const link = card.querySelector("a[href*='/p/']");
+                        const href = link ? link.getAttribute('href') : '';
+                        const slug = href
+                            ? href.split('/p/')[1].split(/[?#]/)[0]
+                            : '';
+                        return {
+                            index,
+                            slug,
+                            text: (card.innerText || '')
+                                .replace(/\\s+/g, ' ').trim().slice(0, 160),
+                        };
+                    })"""
+            )
+        return lines or []
+
+    async def _cart_holds(self, promotion, page: Page | None = None) -> bool:
+        """Whether this promotion is one of the cart's own line items."""
+        slug = self._promotion_slug(promotion)
+        if not slug:
             return False
+        return any(
+            slug in (line.get("slug") or "")
+            for line in await self._cart_lines(page)
+        )
 
-    async def _purchase_free_game(self):
+    async def _remove_cart_line(
+        self, slug: str, page: Page | None = None, index: int = 0
+    ) -> bool:
+        page = page or self.page
+        clicked = False
+        with suppress(Exception):
+            clicked = await page.evaluate(
+                """([slug, index]) => {
+                    const cards = Array.from(document.querySelectorAll(
+                        "[data-testid='offer-card-layout-wrapper']"
+                    ));
+                    const card = slug
+                        ? cards.find(node => {
+                            const link = node.querySelector("a[href*='/p/']");
+                            const href = link ? link.getAttribute('href') : '';
+                            return href.includes('/p/' + slug);
+                          })
+                        : cards[index];
+                    if (!card) return false;
+                    const label = node => (node.innerText || '')
+                        .replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const buttons = Array.from(card.querySelectorAll('button'));
+                    // A paid line goes to the wishlist rather than the bin;
+                    // a free leftover has nothing worth keeping.
+                    const button = buttons.find(node => label(node) === 'move to wishlist')
+                        || buttons.find(node => label(node) === 'remove');
+                    if (!button) return false;
+                    button.click();
+                    return true;
+                }""",
+                [slug, index],
+            )
+        return bool(clicked)
+
+    async def _clear_cart(self, page: Page | None = None) -> bool:
+        """Empty the cart of everything, free lines included.
+
+        `_empty_cart` only moves *paid* lines to the wishlist, which is how a
+        free `Shrunken Head DLC` outlived every run that tried to check out:
+        Epic refuses a DLC whose base game is missing, so the cart blocked
+        itself permanently. One line leaves per pass, because the list is
+        re-read after every removal and the positions shift with it.
+        """
+        page = page or self.page
+        await page.goto(URL_CART, wait_until="domcontentloaded")
+        await page.wait_for_timeout(2000)
+        for _ in range(12):
+            lines = await self._cart_lines(page)
+            if not lines:
+                return True
+            line = lines[0]
+            if not await self._remove_cart_line(
+                line.get("slug") or "", page, line.get("index") or 0
+            ):
+                logger.warning(
+                    "清空购物车失败: "
+                    + "; ".join((item.get("text") or "")[:60] for item in lines)
+                )
+                return False
+            logger.info(f"🛒 移除购物车残留: {(line.get('text') or '')[:60]}")
+            await page.wait_for_timeout(1500)
+        return not await self._cart_lines(page)
+
+    async def _keep_only_cart(self, page: Page, promotions) -> bool:
+        """Leave only the games this run means to check out.
+
+        `_empty_cart` moves *paid* lines to the wishlist and keeps the free
+        ones, which is how a free `Shrunken Head DLC` outlived every run that
+        followed it: Epic refuses a DLC whose base game is missing, so the
+        cart blocked itself for good and `Sker Ritual` was never added again.
+        Everything that is not one of this week's promotions leaves the cart,
+        free or paid.
+        """
+        wanted = {self._promotion_slug(promotion) for promotion in promotions}
+        wanted.discard("")
+        for _ in range(12):
+            lines = await self._cart_lines(page)
+            stale = [
+                line for line in lines
+                if (line.get("slug") or "") not in wanted
+            ]
+            if not stale:
+                return True
+            line = stale[0]
+            if not await self._remove_cart_line(
+                line.get("slug") or "", page, line.get("index") or 0
+            ):
+                logger.warning(
+                    "移出购物车残留失败: "
+                    + "; ".join((item.get("text") or "")[:60] for item in lines)
+                )
+                return False
+            logger.info(f"🛒 移出购物车残留: {(line.get('text') or '')[:60]}")
+            await page.wait_for_timeout(1500)
+        return True
+
+    async def _cart_item_count(self) -> int:
+        count = 0
+        with suppress(Exception):
+            count = await self.page.locator(
+                "//div[@data-testid='offer-card-layout-wrapper']"
+            ).count()
+        return count
+
+    async def _click_checkout(self) -> None:
+        """Press the cart's checkout control whatever the markup is now.
+
+        Run 40696732890 waited thirty seconds for
+        `//button//span[text()='Check Out']` and run 40698238507 found the
+        cart holding the game (`items=1`) with `'Check Out'` among its
+        controls, so the control was there and the selector was what failed.
+
+        The label is looked up in the page instead of in XPath, because
+        `normalize-space()` does not treat a non-breaking space as
+        whitespace while the label is built from one, and because the label
+        no longer sits in a span of a button. The click itself stays a real
+        one, so the page receives the events it expects.
+
+        When nothing matches, the cart's own controls are reported, so the
+        next run names the right one instead of guessing again.
+        """
+        await self.page.wait_for_timeout(1500)
+        handle = None
+        with suppress(Exception):
+            handle = await self.page.evaluate_handle(
+                """(labels) => {
+                    const norm = value => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const nodes = Array.from(
+                        document.querySelectorAll('button, a, [role=button]')
+                    );
+                    for (const label of labels) {
+                        for (const node of nodes) {
+                            if (!node.offsetParent) continue;
+                            const text = norm(node.innerText);
+                            if (!text) continue;
+                            if (text === label || text.startsWith(label)) return node;
+                        }
+                    }
+                    return null;
+                }""",
+                list(self.CHECKOUT_LABELS),
+            )
+        element = handle.as_element() if handle is not None else None
+        if element is not None:
+            # Epic disables the cart's checkout when its own validation
+            # refuses the cart, and a click on a disabled control only times
+            # out: run 40718120106 logged `text='Check Out', ..., disabled=True`
+            # and then ten seconds of "element is not enabled". So the cart's
+            # verdict is read while the control settles, and the control is
+            # only ever clicked once Epic has enabled it.
+            warnings = ""
+            for _ in range(20):
+                if not await element.is_disabled():
+                    break
+                warnings = await self._cart_warnings()
+                if warnings:
+                    raise CartNotPurchasable(warnings)
+                await self.page.wait_for_timeout(500)
+            else:
+                raise CartNotPurchasable(
+                    warnings
+                    or "the cart's checkout control stayed disabled "
+                    f"(items={await self._cart_item_count()})"
+                )
+            # A click that lands but leaves the cart where it was is the
+            # failure run 40716550293 hit: the cart page still had `Check Out`
+            # in its markup after the click, and the run then looked for the
+            # order form on the cart itself. So each click is checked by
+            # whether the page left the cart, and a click that does nothing is
+            # repeated with more force.
+            for label, click in (
+                ("a plain click", lambda: element.click(timeout=10000)),
+                ("a forced click", lambda: element.click(timeout=5000, force=True)),
+                ("a DOM click", lambda: element.evaluate("node => node.click()")),
+            ):
+                try:
+                    await click()
+                except Exception as err:
+                    logger.warning(f"Checkout control refused {label}: {err}")
+                    continue
+                await self.page.wait_for_timeout(2500)
+                if not self.page.url.rstrip("/").endswith("/cart"):
+                    logger.debug(f"The cart handed over after {label}")
+                    return
+                # The checkout may also open inside the cart instead of
+                # navigating, so the order form itself counts as success.
+                with suppress(Exception):
+                    opened = await self.page.evaluate(
+                        """() => {
+                            const wanted = ['place order', 'get', 'add to library',
+                                            'buy now', 'confirm', 'confirm order',
+                                            'complete order', 'submit order'];
+                            return Array.from(document.querySelectorAll('button'))
+                                .some(node => {
+                                    const text = (node.innerText || '')
+                                        .replace(/\\s+/g, ' ').trim().toLowerCase();
+                                    return text && wanted.some(w => text === w || text.startsWith(w));
+                                });
+                        }"""
+                    )
+                    if opened:
+                        logger.debug(f"The order form opened after {label}")
+                        return
+                logger.warning(
+                    f"The cart did not hand over after {label}; trying again"
+                )
+        labels: list[str] = []
+        with suppress(Exception):
+            labels = await self.page.evaluate(
+                """() => Array.from(document.querySelectorAll('button, a'))
+                    .filter(el => el.offsetParent)
+                    .map(el => (el.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 40))
+                    .filter(Boolean)
+                    .slice(0, 25)"""
+            )
+        cards = 0
+        with suppress(Exception):
+            cards = await self.page.locator(
+                "//div[@data-testid='offer-card-layout-wrapper']"
+            ).count()
+        raise TimeoutError(
+            "no checkout control on the cart page "
+            f"(items={cards}, controls={labels})"
+        )
+
+    async def _purchase_free_game(self, attempt: int = 1) -> None:
+        """Check the cart out, retrying a bounded number of times.
+
+        The retry used to call itself without a limit, so a checkout that
+        kept failing kept reloading: run 40700908238 logged its last line at
+        13:57:45 and then nothing for twenty-four minutes, until the task
+        timeout ended the run.
+        """
+        max_attempts = max(1, int(settings.CHECKOUT_MAX_ATTEMPTS or 1))
         await self.page.goto(URL_CART, wait_until="domcontentloaded")
-        logger.debug("Move ALL paid games from the shopping cart out")
-        await self._empty_cart(self.page)
+        logger.debug("Move everything that is not this week's games out")
+        await self._keep_only_cart(self.page, getattr(self, "_cart_targets", []))
 
         agent = get_hcaptcha_agent(self.page)
-        await self.page.click("//button//span[text()='Check Out']")
+        await self._click_checkout()
         await self._agree_license(self.page)
 
         try:
@@ -1671,16 +2118,56 @@ class EpicGames:
             await self._uk_confirm_order(wpc)
             await agent.wait_for_challenge()
         except Exception as err:
-            logger.warning(f"验证码解决失败: {err}")
+            logger.warning(f"验证码解决失败 [{attempt}/{max_attempts}]: {err}")
+            if attempt >= max_attempts:
+                raise
             await self.page.reload()
-            return await self._purchase_free_game()
+            return await self._purchase_free_game(attempt + 1)
 
     @retry(retry=retry_if_exception_type(TimeoutError), stop=stop_after_attempt(2), reraise=True)
     async def collect_weekly_games(self, promotions: List[PromotionGame]):
+        # The games this run means to buy. `_purchase_free_game` keeps these
+        # and nothing else, so a leftover from an earlier attempt cannot make
+        # Epic refuse the checkout — which is exactly how a free
+        # `Shrunken Head DLC` blocked every run that came after it.
+        self._cart_targets = promotions
         has_cart_items = await self.add_promotion_to_cart(self.page, promotions)
 
         if has_cart_items:
-            await self._purchase_free_game()
+            try:
+                await self._purchase_free_game()
+            except Exception as err:
+                # The cart could not be checked out. A game the account's
+                # region cannot buy leaves exactly that trace: the cart holds
+                # it and the checkout control stays disabled. That is not a
+                # failure of the run, and the claim script already accepts
+                # `region_unavailable` as settled.
+                region_page = await self._is_region_unavailable_page(self.page)
+                reason = str(err) if isinstance(err, CartNotPurchasable) else ""
+                region = region_page or any(
+                    marker in reason.lower() for marker in REGION_UNAVAILABLE_MARKERS
+                )
+                if isinstance(err, CartNotPurchasable) or region_page:
+                    status = "region_unavailable" if region else "not_purchasable"
+                    for promotion in promotions:
+                        logger.warning(f"{status.upper()}:{promotion.title}:{reason}")
+                        emit_desktop_result(promotion.title, status)
+                    await self._save_debug_page(self.page, f"cart_{status}")
+                    return
+                # A stale entry for a game the account already owns looks the
+                # same way, so the order history is asked before the game is
+                # reported as lost.
+                owned = []
+                for promotion in promotions:
+                    if await self._owned_from_order_history(self.page, promotion):
+                        owned.append(promotion.title)
+                        emit_desktop_result(promotion.title, "verified_owned")
+                if owned:
+                    logger.success(
+                        "🎉 订单历史确认已领取: " + ", ".join(owned)
+                    )
+                    return
+                raise
             try:
                 await self.page.wait_for_url(URL_CART_SUCCESS)
                 logger.success("🎉 购物车游戏领取成功")

@@ -1,3 +1,4 @@
+import re
 import unittest
 from typing import Any
 from pathlib import Path
@@ -13,6 +14,7 @@ def load_helpers():
     tree = ast.parse(SETTINGS_SOURCE.read_text(encoding="utf-8"))
     wanted = {
         "extract_chat_completion_text",
+        "strip_code_fence",
         "captcha_output_budget",
         "captcha_temperature",
         "captcha_drag_response_is_valid",
@@ -22,7 +24,14 @@ def load_helpers():
         for item in tree.body
         if isinstance(item, ast.FunctionDef) and item.name in wanted
     ]
-    namespace = {"Any": Any}
+    # The fence pattern is a module constant next to the helper.
+    nodes += [
+        item
+        for item in tree.body
+        if isinstance(item, ast.Assign)
+        and any(getattr(t, "id", "") == "_CODE_FENCE" for t in item.targets)
+    ]
+    namespace = {"Any": Any, "re": re}
     exec(
         compile(ast.Module(body=nodes, type_ignores=[]), str(SETTINGS_SOURCE), "exec"),
         namespace,
@@ -120,6 +129,52 @@ class OpenAICompatibilityTests(unittest.TestCase):
         }
 
         self.assertTrue(captcha_drag_response_is_valid(response))
+
+
+class ApiVersionTests(unittest.TestCase):
+    def test_the_version_segment_is_configurable(self):
+        """The gateway's path is not always `/v1`.
+
+        Z.AI serves the same OpenAI-compatible shape under `/v4`, and the
+        hardcoded `/v1` asked it for `/v4/v1/chat/completions`: run
+        40617588808 got 404 on every call.
+        """
+        source = SETTINGS_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn('os.getenv("API_VERSION", "v1")', source)
+        self.assertIn('url = f"{base_url}/{api_version}/chat/completions"', source)
+        self.assertNotIn('url = f"{base_url}/v1/chat/completions"', source)
+
+
+class CodeFenceTests(unittest.TestCase):
+    def test_a_fenced_answer_keeps_only_its_payload(self):
+        """Gemini answers a JSON request inside a ```json fence.
+
+        The library strips it in its own Gemini provider, but the
+        OpenAI-compatible layer hands the text to the parser unchanged, and
+        a fenced answer loses the round.
+        """
+        payload = {"choices": [{"message": {"content": '```json\n{"point": [521, 747]}\n```'}}]}
+
+        self.assertEqual(extract_chat_completion_text(payload), '{"point": [521, 747]}')
+
+    def test_a_bare_answer_is_left_alone(self):
+        payload = {"choices": [{"message": {"content": '{"point": [1, 2]}'}}]}
+
+        self.assertEqual(extract_chat_completion_text(payload), '{"point": [1, 2]}')
+
+
+class ThinkingKwargTests(unittest.TestCase):
+    def test_the_thinking_switch_can_be_left_out(self):
+        """Google rejects the whole request over `chat_template_kwargs`.
+
+        A rejected call still spends one of 500 daily requests, so the field
+        has to be left out rather than sent and retried.
+        """
+        source = SETTINGS_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn('os.getenv(\n                "API_SEND_THINKING_KWARG", "true"\n            )', source)
+        self.assertIn('payload.pop("chat_template_kwargs", None)', source)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,18 @@ class Signal(str, Enum):
     RESPONSE_TIMEOUT = "challenge_response_timeout"
 
 
+class PointCoordinate:
+    def __init__(self, x=0, y=0):
+        self.x = x
+        self.y = y
+
+
+class SpatialPath:
+    def __init__(self, start_point=None, end_point=None):
+        self.start_point = start_point
+        self.end_point = end_point
+
+
 class UpstreamAgent:
     """Model the upstream contract: page turns do not enqueue new payloads."""
 
@@ -71,7 +83,9 @@ class MultipageTests(unittest.IsolatedAsyncioTestCase):
         self.module = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {
             "hcaptcha_challenger.agent": types.SimpleNamespace(AgentV=UpstreamAgent),
-            "hcaptcha_challenger.models": types.SimpleNamespace(ChallengeSignal=Signal),
+            "hcaptcha_challenger.models": types.SimpleNamespace(
+                ChallengeSignal=Signal, PointCoordinate=PointCoordinate, SpatialPath=SpatialPath
+            ),
             "loguru": types.SimpleNamespace(logger=MagicMock()),
             "playwright.async_api": types.SimpleNamespace(Page=object, TimeoutError=TimeoutError),
             "settings": types.SimpleNamespace(settings=object()),

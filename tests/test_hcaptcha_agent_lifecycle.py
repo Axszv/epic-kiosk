@@ -260,16 +260,20 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
     def test_captcha_pass_metadata_fingerprints_without_exposing_token(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
+        agent = module.EpicAgentV.__new__(module.EpicAgentV)
         response = types.SimpleNamespace(
             generated_pass_UUID="P1_secret-value",
             expiration=120,
         )
 
-        metadata = module.EpicAgentV._captcha_pass_metadata(response)
+        metadata = agent._captcha_pass_metadata(response)
 
         self.assertIn("token_present=True", metadata)
         self.assertIn("token_length=15", metadata)
         self.assertNotIn("P1_secret-value", metadata)
+        # The transaction is checked against the token itself, so the agent
+        # keeps it for the request that carries it.
+        self.assertEqual(agent._last_pass_token, "P1_secret-value")
 
     def test_agent_continues_when_hcaptcha_issues_another_round(self):
         module = importlib.import_module("services.hcaptcha_agent_service")
@@ -542,6 +546,73 @@ class HcaptchaAgentLifecycleTests(unittest.TestCase):
 
         self.assertIn("if auth_result is None:", source)
         self.assertIn("auth_result = ErrorType.UNKNOWN", source)
+
+    def test_the_pass_token_is_written_where_the_portal_reads_it(self):
+        """hCaptcha's token has to reach the page, not just the log.
+
+        Run 40517281544 issued five tokens of 4578 to 5362 characters and
+        none of them appears in the login transaction, in the body as sent
+        or in its decoded form, so the portal answered `captcha_invalid`
+        every time. The widget keeps the token in three places and the page
+        is supposed to learn it from the widget callback.
+        """
+        source = ROOT / "app/services/hcaptcha_agent_service.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        cls = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "EpicAgentV"
+        )
+        method = next(
+            node for node in cls.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_hand_over_pass_token"
+        )
+        namespace = {"print": lambda *a, **k: None, "logger": MagicMock()}
+        exec(
+            compile(
+                ast.Module(body=[method], type_ignores=[]), str(source), "exec"
+            ),
+            namespace,
+        )
+
+        captured = {}
+
+        async def evaluate(script, argument=None):
+            captured["script"] = script
+            captured["argument"] = argument
+            return {"api": True, "textareas": 2, "frames": 1}
+
+        agent = types.SimpleNamespace(
+            _challenge_widget_id="0pwtymi29kph",
+            page=types.SimpleNamespace(evaluate=evaluate),
+        )
+
+        asyncio.run(namespace["_hand_over_pass_token"](agent, "P1_pass-token"))
+
+        script = captured["script"]
+        self.assertEqual(
+            captured["argument"],
+            {"token": "P1_pass-token", "widgetId": "0pwtymi29kph"},
+        )
+        # The documented API fires the widget callback, which is what makes
+        # Epic submit the form.
+        self.assertIn("window.hcaptcha", script)
+        self.assertIn("api.setResponse", script)
+        self.assertIn('textarea[id^="h-captcha-response-"]', script)
+        self.assertIn('textarea[id^="g-recaptcha-response-"]', script)
+        self.assertIn('iframe[data-hcaptcha-widget-id]', script)
+        self.assertIn("data-hcaptcha-response", script)
+
+    def test_the_widget_id_comes_from_the_challenge_frame(self):
+        source = (ROOT / "app/services/hcaptcha_agent_service.py").read_text(
+            encoding="utf-8"
+        )
+
+        # The frame keeps its parameters in the fragment, so the query alone
+        # finds nothing.
+        self.assertIn(r"[?#&]id=([^&#]+)", source)
+        self.assertIn("self._challenge_widget_id = widget_id", source)
+        self.assertIn("await self._hand_over_pass_token(", source)
 
 
 if __name__ == "__main__":

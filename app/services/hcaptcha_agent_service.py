@@ -2,19 +2,58 @@
 
 import asyncio
 import hashlib
+import json
 import math
 import os
+import re
 import time
 from contextlib import suppress
 from typing import Any
 from weakref import WeakKeyDictionary
 
 from hcaptcha_challenger.agent import AgentV
-from hcaptcha_challenger.models import ChallengeSignal
+from hcaptcha_challenger.models import ChallengeSignal, PointCoordinate, SpatialPath
 from loguru import logger
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
+from pydantic import BaseModel
 
 from settings import settings
+
+# The last token hCaptcha issued, whoever produced it. A login replaces its
+# agent between rounds, so the token cannot live on one agent: the request
+# that carries it is handled by the authorization service, which has no way
+# to know which agent answered.
+LAST_PASS_TOKEN = ""
+
+
+class AreaBox(BaseModel):
+    """A rectangle of the challenge image, in image pixels."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class ImageAreaBoxChallenge(BaseModel):
+    """One box per object that the challenge instruction asks for."""
+
+    challenge_prompt: str = ""
+    boxes: list[AreaBox] = []
+
+
+class DragBoxPath(BaseModel):
+    """The object that has to be dragged and the place it has to end."""
+
+    source_box: AreaBox
+    target_box: AreaBox
+
+
+class ImageDragBoxChallenge(BaseModel):
+    """The drags of a challenge, as boxes of the challenge picture."""
+
+    challenge_prompt: str = ""
+    paths: list[DragBoxPath] = []
 
 
 DRAG_PROMPT_TRANSLATION = str.maketrans(
@@ -86,6 +125,12 @@ challenge_prompt field, briefly name the reference dish and the selected
 ingredient types so the identification is explicit. Return one point at the
 center of EACH matching tile, including repeated matching ingredients.
 """.strip()
+AREA_BOX_DESCRIPTION = """
+You are shown one challenge picture and the same picture with a coordinate grid
+drawn on top of it. You find the objects a challenge instruction asks for and
+report a tight box around each of them, in the pixel coordinates of the
+pictures.
+""".strip()
 
 
 class InvalidChallengeCoordinates(ValueError):
@@ -122,6 +167,15 @@ class EpicAgentV(AgentV):
         self._decode_payloads = os.getenv("HCAPTCHA_VISUAL_ONLY", "false").lower() != "true"
         self._hsw_lock = asyncio.Lock()
         self._hsw_document_key = ""
+        self._reported_sitekeys: set[tuple[str, str]] = set()
+        # The checkout captcha keeps every answer in the plan of one widget,
+        # and Epic refuses a plan that holds a wrong answer, so answering more
+        # rounds on the same widget cannot help. The checkout sets this and
+        # reopens its widget instead.
+        self._stop_after_rejection = False
+        self._challenge_widget_id = ""
+        self._challenge_sitekey = ""
+        self._last_pass_token = ""
         super().__init__(*args, **kwargs)
         # Upstream requires an exact visible `.challenge-view`, which misses
         # Epic's hCaptcha when it is nested inside the purchase iframe.
@@ -142,6 +196,30 @@ class EpicAgentV(AgentV):
         self._original_match_user_prompt = self.robotic_arm._match_user_prompt
         self.robotic_arm._match_user_prompt = self._match_drag_user_prompt
         self.robotic_arm.challenge_image_label_select = self._select_image_local_points
+        # The upstream counts the pages of the challenge with a locator on the
+        # challenge frame, and the frame is gone when the portal replaces the
+        # challenge. The count then has to be one.
+        self._original_check_crumb_count = self.robotic_arm.check_crumb_count
+        self.robotic_arm.check_crumb_count = self._safe_check_crumb_count
+        # The drag challenges are the most frequent ones, and the upstream
+        # answer asks for page coordinates that the model reads off a plotted
+        # axis. The drag is answered in the pixels of the challenge picture.
+        self._original_challenge_image_drag_drop = self.robotic_arm.challenge_image_drag_drop
+        self.robotic_arm.challenge_image_drag_drop = self._drag_image_local
+
+    async def _safe_check_crumb_count(self) -> int:
+        """The number of pages of the challenge, also without its frame.
+
+        The upstream counts the pages with a locator on the challenge frame,
+        and the frame is gone when the portal replaces the challenge. The
+        count is one then, and the round is answered with the picture that
+        is still there.
+        """
+        with suppress(Exception):
+            count = await self._original_check_crumb_count()
+            if isinstance(count, int) and count >= 1:
+                return count
+        return 1
 
     async def _capture_challenge_page(self, frame, cache_key, crumb_id):
         self._challenge_page_index = int(crumb_id)
@@ -154,6 +232,9 @@ class EpicAgentV(AgentV):
         The challenge view is visible before its images arrive, and a
         screenshot of that moment is blank. The model then answers an empty
         grid, hCaptcha rejects the answer, and Epic refuses the token.
+
+        A challenge whose picture is a background image has nothing to wait
+        for, and waiting for it anyway costs twenty seconds of every round.
         """
         deadline = time.monotonic() + timeout_ms / 1000
         reported = False
@@ -164,6 +245,7 @@ class EpicAgentV(AgentV):
             with suppress(Exception):
                 state = await frame.evaluate(
                     """() => {
+                        const view = document.querySelector('.challenge-view');
                         const tiles = Array.from(document.querySelectorAll(
                             '.challenge-view .task-image, .challenge-view img,'
                             + ' .challenge-view canvas'
@@ -178,14 +260,31 @@ class EpicAgentV(AgentV):
                             const background = getComputedStyle(tile).backgroundImage;
                             return background && background !== 'none';
                         });
-                        return {tiles: tiles.length, loaded: loaded.length};
+                        let painted = 0;
+                        if (view) {
+                            painted = Array.from(view.querySelectorAll('*')).filter(el => {
+                                const background = getComputedStyle(el).backgroundImage;
+                                return background && background.indexOf('url(') >= 0;
+                            }).length;
+                        }
+                        return {
+                            tiles: tiles.length,
+                            loaded: loaded.length,
+                            painted: painted,
+                        };
                     }"""
                 )
             tiles = int(state.get("tiles") or 0)
             loaded = int(state.get("loaded") or 0)
+            painted = int(state.get("painted") or 0)
             if tiles and loaded >= tiles:
                 if reported:
                     logger.info(f"HCAPTCHA_IMAGES:ready:tiles={tiles}")
+                return True
+            if not tiles and painted:
+                # The picture of this challenge is a background image, so the
+                # screenshot has everything it needs right away.
+                logger.info(f"HCAPTCHA_IMAGES:ready:painted={painted}")
                 return True
             if not reported:
                 logger.warning(
@@ -215,6 +314,7 @@ class EpicAgentV(AgentV):
             # the pixel prompt. Make both conventions identical in its inputs.
             size = (self.POINT_IMAGE_SIZE, self.POINT_IMAGE_SIZE)
             overlay = original.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+        self._native_image_size = native_size
         overlay.save(raw)
         draw = ImageDraw.Draw(overlay)
         font = ImageFont.load_default(size=18)
@@ -261,6 +361,9 @@ class EpicAgentV(AgentV):
         # Validate the entire answer before clicking anything: a partial answer
         # must not toggle already selected objects when the model is retried.
         positions = self._local_point_positions(points, image_size)
+        await self._click_local_positions(frame, positions)
+
+    async def _click_local_positions(self, frame, positions):
         view = frame.locator(".challenge-view")
         for x, y in positions:
             box = await view.bounding_box(timeout=1000)
@@ -271,6 +374,384 @@ class EpicAgentV(AgentV):
             await view.click(position={"x": x * box["width"], "y": y * box["height"]},
                              delay=180, timeout=3000)
             await self.page.wait_for_timeout(500)
+
+    def _challenge_instruction(self) -> str:
+        """The challenge's own instruction, in the language it uses.
+
+        The payload carries the instruction once per language, and the
+        accessor of the dependency only ever reads the English copy. A
+        challenge in another language therefore arrives as the word
+        "unknown", which leaves the model with the picture alone.
+        """
+        instruction = str(getattr(self.robotic_arm, "_challenge_prompt", "") or "")
+        payload = getattr(self.robotic_arm, "captcha_payload", None)
+        if payload is None:
+            return instruction
+        questions = getattr(payload, "requester_question", None) or {}
+        if not isinstance(questions, dict) or not questions:
+            with suppress(Exception):
+                instruction = payload.get_requester_question() or instruction
+            return str(instruction or "")
+        english = str(questions.get("en") or "").strip()
+        if english and english != "unknown":
+            return english
+        for value in questions.values():
+            native = str(value or "").strip()
+            if native and native != "unknown":
+                return native
+        return instruction
+
+    def _challenge_count_hint(self) -> str:
+        """Tell the model how many objects the challenge wants, when it knows.
+
+        The payload says how many points the answer of one picture needs. An
+        answer with one object too many is a wrong answer, and the model has
+        no way of knowing the number on its own.
+        """
+        payload = getattr(self.robotic_arm, "captcha_payload", None)
+        config = getattr(payload, "request_config", None)
+        if not config:
+            return ""
+
+        def read(name):
+            if isinstance(config, dict):
+                return config.get(name)
+            return getattr(config, name, None)
+
+        for minimum, maximum in (
+            (read("min_points"), read("max_points")),
+            (read("min_shapes_per_image"), read("max_shapes_per_image")),
+        ):
+            if (
+                isinstance(minimum, int)
+                and isinstance(maximum, int)
+                and minimum == maximum
+                and minimum > 0
+            ):
+                noun = "object" if minimum == 1 else "objects"
+                return f"Select exactly {minimum} {noun} in this picture."
+        return ""
+
+    def _challenge_config_log(self) -> str:
+        """The counts of the challenge, for the comparison of a later run."""
+        payload = getattr(self.robotic_arm, "captcha_payload", None)
+        config = getattr(payload, "request_config", None)
+        if not config:
+            return ""
+        names = (
+            "shape_type",
+            "answer_type",
+            "min_points",
+            "max_points",
+            "min_shapes_per_image",
+            "max_shapes_per_image",
+        )
+
+        def read(name):
+            if isinstance(config, dict):
+                return config.get(name)
+            return getattr(config, name, None)
+
+        values = {}
+        for name in names:
+            value = read(name)
+            if isinstance(value, (int, float, str, bool)):
+                values[name] = value
+        return json.dumps(values, ensure_ascii=False) if values else ""
+
+    async def _answer_with_boxes(self, raw, grid, size, instruction, cache_key=None, crumb_id=None):
+        """Ask the model for a box around every object the instruction names.
+
+        A single point asks the model to do two hard things at once: find the
+        object and place the pixel exactly on it. Its points land a hundred
+        pixels off, on the background, and hCaptcha rejects the round. A box
+        is much easier to place, and the center of a box that is a little too
+        large is still inside the object.
+        """
+        width, height = size
+        if not instruction:
+            return []
+        count_hint = self._challenge_count_hint()
+        config_log = self._challenge_config_log()
+        if config_log:
+            logger.debug(f"hCaptcha challenge config: {config_log}")
+        reasoner = getattr(self.robotic_arm, "_spatial_point_reasoner", None)
+        provider = getattr(reasoner, "_provider", None)
+        if provider is None:
+            return []
+        prompt = (
+            f"The first image is the challenge picture. The second image is the "
+            f"same picture with a coordinate grid drawn on it. Both images are "
+            f"exactly {width} pixels wide and {height} pixels high, the origin "
+            f"(0,0) is the top left corner, x grows to the right and y grows "
+            f"downwards.\n\n"
+            f"Challenge instruction: {instruction}\n\n"
+            "The instruction may be written in any language. Translate it into "
+            "English first, then look for every object the English instruction "
+            "asks for.\n"
+            "Write in the challenge_prompt field which objects the picture "
+            "holds and which one of them the instruction asks for, and only "
+            "then report the box. The picture often holds more than one "
+            "candidate object, and the most obvious one is not always the one "
+            "the instruction names. When the instruction names a group, a "
+            "colour, a shape or a letter, check every candidate against that "
+            "property and report the one that has it.\n"
+            "Report one box per answer object, tight around the object, as "
+            '{"x1": <left edge>, "y1": <top edge>, "x2": <right edge>, '
+            '"y2": <bottom edge>} in the pixel coordinates of the images. Read '
+            "the coordinates off the grid image, and report a box for every "
+            "matching object and for nothing else.\n"
+            "When the instruction names a number of objects, report exactly "
+            "that many boxes. The small example picture in the instruction "
+            "banner is not an answer object, and neither is anything outside "
+            "the picture below the banner.\n"
+            f"{count_hint}"
+        )
+        try:
+            response = await provider.generate_with_images(
+                images=[raw, grid],
+                user_prompt=prompt,
+                description=AREA_BOX_DESCRIPTION,
+                response_schema=ImageAreaBoxChallenge,
+            )
+        except Exception as err:
+            logger.warning(f"hCaptcha box answer failed: {err}")
+            return []
+        boxes = list(getattr(response, "boxes", []) or [])
+        centers = self._box_centers(boxes, size)
+        # The answer has to be readable in the run log: a rejected round is
+        # only diagnosable against what the model was asked and what it
+        # pointed at.
+        logger.info(
+            "HCAPTCHA_BOX_ANSWER:"
+            f"instruction={instruction[:120]!r}:"
+            f"boxes={len(boxes)}:"
+            f"centers={[(round(x), round(y)) for x, y in centers]}"
+        )
+        if cache_key is not None:
+            with suppress(Exception):
+                cache_key.mkdir(parents=True, exist_ok=True)
+                (cache_key / f"{cache_key.name}_{crumb_id}_box_model_answer.json").write_text(
+                    json.dumps(
+                        {
+                            "instruction": instruction,
+                            "boxes": [box.model_dump() for box in boxes],
+                            "centers": centers,
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+        return centers
+
+    async def _drag_image_local(self, job_type):
+        """Answer a drag challenge in the pixels of the challenge picture."""
+        arm = self.robotic_arm
+        crumb_count = await arm.check_crumb_count()
+        cache_key = self.config.create_cache_key(arm.captcha_payload)
+        for cid in range(crumb_count):
+            frame = await arm.get_challenge_frame_locator()
+            if frame is None:
+                raise InvalidChallengeCoordinates("Challenge frame is no longer visible")
+            await self.page.wait_for_timeout(self.config.WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS)
+            raw, grid, size = await self._capture_point_image(frame, cache_key, cid)
+            view = frame.locator(".challenge-view")
+            box = await view.bounding_box(timeout=2000)
+            if not box or box["width"] <= 0 or box["height"] <= 0:
+                raise InvalidChallengeCoordinates("Challenge image is no longer visible")
+            if not self._view_matches_the_picture(box):
+                # The view is drawn with another shape than the picture, so a
+                # pixel of the picture is not a pixel of the page.
+                logger.info("Falling back to the upstream hCaptcha drag answer")
+                return await self._original_challenge_image_drag_drop(job_type)
+            instruction = self._challenge_instruction()
+            paths = await self._answer_with_drag_boxes(
+                raw, grid, size, instruction, job_type,
+                view_box=box, cache_key=cache_key, crumb_id=cid,
+            )
+            if not paths:
+                # The upstream answer still gets its chance.
+                logger.info("Falling back to the upstream hCaptcha drag answer")
+                return await self._original_challenge_image_drag_drop(job_type)
+            width, height = size
+            for source, target in paths:
+                page_path = SpatialPath(
+                    start_point=PointCoordinate(
+                        x=int(round(box["x"] + source[0] / width * box["width"])),
+                        y=int(round(box["y"] + source[1] / height * box["height"])),
+                    ),
+                    end_point=PointCoordinate(
+                        x=int(round(box["x"] + target[0] / width * box["width"])),
+                        y=int(round(box["y"] + target[1] / height * box["height"])),
+                    ),
+                )
+                await arm._perform_drag_drop(page_path)
+            await arm.click_by_mouse(frame.locator("div.button-submit.button"))
+
+    def _view_matches_the_picture(self, box) -> bool:
+        """Whether a pixel of the picture is a pixel of the page.
+
+        The picture of the challenge is the view of the challenge, so both
+        have the same shape. When they do not, the browser draws the view
+        with another shape and the coordinates of the model cannot be used.
+        """
+        native_size = getattr(self, "_native_image_size", None)
+        if not native_size:
+            return True
+        width, height = native_size
+        if width <= 0 or height <= 0:
+            return False
+        picture_ratio = width / height
+        view_ratio = box["width"] / box["height"]
+        return abs(picture_ratio - view_ratio) / picture_ratio < 0.05
+
+    async def _drag_source_image(self, raw, cache_key, crumb_id, view_box):
+        """An enlarged picture of the element that has to be dragged.
+
+        The element in the Move card is small and drawn with a thin line, and
+        the model has to compare its outline with the shapes of the play
+        area. An enlarged picture of it makes that comparison possible.
+        """
+        from PIL import Image
+
+        if not view_box or view_box.get("width", 0) <= 0:
+            return None
+        centers = []
+        with suppress(Exception):
+            centers = await self._move_card_centers()
+        if not centers:
+            return None
+        center = centers[0]
+        scale_x = 1000.0 / max(view_box["width"], 1)
+        scale_y = 1000.0 / max(view_box["height"], 1)
+        cx = (center["x"] - view_box["x"]) * scale_x
+        cy = (center["y"] - view_box["y"]) * scale_y
+        half = 150
+        left = int(max(0, min(1000 - 2 * half, cx - half)))
+        top = int(max(0, min(1000 - 2 * half, cy - half)))
+        path = cache_key / f"{cache_key.name}_{crumb_id}_drag_source.png"
+        try:
+            with Image.open(raw) as image:
+                crop = image.crop((left, top, left + 2 * half, top + 2 * half))
+                crop = crop.resize((600, 600), Image.Resampling.LANCZOS)
+                crop.save(path)
+        except Exception as err:
+            logger.debug(f"Could not cut the drag source out of the picture: {err}")
+            return None
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            import shutil
+
+            from settings import RUNTIME_DIR
+
+            with suppress(Exception):
+                RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, RUNTIME_DIR / path.name)
+        return path
+
+    async def _answer_with_drag_boxes(self, raw, grid, size, instruction, job_type, view_box=None, cache_key=None, crumb_id=None):
+        """Ask the model for the source and the target of every drag.
+
+        The upstream asks for page coordinates, which the model has to read
+        off a plotted axis that carries margins. Its drag ended a hundred
+        pixels off the place the instruction names, and the round was
+        rejected. A box of the picture is the same question that the select
+        challenges ask, and it is answered far more precisely.
+        """
+        width, height = size
+        reasoner = getattr(self.robotic_arm, "_spatial_path_reasoner", None)
+        provider = getattr(reasoner, "_provider", None)
+        if provider is None:
+            return []
+        source_image = None
+        with suppress(Exception):
+            source_image = await self._drag_source_image(
+                raw, cache_key, crumb_id, view_box
+            )
+        images = [raw, grid]
+        if source_image is not None:
+            images = [source_image, raw, grid]
+        prompt = (
+            f"{self.robotic_arm._match_user_prompt(job_type)}\n\n"
+            + (
+                "The first image is the element that has to be dragged, "
+                "enlarged. The second image is the challenge picture, the "
+                "third image is the same picture with a coordinate grid "
+                "drawn on it. "
+                if source_image is not None
+                else "The first image is the challenge picture. The second "
+                "image is the same picture with a coordinate grid drawn on it. "
+            )
+            + f"Both pictures of the challenge are exactly {width} pixels "
+            f"wide and {height} pixels high, the origin (0,0) is the top left "
+            f"corner, x grows to the right and y grows downwards.\n"
+            "This is a drag and drop puzzle. For every drag the challenge "
+            "asks for, report the box of the object that has to be dragged and "
+            "the box of the place where it has to end, as "
+            '{"source_box": {"x1": <left edge>, "y1": <top edge>, '
+            '"x2": <right edge>, "y2": <bottom edge>}, "target_box": '
+            '{"x1": <left edge>, "y1": <top edge>, "x2": <right edge>, '
+            '"y2": <bottom edge>}} in the pixel coordinates of the pictures. '
+            "The target is the empty place the object has to be dropped on, "
+            "not an object that is already there."
+        )
+        try:
+            response = await provider.generate_with_images(
+                images=images,
+                user_prompt=prompt,
+                description=AREA_BOX_DESCRIPTION,
+                response_schema=ImageDragBoxChallenge,
+            )
+        except Exception as err:
+            logger.warning(f"hCaptcha drag box answer failed: {err}")
+            return []
+        paths = []
+        for entry in list(getattr(response, "paths", []) or []):
+            source = self._box_center(getattr(entry, "source_box", None), size)
+            target = self._box_center(getattr(entry, "target_box", None), size)
+            if source is None or target is None:
+                continue
+            paths.append((source, target))
+        logger.info(
+            "HCAPTCHA_DRAG_BOX_ANSWER:"
+            f"drags={len(paths)}:"
+            f"{[(tuple(round(v) for v in s), tuple(round(v) for v in t)) for s, t in paths]}"
+        )
+        return paths
+
+    @classmethod
+    def _box_center(cls, box, image_size):
+        """The center of one box, or nothing when the box cannot be used."""
+        centers = cls._box_centers([box] if box is not None else [], image_size)
+        return centers[0] if centers else None
+
+    @staticmethod
+    def _box_centers(boxes, image_size):
+        """Turn the model's boxes into the pixel centers to click."""
+        width, height = image_size
+        centers = []
+        for box in boxes or []:
+            try:
+                x1, y1 = float(box.x1), float(box.y1)
+                x2, y2 = float(box.x2), float(box.y2)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
+                continue
+            if x2 < x1:
+                x1, x2 = x2, x1
+            if y2 < y1:
+                y1, y2 = y2, y1
+            x1 = min(max(x1, 0.0), width - 1.0)
+            x2 = min(max(x2, 0.0), width - 1.0)
+            y1 = min(max(y1, 0.0), height - 1.0)
+            y2 = min(max(y2, 0.0), height - 1.0)
+            if x2 - x1 < 8 or y2 - y1 < 8:
+                # A box that is a few pixels wide cannot hold an object, and a
+                # normalized answer would land here. Let the point answer try.
+                continue
+            centers.append(((x1 + x2) / 2.0, (y1 + y2) / 2.0))
+        return centers
 
     async def _select_image_local_points(self, job_type):
         try:
@@ -318,6 +799,16 @@ class EpicAgentV(AgentV):
                 "examples that are shown in the image."
             )
             prompt = f"{arm._match_user_prompt(job_type)}\n\n{coordinate_prompt}"
+            instruction = self._challenge_instruction()
+            centers = await self._answer_with_boxes(
+                raw, grid, size, instruction, cache_key=cache_key, crumb_id=cid
+            )
+            if centers:
+                await self._click_local_positions(
+                    frame, [(x / width, y / height) for x, y in centers]
+                )
+                await arm.click_by_mouse(frame.locator("div.button-submit.button"))
+                continue
             for attempt in range(2):
                 response = await arm._spatial_point_reasoner(
                     challenge_screenshot=raw, grid_divisions=grid,
@@ -335,13 +826,17 @@ class EpicAgentV(AgentV):
                     prompt += f"\nYour previous answer was invalid: {err}. Re-read the grid. {coordinate_prompt}"
                     continue
                 break
-            logger.debug(f"[{cid + 1}/{crumb_count}] Local point answer: {response.log_message}")
+            logger.info(f"HCAPTCHA_POINT_ANSWER:[{cid + 1}/{crumb_count}] {response.log_message}")
             await self._click_image_points(frame, response.points, size)
             await arm.click_by_mouse(frame.locator("div.button-submit.button"))
 
-    @staticmethod
-    def _captcha_pass_metadata(response) -> str:
+    def _captcha_pass_metadata(self, response) -> str:
+        global LAST_PASS_TOKEN
         token = str(getattr(response, "generated_pass_UUID", "") or "")
+        # The login transaction is checked against the token hCaptcha issued,
+        # so the token itself has to outlive this log line.
+        self._last_pass_token = token
+        LAST_PASS_TOKEN = token
         fingerprint = (
             hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
         )
@@ -376,13 +871,9 @@ class EpicAgentV(AgentV):
 
     def _match_drag_user_prompt(self, job_type) -> str:
         base_prompt = self._original_match_user_prompt(job_type)
-        payload = getattr(self.robotic_arm, "captcha_payload", None)
         # Visual-only classification stores the question on the arm rather
         # than in a decoded payload. It needs the same task-specific guidance.
-        challenge_prompt = getattr(self.robotic_arm, "_challenge_prompt", "") or ""
-        if payload is not None:
-            with suppress(Exception):
-                challenge_prompt = payload.get_requester_question() or challenge_prompt
+        challenge_prompt = self._challenge_instruction()
         specialized = self._specialized_visual_prompt(challenge_prompt)
         if specialized is None:
             if not challenge_prompt:
@@ -878,8 +1369,122 @@ class EpicAgentV(AgentV):
                     continue
                 challenge_view = frame.locator(".challenge-view")
                 if await challenge_view.is_visible(timeout=250):
+                    self._report_challenge_sitekey(frame)
                     return frame
         return None
+
+    def _report_challenge_sitekey(self, frame) -> None:
+        """Name the widget whose challenge is on screen, once per widget.
+
+        Epic renders one invisible hCaptcha per step, and a step that is
+        already finished can leave its frame behind. The claim then answers
+        the challenge of a widget the portal is no longer checking, and the
+        token it produces is refused as `captcha_invalid` while hCaptcha
+        itself reports a success. The sitekey is what tells the two widgets
+        apart, so it goes to the run log.
+
+        The challenge frame keeps its parameters in the URL fragment
+        (`#frame=challenge&id=...&sitekey=...`), so the whole URL is searched
+        and not only its query.
+
+        The widget id is also kept on the agent: it names the textarea the
+        token has to be handed to.
+        """
+        with suppress(Exception):
+            url = frame.url
+            sitekey = ""
+            for name in ("sitekey", "siteKey"):
+                found = re.search(rf"[?#&]{name}=([^&#]+)", url)
+                if found:
+                    sitekey = found.group(1)
+                    break
+            widget = re.search(r"[?#&]id=([^&#]+)", url)
+            widget_id = widget.group(1) if widget else ""
+            if widget_id:
+                self._challenge_widget_id = widget_id
+            self._challenge_sitekey = sitekey
+            key = (sitekey, widget_id)
+            if not sitekey or key in self._reported_sitekeys:
+                return
+            self._reported_sitekeys.add(key)
+            print(
+                f"HCAPTCHA_CHALLENGE_SITEKEY:{sitekey}:widget={widget_id[:12]}:"
+                f"page={self.page.url[:80]}",
+                flush=True,
+            )
+
+    async def _hand_over_pass_token(self, token: str) -> None:
+        """Put the pass token where the portal reads it.
+
+        hCaptcha answers with `generated_pass_UUID`, and the page is supposed
+        to learn it from the widget callback: the widget writes it into
+        `#h-captcha-response-<widget>` and Epic submits the login with it.
+
+        Run 40517281544 showed that the token never reaches Epic. hCaptcha
+        issued 5266, 5324, 4578, 5291 and 5362 characters, and none of them
+        appears in the transaction, in the body as sent or in its decoded
+        form; the portal answered `captcha_invalid` every time. When the page
+        obtained the token itself, the same portal answered 204.
+
+        So the token is handed over here, in all three places the widget
+        keeps it. `hcaptcha.setResponse` is the documented way and fires the
+        widget callback as well; the textareas and the frame attribute are
+        the state that callback would have written.
+        """
+        if not token:
+            return
+        widget_id = getattr(self, "_challenge_widget_id", "") or ""
+        try:
+            report = await self.page.evaluate(
+                """({token, widgetId}) => {
+                    const out = {api: false, textareas: 0, frames: 0, globals: []};
+                    const api = window.hcaptcha;
+                    if (api && typeof api.setResponse === 'function') {
+                        try {
+                            if (widgetId) { api.setResponse(token, widgetId); }
+                            else { api.setResponse(token); }
+                            out.api = true;
+                        } catch (err) {
+                            out.apiError = String(err).slice(0, 80);
+                        }
+                    }
+                    // Epic runs hCaptcha through Talon, and the portal reads
+                    // the pass from Talon's own state. Naming the globals the
+                    // page exposes says whether that state can be reached.
+                    for (const key of Object.keys(window)) {
+                        if (/captcha|talon|hsw/i.test(key)) { out.globals.push(key); }
+                    }
+                    for (const node of document.querySelectorAll(
+                        'textarea[id^="h-captcha-response-"], textarea[id^="g-recaptcha-response-"]'
+                    )) {
+                        const id = node.id.replace(/^(h|g)-captcha-response-/, '');
+                        if (widgetId && id !== widgetId) { continue; }
+                        node.value = token;
+                        node.dispatchEvent(new Event('input', {bubbles: true}));
+                        node.dispatchEvent(new Event('change', {bubbles: true}));
+                        out.textareas += 1;
+                    }
+                    for (const frame of document.querySelectorAll(
+                        'iframe[data-hcaptcha-widget-id]'
+                    )) {
+                        const id = frame.getAttribute('data-hcaptcha-widget-id') || '';
+                        if (widgetId && id !== widgetId) { continue; }
+                        frame.setAttribute('data-hcaptcha-response', token);
+                        out.frames += 1;
+                    }
+                    return out;
+                }""",
+                {"token": token, "widgetId": widget_id},
+            )
+            print(
+                f"HCAPTCHA_TOKEN_HANDOVER:widget={widget_id[:12]}:"
+                f"api={report.get('api')}:textareas={report.get('textareas')}:"
+                f"frames={report.get('frames')}:"
+                f"globals={','.join(report.get('globals') or [])[:120]}",
+                flush=True,
+            )
+        except Exception as err:
+            logger.warning(f"Could not hand the captcha token to the page: {err}")
 
     async def _get_nested_challenge_frame_locator(self):
         deadline = time.monotonic() + 10
@@ -950,8 +1555,17 @@ class EpicAgentV(AgentV):
                     logger.success(
                         f"Challenge success: {self._captcha_pass_metadata(response)}"
                     )
+                    await self._hand_over_pass_token(
+                        str(getattr(response, "generated_pass_UUID", "") or "")
+                    )
                     self._cache_validated_captcha_response(response)
                     return ChallengeSignal.SUCCESS
+                if self._stop_after_rejection:
+                    logger.warning(
+                        "hCaptcha rejected this round; the plan of this widget "
+                        "is spent, so the attempt ends here"
+                    )
+                    return ChallengeSignal.FAILURE
                 logger.warning("hCaptcha rejected the submitted round; checking for the next round")
 
             round_number += 1
@@ -1071,7 +1685,22 @@ class EpicAgentV(AgentV):
         document_key = self.page.url
         async with self._hsw_lock:
             if document_key == self._hsw_document_key:
-                return
+                # The URL is not the document. A reload keeps the URL and
+                # throws the injected script away, so the cached key said
+                # "already injected" for a document that had no `hsw` at all.
+                # Every captcha after that reload then failed to reverse and
+                # fell back to visual only, and the portal refused the
+                # transactions built from it: run 40535177292 answered the
+                # email step 204 while `hsw` was present and failed the next
+                # eight attempts after the first reload.
+                present = False
+                with suppress(Exception):
+                    present = bool(
+                        await self.page.evaluate("typeof hsw === 'function'")
+                    )
+                if present:
+                    return
+                logger.warning("hsw.js is gone from this document; injecting it again")
             try:
                 hsw_text = await load_hsw_script(self.page, response.url)
                 await self.page.evaluate(hsw_text)
@@ -1140,6 +1769,7 @@ def get_legacy_checkout_agent(page: Page) -> AgentV:
         logger.debug("Detached page-scoped Epic hCaptcha agent for legacy checkout")
 
     agent = EpicAgentV(page=page, agent_config=settings)
+    agent._stop_after_rejection = True
     _AGENTS[page] = agent
     return agent
 

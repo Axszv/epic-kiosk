@@ -20,16 +20,22 @@ cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Ep
 cls.body = [n for n in cls.body
             if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
             and n.name in {"_install_live_xsrf_route", "_reset_xsrf_cookie",
-                           "_reset_login_cookies", "_has_refresh_csrf_session"}]
+                           "_reset_login_cookies", "_has_refresh_csrf_session",
+                           "_report_sent_captcha_token"}]
 fingerprint = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                    and n.name == "diagnostic_value_fingerprint")
 namespace = {
     "suppress": suppress,
     "logger": MagicMock(),
     "hashlib": hashlib,
+    "base64": __import__("base64"),
     "json": json,
     "os": os,
     "re": re,
+    "urlsplit": __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit,
+    "unquote": __import__("urllib.parse", fromlist=["unquote"]).unquote,
+    "print": lambda *a, **k: None,
+    "captcha_module": types.SimpleNamespace(LAST_PASS_TOKEN=""),
 }
 exec(compile(ast.Module(body=[cls, fingerprint], type_ignores=[]), str(SOURCE), "exec"), namespace)
 
@@ -60,7 +66,10 @@ class LiveXsrfRouteTests(unittest.IsolatedAsyncioTestCase):
 
         await auth._install_live_xsrf_route()
 
-        page.route.assert_awaited_once()
+        self.assertEqual(
+            [call.args[0] for call in page.route.await_args_list],
+            ["**/id/api/email/exists", "**/id/api/login"],
+        )
         handler = page.route.await_args.args[1]
         await handler(route)
         headers = route.continue_.await_args.kwargs["headers"]

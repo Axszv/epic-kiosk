@@ -15,6 +15,7 @@ def evidence_status_text(status: str) -> str:
         "already_owned": "已在库",
         "verified_owned": "已入库",
         "region_unavailable": "锁区跳过（未领取）",
+        "not_purchasable": "商店拒绝（前置条件缺失，未领取）",
         "checkout_submitted_unverified": "已提交但未确认入库",
     }.get(status, status)
 
@@ -23,6 +24,12 @@ def load_summary(path: Path) -> dict:
     if not path.exists():
         return {"accounts": [], "missing_summary": True}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def account_status_text(status: str) -> str:
+    return {
+        "completed": "已完成（电脑端 + 移动端）",
+    }.get(status, "失败")
 
 
 def account_sections(summary: dict) -> tuple[int, int, list[str]]:
@@ -37,13 +44,23 @@ def account_sections(summary: dict) -> tuple[int, int, list[str]]:
 
         attempts = account.get("attempts") or []
         email = account.get("email", "unknown")
-        status_text = "已完成" if status == "completed" else "失败"
+        status_text = account_status_text(status)
         block = [
             f"### 账号 {account.get('index')}：{email}",
             "",
             f"状态：{status_text} ｜ 尝试：{len(attempts)} 次",
             "",
         ]
+        mobile_missing = account.get("mobile_missing") or []
+        desktop_missing = account.get("desktop_missing") or []
+        if desktop_missing:
+            block.extend(
+                ["电脑端未领取：" + "、".join(desktop_missing), ""]
+            )
+        if mobile_missing:
+            block.extend(
+                ["移动端未领取：" + "、".join(mobile_missing), ""]
+            )
 
         desktop_evidence = (
             account.get("desktop_evidence")
@@ -141,6 +158,20 @@ def send_serverchan(title: str, content: str) -> None:
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        # `HTTP Error 400` says nothing on its own; the body says whether the
+        # sendkey was rejected, the message was too long, or the account was
+        # rate limited.
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        print(
+            f"ServerChan request failed: {exc}; body={body[:400]!r}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     except urllib.error.URLError as exc:
         print(f"ServerChan request failed: {exc}", file=sys.stderr)
         raise SystemExit(1)

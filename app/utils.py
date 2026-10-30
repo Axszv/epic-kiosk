@@ -45,6 +45,10 @@ CONSOLE_KEYWORDS = [
     "任务完成",
     "按钮状态",
     "发现:",
+    # 移动端领取
+    "MOBILE_OFFER_URL",
+    "MOBILE_CTA",
+    "设备不支持",
     # 错误
     "错误",
     "失败",

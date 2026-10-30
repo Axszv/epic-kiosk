@@ -88,23 +88,41 @@ DESKTOP_RESULT_RE = re.compile(r"DESKTOP_RESULT:(.*):([a-z_]+)\s*$")
 ERROR_MARKER_RE = re.compile(r"(FINAL_ERROR|ERROR_TYPE|GAME_ERROR):([A-Za-z0-9_\-]+)")
 REGION_UNAVAILABLE_RE = re.compile(r"REGION_UNAVAILABLE:(.+)")
 MOBILE_RESULT_RE = re.compile(r"MOBILE_RESULT:([^:\r\n]+):(.*):([a-z_]+)\s*$")
-SUCCESS_EVIDENCE_STATUSES = {"already_owned", "verified_owned", "region_unavailable"}
-PROFILE_REFRESH_ERROR_TYPES = {"cookie_invalid"}
+# `region_unavailable` and `not_purchasable` are the store refusing the
+# promotion for this account, not the run failing to claim it: a game the
+# account's country cannot buy, or a DLC whose base game it does not own.
+# An account is attempted more than once, and every attempt reports the same
+# games again. A later attempt that merely fails to find a purchase control
+# must not erase the ownership an earlier one confirmed: run 40744596200
+# claimed both games, then failed with "Missing strict mobile ownership
+# evidence" because its last attempt had ended on `no_purchase_cta` — the
+# state an owned game shows once the store stops offering it.
+EVIDENCE_RANK = {
+    "verified_owned": 4,
+    "already_owned": 4,
+    "region_unavailable": 3,
+    "not_purchasable": 3,
+    "no_purchase_cta": 1,
+    "cta_disabled": 1,
+    "login_required": 0,
+    "unknown": -1,
+}
+
+
+def _outranks(status: str, current: str | None) -> bool:
+    """Whether `status` says more about ownership than `current` does."""
+    return EVIDENCE_RANK.get(status, 2) > EVIDENCE_RANK.get(current or "unknown", -1)
+
+
+SUCCESS_EVIDENCE_STATUSES = {
+    "already_owned", "verified_owned", "region_unavailable", "not_purchasable"
+}
 RETRY_BACKOFF_SECONDS = {
     "cloudflare_blocked": 45,
     "captcha_failed": 20,
     "login_timeout": 15,
     "network_timeout": 15,
 }
-
-
-def should_refresh_account_profile(attempt_result: dict) -> bool:
-    """Refresh only profiles proven to contain a blocked or invalid session."""
-    return any(
-        marker.get("kind") == "ERROR_TYPE"
-        and marker.get("value") in PROFILE_REFRESH_ERROR_TYPES
-        for marker in attempt_result.get("error_markers", [])
-    )
 
 
 def account_retry_delay(attempt_result: dict) -> int:
@@ -115,18 +133,6 @@ def account_retry_delay(attempt_result: dict) -> int:
         if marker.get("kind") == "ERROR_TYPE"
     }
     return max((RETRY_BACKOFF_SECONDS.get(value, 0) for value in values), default=0)
-
-
-def refresh_account_profile(email: str, user_data_root: Path | None = None) -> bool:
-    """Remove one failed account profile so the next attempt starts clean."""
-    root = (user_data_root or Path("app/volumes/user_data")).resolve()
-    profile = root.joinpath(email).resolve()
-    if profile.parent != root:
-        raise ValueError("Account profile path escaped the user data directory")
-    if not profile.exists():
-        return False
-    shutil.rmtree(profile)
-    return True
 
 
 def merge_desktop_evidence(current: dict, incoming: dict) -> dict:
@@ -152,18 +158,49 @@ def merge_mobile_evidence(current: dict, incoming: dict) -> dict:
     return merged
 
 
-def has_complete_account_evidence(
+def has_complete_desktop_evidence(desktop_evidence: dict) -> bool:
+    """Whether the desktop store proved every promotion is in the library."""
+    return bool(desktop_evidence) and not missing_desktop_evidence(desktop_evidence)
+
+
+def missing_desktop_evidence(desktop_evidence: dict) -> list[str]:
+    return [
+        title
+        for title, item in desktop_evidence.items()
+        if item.get("status") not in SUCCESS_EVIDENCE_STATUSES
+    ]
+
+
+def attempt_outcome(
     desktop_evidence: dict,
     mobile_evidence: dict,
     mobile_offers: list[dict],
-) -> bool:
-    desktop_complete = bool(desktop_evidence) and all(
-        item.get("status") in SUCCESS_EVIDENCE_STATUSES
-        for item in desktop_evidence.values()
-    )
-    return desktop_complete and not missing_mobile_evidence(
-        mobile_offers, mobile_evidence
-    )
+) -> dict:
+    """What each channel of one attempt still has to claim.
+
+    The two channels hand out different games: the desktop promotions of the
+    week are not the Android and iOS offers. A proof from one channel says
+    nothing about the games of the other, so each channel is judged on its
+    own evidence and both are required for a completed account.
+
+    Both channels claim on the same `store.epicgames.com/p/<slug>` page with
+    the same cookies; `mobile_offer_discovery` builds the URL from the same
+    Store origin. A mobile result of `login_required` is therefore this code
+    reading the product page as signed out, not a second login.
+    """
+    desktop_missing = missing_desktop_evidence(desktop_evidence)
+    mobile_missing = missing_mobile_evidence(mobile_offers, mobile_evidence)
+    return {
+        "desktop_complete": bool(desktop_evidence) and not desktop_missing,
+        "mobile_complete": bool(mobile_evidence) and not mobile_missing,
+        "desktop_missing": desktop_missing,
+        "mobile_missing": mobile_missing,
+    }
+
+
+def is_settled(account_result: dict) -> bool:
+    """Whether the account needs no further attempt in this run."""
+    return account_result.get("status") == "completed"
 
 
 def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
@@ -205,12 +242,13 @@ def parse_claim_evidence(output: str) -> dict[str, dict[str, str]]:
             if title:
                 if title not in promotions:
                     promotions.append(title)
-                ensure(title).update(
-                    {
-                        "status": status,
-                        "evidence": f"DESKTOP_RESULT:{title}:{status}",
-                    }
-                )
+                if _outranks(status, ensure(title).get("status")):
+                    ensure(title).update(
+                        {
+                            "status": status,
+                            "evidence": f"DESKTOP_RESULT:{title}:{status}",
+                        }
+                    )
             continue
 
         cta_match = OWNERSHIP_CTA_RE.search(line)
@@ -245,7 +283,10 @@ def parse_mobile_evidence(output: str) -> dict[str, dict[str, dict[str, str]]]:
         platform, title, status = (part.strip() for part in match.groups())
         if not platform or not title:
             continue
-        evidence.setdefault(platform, {})[title] = {
+        current = evidence.setdefault(platform, {}).get(title)
+        if current and not _outranks(status, current.get("status")):
+            continue
+        evidence[platform][title] = {
             "status": status,
             "evidence": f"MOBILE_RESULT:{platform}:{title}:{status}",
         }
@@ -376,22 +417,20 @@ def run_account(
     desktop_evidence = parse_claim_evidence(output)
     mobile_evidence = parse_mobile_evidence(output)
     error_markers = parse_error_markers(output)
-    missing_desktop_evidence = [
-        title
-        for title, item in desktop_evidence.items()
-        if item["status"] not in SUCCESS_EVIDENCE_STATUSES
-    ]
-    missing_mobile = missing_mobile_evidence(mobile_offers, mobile_evidence)
-    if missing_desktop_evidence:
+    outcome = attempt_outcome(desktop_evidence, mobile_evidence, mobile_offers)
+    if outcome["desktop_missing"]:
         print(
             "Missing strict desktop ownership evidence for: "
-            + ", ".join(missing_desktop_evidence),
+            + ", ".join(outcome["desktop_missing"]),
             flush=True,
         )
-    if missing_mobile:
+    if outcome["mobile_missing"]:
+        # The mobile offers are games of their own, and they are claimed on
+        # the same product page as the desktop promotions, so a missing one
+        # is a game that was not claimed.
         print(
             "Missing strict mobile ownership evidence for: "
-            + ", ".join(missing_mobile),
+            + ", ".join(outcome["mobile_missing"]),
             flush=True,
         )
 
@@ -400,9 +439,9 @@ def run_account(
         failure_reasons.append(f"process_timeout:{timeout_seconds}s")
     if proc.returncode != 0:
         failure_reasons.append(f"returncode:{proc.returncode}")
-    if missing_desktop_evidence:
+    if outcome["desktop_missing"]:
         failure_reasons.append("missing_desktop_ownership_evidence")
-    if missing_mobile:
+    if outcome["mobile_missing"]:
         failure_reasons.append("missing_mobile_ownership_evidence")
     failure_reasons.extend(
         f"{marker['kind']}:{marker['value']}" for marker in error_markers
@@ -440,8 +479,10 @@ def run_account(
         "failed": failed,
         "failure_reasons": failure_reasons,
         "error_markers": error_markers,
-        "missing_desktop_evidence": missing_desktop_evidence,
-        "missing_mobile_evidence": missing_mobile,
+        "missing_desktop_evidence": outcome["desktop_missing"],
+        "missing_mobile_evidence": outcome["mobile_missing"],
+        "desktop_complete": outcome["desktop_complete"],
+        "mobile_complete": outcome["mobile_complete"],
         "desktop_evidence": desktop_evidence,
         "mobile_evidence": mobile_evidence,
     }
@@ -480,43 +521,61 @@ def main() -> int:
     clean_directory(Path("app/volumes/runtime"))
 
     append_summary("## Epic Kiosk run\n\n")
-    try:
-        mobile_discovery = discover_mobile_offers()
-        mobile_offers = mobile_discovery["offers"]
-        if not mobile_offers:
-            raise RuntimeError("official Epic mobile discovery returned no weekly free offers")
-    except Exception as err:
-        message = f"Mobile offer discovery failed: {type(err).__name__}: {err}"
-        print(message, flush=True)
-        summary = {
-            "accounts": [],
-            "mobile_discovery": {"status": "failed", "error": message},
-        }
-        write_run_summary(
-            Path("app/volumes/runtime/github_actions_summary.json"),
-            summary,
-        )
-        append_summary(f"- {message}\n")
-        return 1
+    # The mobile offers are claimed on the same product page as the desktop
+    # promotions, and that page sends the browser to Epic's login page when
+    # it does not accept the session for the claim. Those navigations are
+    # the one step of a run that touches the session the desktop claim just
+    # used, so a run has to be able to leave the mobile channel out.
+    skip_mobile = os.getenv("EPIC_SKIP_MOBILE", "false").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if skip_mobile:
+        mobile_discovery = {"status": "skipped", "offers": []}
+        mobile_offers = []
+        print("Mobile collection is skipped for this run", flush=True)
+        append_summary("- Mobile collection: skipped for this run\n\n")
+    else:
+        try:
+            mobile_discovery = discover_mobile_offers()
+            mobile_offers = mobile_discovery["offers"]
+            if not mobile_offers:
+                raise RuntimeError("official Epic mobile discovery returned no weekly free offers")
+        except Exception as err:
+            message = f"Mobile offer discovery failed: {type(err).__name__}: {err}"
+            print(message, flush=True)
+            summary = {
+                "accounts": [],
+                "mobile_discovery": {"status": "failed", "error": message},
+            }
+            write_run_summary(
+                Path("app/volumes/runtime/github_actions_summary.json"),
+                summary,
+            )
+            append_summary(f"- {message}\n")
+            return 1
 
     Path("app/volumes/runtime/mobile_discovery_summary.json").write_text(
         json.dumps(mobile_discovery, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(
-        "Discovered mobile weekly free offers: "
-        + ", ".join(
-            f"{offer['platform']}:{offer['title']}" for offer in mobile_offers
-        ),
-        flush=True,
-    )
-    append_summary(
-        "- Mobile discovery: "
-        + ", ".join(
-            f"{offer['platform']} {offer['title']}" for offer in mobile_offers
+    if mobile_offers:
+        print(
+            "Discovered mobile weekly free offers: "
+            + ", ".join(
+                f"{offer['platform']}:{offer['title']}" for offer in mobile_offers
+            ),
+            flush=True,
         )
-        + "\n\n"
-    )
+        append_summary(
+            "- Mobile discovery: "
+            + ", ".join(
+                f"{offer['platform']} {offer['title']}" for offer in mobile_offers
+            )
+            + "\n\n"
+        )
 
     failures = 0
     max_attempts = max(1, int(os.getenv("EPIC_ACCOUNT_MAX_ATTEMPTS", "3")))
@@ -544,13 +603,35 @@ def main() -> int:
     }
     write_run_summary(summary_path, summary)
 
+    # One account that needs a login costs about ten minutes, and eight of
+    # them across three rounds is more than the job may run. The guard stops
+    # the run before GitHub kills it, because a killed job does not save the
+    # browser state that the next run starts from.
+    deadline_minutes = float(os.getenv("EPIC_RUN_DEADLINE_MINUTES", "0") or 0)
+    started_at = time.monotonic()
+
+    def past_deadline() -> bool:
+        if deadline_minutes <= 0:
+            return False
+        elapsed = (time.monotonic() - started_at) / 60
+        if elapsed < deadline_minutes:
+            return False
+        print(
+            f"Run deadline of {deadline_minutes:g} minutes reached after "
+            f"{elapsed:.0f} minutes; the remaining accounts are left for the next run.",
+            flush=True,
+        )
+        return True
+
     for attempt in range(1, max_attempts + 1):
         pending_indexes = [
             original_index
             for original_index, _ in indexed_accounts
-            if account_results[original_index]["status"] != "completed"
+            if not is_settled(account_results[original_index])
         ]
         if not pending_indexes:
+            break
+        if past_deadline():
             break
 
         print(
@@ -561,8 +642,10 @@ def main() -> int:
 
         for original_index, account in indexed_accounts:
             account_result = account_results[original_index]
-            if account_result["status"] == "completed":
+            if is_settled(account_result):
                 continue
+            if past_deadline():
+                break
 
             ok, attempt_result = run_account(
                 account,
@@ -579,51 +662,46 @@ def main() -> int:
                 account_result["mobile_evidence"],
                 attempt_result["mobile_evidence"],
             )
-            cumulative_complete = has_complete_account_evidence(
-                attempt_result["desktop_evidence"],
-                account_result["mobile_evidence"],
-                mobile_offers,
+            # Evidence is kept across attempts, so a game claimed by an
+            # earlier attempt of this run still counts. An account is only
+            # completed when both channels proved every one of their games.
+            desktop_complete = has_complete_desktop_evidence(
+                account_result["desktop_evidence"]
             )
-            if ok or cumulative_complete:
+            mobile_missing = missing_mobile_evidence(
+                mobile_offers, account_result["mobile_evidence"]
+            )
+            account_result["desktop_missing"] = missing_desktop_evidence(
+                account_result["desktop_evidence"]
+            )
+            account_result["mobile_missing"] = mobile_missing
+            if desktop_complete and not mobile_missing:
                 account_result["status"] = "completed"
                 if not ok:
                     attempt_result["completed_from_cumulative_evidence"] = True
                     print(
-                        f"Account {original_index} has strict ownership evidence for all "
-                        "desktop and mobile offers across its attempts.",
+                        f"Account {original_index} has ownership evidence for every "
+                        "desktop and mobile offer across its attempts.",
                         flush=True,
                     )
             else:
-                profile_refreshed = False
-                if should_refresh_account_profile(attempt_result):
-                    profile_refreshed = refresh_account_profile(account["email"])
-                    attempt_result["profile_refreshed"] = profile_refreshed
+                if desktop_complete:
                     print(
-                        f"Account {original_index} browser profile was refreshed after "
-                        "a blocked or invalid login session.",
+                        f"Account {original_index} claimed every desktop promotion; "
+                        "the mobile offers are still missing: "
+                        + ", ".join(mobile_missing),
                         flush=True,
                     )
-                elif len(account_result["attempts"]) > 1:
-                    # A profile that fails a second time keeps the session of
-                    # the first attempt, and Epic then challenges the visitor
-                    # over and over without ever accepting an answer. A clean
-                    # profile is what a fresh login succeeds with.
-                    profile_refreshed = refresh_account_profile(account["email"])
-                    attempt_result["profile_refreshed"] = profile_refreshed
-                    print(
-                        f"Account {original_index} browser profile was refreshed "
-                        "after a repeated login failure.",
-                        flush=True,
-                    )
+                # The profile is never thrown away here. It holds the session
+                # the account logs in with, and a login that fails is a lost
+                # captcha round rather than a broken profile: the retry needs
+                # the very cookies this branch would delete.
                 if attempt < max_attempts:
                     retry_delay = account_retry_delay(attempt_result)
                     print(
                         f"Account {original_index} failed attempt {attempt}; "
-                        + (
-                            "retrying in the next round with a clean browser profile."
-                            if profile_refreshed
-                            else "retrying in the next round with a fresh browser process."
-                        )
+                        "retrying in the next round with a fresh browser process.",
+                        flush=True,
                     )
                     if retry_delay:
                         print(
@@ -638,7 +716,7 @@ def main() -> int:
     for original_index, _ in indexed_accounts:
         account_result = account_results[original_index]
         masked = account_result["email"]
-        if account_result["status"] != "completed":
+        if not is_settled(account_result):
             account_result["status"] = "failed"
             failures += 1
             append_summary(

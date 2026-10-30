@@ -29,6 +29,7 @@ from pytz import timezone
 from services.epic_authorization_service import EpicAuthorization, ErrorType
 from services.epic_games_service import EpicAgent, GameCollectResult
 from services.epic_mobile_service import collect_mobile_offers, load_mobile_offers
+from services.epic_session_seed import seed_epic_session
 from settings import LOG_DIR, RECORD_DIR
 from settings import settings
 from utils import init_log
@@ -97,6 +98,19 @@ async def execute_browser_tasks(headless: bool = True) -> ErrorType:
         # Initialize or reuse existing browser page
         page = browser.pages[0] if browser.pages else await browser.new_page()
         logger.debug("Browser initialized successfully")
+
+        # A profile without a session has to solve a captcha before it can
+        # claim anything, and the captcha is the one step of the run that the
+        # model cannot answer reliably. The exported session of a manual
+        # login is what lets a fresh profile skip that step.
+        seeded = await seed_epic_session(
+            page.context,
+            os.getenv("EPIC_SESSIONS_JSON", ""),
+            settings.EPIC_EMAIL,
+            os.getenv("EPIC_SEED_SESSIONS", "auto"),
+        )
+        if seeded:
+            logger.info(f"🌱 已注入 {seeded} 个会话 cookie")
 
         # Handle Epic Games authentication
         logger.debug("Initiating Epic Games authentication")
