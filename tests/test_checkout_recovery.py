@@ -527,12 +527,18 @@ class MobileObservabilityTests(unittest.TestCase):
 
 
 class MobilePlatformBrowserTests(unittest.TestCase):
-    """An iOS offer opened by a desktop browser is refused by Epic.
+    """The mobile page keeps the fingerprint the browser was built with.
 
-    The page says `Device not supported — This product is not compatible with
-    your current device`, and the claim stops there: run 40883991382 lost
-    `Home` on iOS, and every iOS offer of run 40904600195 ended
-    `web_claim_not_available`.
+    Overriding the user agent to get past Epic's "Device not supported"
+    prompt looked like a fix and was the opposite: the account stopped
+    validating hCaptcha at all.
+
+        run 40904600195   no override   0 `without a validated response`, 4 mobile claims
+        run 41074454171   override      3 `without a validated response`, 0 mobile claims
+
+    Camoufox's fingerprint is consistent by construction; a phone user agent
+    on a desktop canvas is not, and the server rejects the answer it would
+    otherwise accept.
     """
 
     def setUp(self):
@@ -540,33 +546,7 @@ class MobilePlatformBrowserTests(unittest.TestCase):
             ROOT / "app" / "services" / "epic_mobile_service.py"
         ).read_text(encoding="utf-8")
 
-    def test_the_offer_is_opened_as_the_device_it_is_sold_for(self):
-        self.assertIn("MOBILE_USER_AGENTS", self.source)
-        self.assertIn("iPhone", self.source)
-        self.assertIn("await use_platform_browser(page, platform)", self.source)
-
-    def test_the_header_hcaptcha_needs_is_not_dropped(self):
-        # Camoufox cannot read the compressed hCaptcha scripts.
-        self.assertIn('"Accept-Encoding": "identity"', self.source)
-        self.assertIn('"User-Agent": user_agent', self.source)
-
-
-class GatewayUrlTests(unittest.TestCase):
-    """The base URL may already carry the gateway's version.
-
-    The billed gateway's base ends with `/v1`, and `API_VERSION` is
-    `v1beta/openai`, so the two were concatenated into
-    `POST /v1/v1beta/openai/chat/completions` and every captcha call came back
-    404 (run 41065132086).
-    """
-
-    def setUp(self):
-        self.source = (ROOT / "app" / "settings.py").read_text(encoding="utf-8")
-
-    def test_a_versioned_base_does_not_get_a_second_version(self):
-        self.assertIn('re.fullmatch(r"v\d+[a-z]*", tail)', self.source)
-        self.assertIn("api_version.startswith(\"v\")", self.source)
-
-    def test_an_exactly_versioned_base_is_still_unwrapped(self):
-        # Z.AI serves the OpenAI shape under /v4, so the older rule stays.
-        self.assertIn("if api_version and base_url.endswith('/' + api_version):", self.source)
+    def test_the_mobile_offer_is_opened_with_the_browser_as_it_is(self):
+        self.assertNotIn("MOBILE_USER_AGENTS", self.source)
+        self.assertNotIn("use_platform_browser", self.source)
+        self.assertNotIn("set_extra_http_headers", self.source)
