@@ -101,8 +101,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      API_BASE_URL: ${{ secrets.API_BASE_URL }}
-      API_KEY: ${{ secrets.API_KEY }}
+      API_BASE_URL: ${{ secrets.CAPTCHA_API_BASE_URL || secrets.API_BASE_URL }}
+      API_KEY: ${{ secrets.CAPTCHA_API_KEY || secrets.API_KEY }}
       API_VERSION: ${{ vars.API_VERSION || 'v1' }}
     steps:
       - name: List the models the gateway serves
@@ -223,8 +223,8 @@ jobs:
 
     env:
       API_PROVIDER: ${{ github.event.inputs.api_provider || 'openai_compatible' }}
-      API_BASE_URL: ${{ secrets.API_BASE_URL }}
-      API_KEY: ${{ secrets.API_KEY }}
+      API_BASE_URL: ${{ secrets.CAPTCHA_API_BASE_URL || secrets.API_BASE_URL }}
+      API_KEY: ${{ secrets.CAPTCHA_API_KEY || secrets.API_KEY }}
       API_VERSION: ${{ vars.API_VERSION || 'v1' }}
       API_SEND_THINKING_KWARG: ${{ vars.API_SEND_THINKING_KWARG || 'true' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'not_used' }}
