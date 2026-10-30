@@ -13,30 +13,32 @@ from camoufox.locale import ALLOW_GEOIP, download_mmdb
 from camoufox.pkgman import CamoufoxFetcher, OS_NAME, installed_verstr
 
 
-# The build that Epic accepted a login with. The library refuses a browser
-# it cannot drive, so this is the newest build it supports.
-REQUIRED_VERSION = "158.0-beta.40"
-
-
 def main():
     fetcher = CamoufoxFetcher()
     if OS_NAME != "lin" or fetcher.arch != "x86_64":
         raise RuntimeError("This Camoufox build requires Linux x86_64")
-    if fetcher.verstr != REQUIRED_VERSION:
-        raise RuntimeError(
-            f"Camoufox {REQUIRED_VERSION} is required, but the library offers "
-            f"{fetcher.verstr}"
-        )
+
+    # Install the build this library release pairs with. A pinned string is
+    # only correct until the library moves, and then it stops every run at
+    # startup: 2026-10-29 died on `Camoufox 158.0-beta.40 is required, but
+    # the library offers 158.0.1-beta.41` before a browser had started. The
+    # library cannot drive a build it does not pair with, so its own version
+    # is the only one worth installing.
+    required_version = fetcher.verstr
     try:
         current_version = installed_verstr()
     except FileNotFoundError:
         current_version = None
-    if current_version != REQUIRED_VERSION:
+    if current_version != required_version:
         fetcher.install()
     if ALLOW_GEOIP:
         download_mmdb()
     maybe_download_addons(list(DefaultAddons))
-    print(f"Camoufox binary: {installed_verstr()}", flush=True)
+    print(
+        f"Camoufox binary: {installed_verstr()} "
+        f"(the library pairs {required_version})",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
