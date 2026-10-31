@@ -223,15 +223,18 @@ jobs:
 
     env:
       API_PROVIDER: ${{ github.event.inputs.api_provider || 'openai_compatible' }}
-      API_BASE_URL: ${{ secrets.CAPTCHA_API_BASE_URL || secrets.API_BASE_URL }}
-      API_KEY: ${{ secrets.CAPTCHA_API_KEY || secrets.API_KEY }}
-      API_VERSION: ${{ vars.API_VERSION || 'v1' }}
+      # Base URL, key, API version and model belong to one provider and are
+      # chosen together by the first step. Agnes serves `agnes-3.0-flash` at
+      # `https://apihub.agnes-ai.com/v1` (OpenAI-compatible, `Bearer`); the
+      # Gemini-compatible gateway serves `gemini-3.5-flash-lite` under
+      # `v1beta/openai`. Taking the base from one and the version from the
+      # other is what asked for `POST /v1/v1beta/openai/chat/completions` and
+      # got 404.
+      CAPTCHA_PROVIDER: ${{ vars.CAPTCHA_PROVIDER || 'gemini' }}
       API_SEND_THINKING_KWARG: ${{ vars.API_SEND_THINKING_KWARG || 'true' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'not_used' }}
       PRIMARY_MODEL: agnes-2.5-flash
       PRIMARY_MODEL_FALLBACK: agnes-2.5-flash
-      CAPTCHA_MODEL: ${{ github.event.inputs.captcha_model || vars.CAPTCHA_MODEL || 'gemini-3.5-flash-lite' }}
-      CAPTCHA_MODEL_FALLBACK: ${{ github.event.inputs.captcha_model_fallback || github.event.inputs.captcha_model || vars.CAPTCHA_MODEL_FALLBACK || 'agnes-2.5-flash' }}
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
       RESPONSE_TIMEOUT: "90"
@@ -304,6 +307,46 @@ jobs:
             loguru \
             tenacity \
             pyyaml
+
+      - name: Select the captcha provider
+        env:
+          PROVIDER: ${{ vars.CAPTCHA_PROVIDER || 'gemini' }}
+          INPUT_MODEL: ${{ github.event.inputs.captcha_model }}
+          AGNES_BASE: ${{ secrets.API_BASE_URL }}
+          AGNES_KEY: ${{ secrets.API_KEY }}
+          GEMINI_BASE: ${{ secrets.CAPTCHA_API_BASE_URL }}
+          GEMINI_KEY: ${{ secrets.CAPTCHA_API_KEY }}
+        run: |
+          set -euo pipefail
+          case "$PROVIDER" in
+            agnes)
+              base="$AGNES_BASE"; key="$AGNES_KEY"; version="v1"
+              model="agnes-3.0-flash"; fallback="agnes-2.5-flash"
+              ;;
+            gemini)
+              base="$GEMINI_BASE"; key="$GEMINI_KEY"; version="v1beta/openai"
+              model="gemini-3.5-flash-lite"; fallback="gemini-3.5-flash-lite"
+              ;;
+            *)
+              echo "::error::Unknown CAPTCHA_PROVIDER '$PROVIDER'"
+              exit 1
+              ;;
+          esac
+          if [ -z "$base" ] || [ -z "$key" ]; then
+            echo "::error::CAPTCHA_PROVIDER=$PROVIDER has no base URL or key"
+            exit 1
+          fi
+          if [ -n "${INPUT_MODEL:-}" ]; then
+            model="$INPUT_MODEL"
+          fi
+          {
+            echo "API_BASE_URL=$base"
+            echo "API_KEY=$key"
+            echo "API_VERSION=$version"
+            echo "CAPTCHA_MODEL=$model"
+            echo "CAPTCHA_MODEL_FALLBACK=$fallback"
+          } >> "$GITHUB_ENV"
+          echo "captcha provider: $PROVIDER | API_VERSION=$version | model=$model"
 
       - name: Install Camoufox browser
         env:
