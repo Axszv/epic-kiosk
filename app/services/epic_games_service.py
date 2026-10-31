@@ -994,11 +994,11 @@ class EpicGames:
         not stable across titles: whichever `select`/`input` elements it
         holds get a birth date, then its `Continue` button is pressed.
         """
-        with suppress(Exception):
-            if await page.get_by_text("date of birth", exact=False).count() == 0:
-                return False
-
-        # The gate is what the store shows a visitor it does not recognise: a
+        # The round trip runs whether or not the gate's text can be found:
+        # run 41164302029 looked for `date of birth` on the page, found
+        # nothing, and left the store anonymous — the gate is rendered by the
+        # store's own client and is not reliably in the document when this
+        # runs. The gate is what the store shows a visitor it does not recognise: a
         # signed-in account carries its age already, so a gate on the page
         # means this page is anonymous. Ask the store to sign in again — with
         # a live account session the round trip completes without a form —
@@ -1015,8 +1015,7 @@ class EpicGames:
                 logger.info("store 会话已通过 SSO 重建")
                 await page.goto(product_url, wait_until="load")
                 await page.wait_for_timeout(3000)
-                if await page.get_by_text("date of birth", exact=False).count() == 0:
-                    return True
+                return True
 
         filled = False
         with suppress(Exception):
