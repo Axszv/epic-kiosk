@@ -1699,8 +1699,30 @@ class EpicAuthorization:
                 status = "false"
 
             if status == "true":
-                logger.success("✅ Epic Games 已登录")
-                return ErrorType.SUCCESS
+                # `egs-navigation` reports what the client believes. A store
+                # page can still render as a visitor while that attribute says
+                # `true`: the header keeps `Sign In`, the page asks for a date
+                # of birth, and a game the account owns is offered as `Get`.
+                # Run 41166323680 did exactly that on all eight accounts and
+                # never entered the login flow, so the store never learned who
+                # they were. Confirm on a store page before trusting it.
+                with suppress(Exception):
+                    await self.page.goto(
+                        "https://store.epicgames.com/en-US/",
+                        wait_until="domcontentloaded",
+                    )
+                    await self.page.wait_for_timeout(2500)
+                    if await self.page.get_by_role(
+                        "link", name="Sign In"
+                    ).first.is_visible():
+                        logger.warning(
+                            "STORE_PAGE_ANONYMOUS: egs-navigation said signed "
+                            "in but the store page offers `Sign In`"
+                        )
+                        status = "false"
+                if status == "true":
+                    logger.success("✅ Epic Games 已登录")
+                    return ErrorType.SUCCESS
 
             # 执行登录
             # Start with the Store's client/redirect context, just as the
