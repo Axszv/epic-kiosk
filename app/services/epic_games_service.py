@@ -997,6 +997,27 @@ class EpicGames:
         with suppress(Exception):
             if await page.get_by_text("date of birth", exact=False).count() == 0:
                 return False
+
+        # The gate is what the store shows a visitor it does not recognise: a
+        # signed-in account carries its age already, so a gate on the page
+        # means this page is anonymous. Ask the store to sign in again — with
+        # a live account session the round trip completes without a form —
+        # and only fill the gate in if it survives that.
+        product_url = page.url
+        with suppress(Exception):
+            await page.goto(
+                "https://www.epicgames.com/id/login"
+                "?redirectUrl=https%3A%2F%2Fstore.epicgames.com%2Fen-US%2F",
+                wait_until="load",
+            )
+            await page.wait_for_timeout(4000)
+            if not is_login_url(page.url):
+                logger.info("store 会话已通过 SSO 重建")
+                await page.goto(product_url, wait_until="load")
+                await page.wait_for_timeout(3000)
+                if await page.get_by_text("date of birth", exact=False).count() == 0:
+                    return True
+
         filled = False
         with suppress(Exception):
             filled = await page.evaluate(
