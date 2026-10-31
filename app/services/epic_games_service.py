@@ -976,84 +976,6 @@ class EpicGames:
         await self._save_debug_page(page, f"region_unavailable_{promotion.namespace}")
         return True
 
-    @staticmethod
-    async def _pass_age_gate(page: Page) -> bool:
-        """Answer the date-of-birth gate Epic puts in front of some titles.
-
-        `Sorry We're Closed` opens behind
-
-            Enter your date of birth to continue
-
-        and the gate covers the purchase box. The CTA behind it still reads
-        `Get`, so the run clicked a control it could not reach, the checkout
-        never started, and the account ended with `Checkout was not
-        submitted` — runs 41161222506 and 41162006780 both died there, and the
-        page snapshot of 41163366156 shows the gate, not a signed-out store.
-
-        The fields are filled through the DOM because the gate's markup is
-        not stable across titles: whichever `select`/`input` elements it
-        holds get a birth date, then its `Continue` button is pressed.
-        """
-        # The round trip runs whether or not the gate's text can be found:
-        # run 41164302029 looked for `date of birth` on the page, found
-        # nothing, and left the store anonymous — the gate is rendered by the
-        # store's own client and is not reliably in the document when this
-        # runs. The gate is what the store shows a visitor it does not recognise: a
-        # signed-in account carries its age already, so a gate on the page
-        # means this page is anonymous. Ask the store to sign in again — with
-        # a live account session the round trip completes without a form —
-        # and only fill the gate in if it survives that.
-        product_url = page.url
-        with suppress(Exception):
-            await page.goto(
-                "https://www.epicgames.com/id/login"
-                "?redirectUrl=https%3A%2F%2Fstore.epicgames.com%2Fen-US%2F",
-                wait_until="load",
-            )
-            await page.wait_for_timeout(4000)
-            if not is_login_url(page.url):
-                logger.info("store 会话已通过 SSO 重建")
-                await page.goto(product_url, wait_until="load")
-                await page.wait_for_timeout(3000)
-                return True
-
-        filled = False
-        with suppress(Exception):
-            filled = await page.evaluate(
-                """() => {
-                    const gate = Array.from(document.querySelectorAll(
-                        '[data-testid*="age-gate"], #age-gate, [class*="age-gate"], [role="dialog"]'
-                    )).find(node => /date of birth/i.test(node.innerText || ''));
-                    const root = gate || document.body;
-                    if (!/date of birth/i.test(root.innerText || '')) return false;
-                    const selects = Array.from(root.querySelectorAll('select'));
-                    for (const select of selects) {
-                        const option = Array.from(select.options).find(o => o.value);
-                        if (option) {
-                            select.value = option.value;
-                            select.dispatchEvent(new Event('change', {bubbles: true}));
-                        }
-                    }
-                    const inputs = Array.from(root.querySelectorAll('input'));
-                    inputs.forEach((input, index) => {
-                        if (!input.value) {
-                            input.value = index === 0 ? '1' : '1990';
-                            input.dispatchEvent(new Event('input', {bubbles: true}));
-                            input.dispatchEvent(new Event('change', {bubbles: true}));
-                        }
-                    });
-                    const button = Array.from(root.querySelectorAll('button'))
-                        .find(node => /continue|submit/i.test(node.innerText || ''));
-                    if (!button) return false;
-                    button.click();
-                    return true;
-                }"""
-            )
-        if filled:
-            logger.info("通过年龄验证门")
-            await page.wait_for_timeout(3000)
-        return bool(filled)
-
     async def _owned_from_product_page(self, page: Page, promotion: PromotionGame) -> bool:
         with suppress(Exception):
             await page.reload(wait_until="domcontentloaded")
@@ -1237,7 +1159,7 @@ class EpicGames:
             logger.warning("Checkout hCaptcha exceeded its time budget")
             return False
         except Exception as err:
-            logger.opt(exception=err).warning(f"结账验证码未确认通过: {err}")
+            logger.warning(f"结账验证码未确认通过: {err}")
             return False
         await page.wait_for_timeout(2000)
         await self._retry_talon_execution(page)
@@ -1309,7 +1231,7 @@ class EpicGames:
                 logger.warning("Checkout hCaptcha exceeded its time budget")
                 return False
             except Exception as err:
-                logger.opt(exception=err).warning(f"结账验证码未确认通过: {err}")
+                logger.warning(f"结账验证码未确认通过: {err}")
 
             with suppress(Exception):
                 if not await payment_btn.is_visible():
@@ -1514,7 +1436,7 @@ class EpicGames:
                     )
                 except Exception as e:
                     captcha_validation_done.set()
-                    logger.opt(exception=e).warning(f"结账验证码未确认通过: {e}")
+                    logger.warning(f"结账验证码未确认通过: {e}")
                 else:
                     captcha_validation_succeeded = (
                         getattr(challenge_result, "value", challenge_result)
@@ -1619,7 +1541,6 @@ class EpicGames:
             # ------------------------------------------------------------
 
             # 1. 尝试找到主按钮
-            await self._pass_age_gate(page)
             purchase_btn = await product_cta(page)
 
             # 2. 检查按钮可见性
@@ -1657,34 +1578,6 @@ class EpicGames:
 
             # 4. 打印按钮状态（关键信息）
             logger.info(f"📋 按钮状态: '{btn_text}' | 禁用: {is_disabled}")
-
-            # A store page can render as an anonymous visitor while the
-            # account session is alive: the header still shows `Sign In`, and
-            # a game the account owns is offered as `Get` instead of
-            # `In Library`. Entering the checkout from that page cannot work —
-            # its hCaptcha never receives a payload, so the widget times out
-            # three times and the account ends with `Checkout was not
-            # submitted` (runs 41161222506, 41162006780). The account session
-            # is established by `refresh-csrf` during a login, so a run that
-            # reuses a cached session never performs it. Say so instead.
-            if not any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED"]):
-                anonymous = False
-                with suppress(Exception):
-                    anonymous = await page.get_by_role(
-                        "link", name="Sign In"
-                    ).first.is_visible()
-                if anonymous:
-                    logger.warning(
-                        f"STORE_SESSION_ANONYMOUS:{promotion.title}"
-                    )
-                    await self._save_debug_page(
-                        page, f"store_anonymous_{promotion.namespace}"
-                    )
-                    raise AssertionError(
-                        f"Store page is anonymous for {promotion.title}: the "
-                        "header still offers `Sign In` while the account "
-                        "session answers 200, so the page cannot be bought from"
-                    )
 
             # 5. 根据状态判断
             if is_disabled:
