@@ -976,6 +976,35 @@ class EpicGames:
         await self._save_debug_page(page, f"region_unavailable_{promotion.namespace}")
         return True
 
+    STORE_SSO_URL = (
+        "https://www.epicgames.com/id/login"
+        "?redirectUrl=https%3A%2F%2Fstore.epicgames.com%2Fen-US%2F"
+    )
+
+    async def _ensure_store_session(self, page: Page) -> None:
+        """Let the store sign the account in before its pages are read.
+
+        The account session and the store session are separate: a run that
+        reuses a cached profile is signed in at `accounts.epicgames.com`
+        (`SESSION_PROBE:200:alive=True`) while `store.epicgames.com` still
+        treats the page as a visitor — it shows `Sign In`, asks for a date of
+        birth, and offers `Get` for a game the account owns.
+
+        Asking the store to sign in completes silently when the account
+        session is alive, and it is what sets the store's own cookies. The
+        product page is reloaded afterwards either way: run 41164578260 left
+        the browser on the portal and then reported "no purchase button"
+        because it looked for one there.
+        """
+        product_url = page.url
+        if not product_url.startswith("http"):
+            return
+        with suppress(Exception):
+            await page.goto(self.STORE_SSO_URL, wait_until="load")
+            await page.wait_for_timeout(4000)
+            await page.goto(product_url, wait_until="load")
+            await page.wait_for_timeout(3000)
+
     async def _owned_from_product_page(self, page: Page, promotion: PromotionGame) -> bool:
         with suppress(Exception):
             await page.reload(wait_until="domcontentloaded")
@@ -1541,6 +1570,7 @@ class EpicGames:
             # ------------------------------------------------------------
 
             # 1. 尝试找到主按钮
+            await self._ensure_store_session(page)
             purchase_btn = await product_cta(page)
 
             # 2. 检查按钮可见性
