@@ -1579,6 +1579,34 @@ class EpicGames:
             # 4. 打印按钮状态（关键信息）
             logger.info(f"📋 按钮状态: '{btn_text}' | 禁用: {is_disabled}")
 
+            # A store page can render as an anonymous visitor while the
+            # account session is alive: the header still shows `Sign In`, and
+            # a game the account owns is offered as `Get` instead of
+            # `In Library`. Entering the checkout from that page cannot work —
+            # its hCaptcha never receives a payload, so the widget times out
+            # three times and the account ends with `Checkout was not
+            # submitted` (runs 41161222506, 41162006780). The account session
+            # is established by `refresh-csrf` during a login, so a run that
+            # reuses a cached session never performs it. Say so instead.
+            if not any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED"]):
+                anonymous = False
+                with suppress(Exception):
+                    anonymous = await page.get_by_role(
+                        "link", name="Sign In"
+                    ).first.is_visible()
+                if anonymous:
+                    logger.warning(
+                        f"STORE_SESSION_ANONYMOUS:{promotion.title}"
+                    )
+                    await self._save_debug_page(
+                        page, f"store_anonymous_{promotion.namespace}"
+                    )
+                    raise AssertionError(
+                        f"Store page is anonymous for {promotion.title}: the "
+                        "account session is alive but no store session was "
+                        "established (refresh-csrf did not run)"
+                    )
+
             # 5. 根据状态判断
             if is_disabled:
                 if any(s in btn_text_upper for s in ["IN LIBRARY", "OWNED"]):
