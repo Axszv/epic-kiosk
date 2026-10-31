@@ -1159,7 +1159,7 @@ class EpicGames:
             logger.warning("Checkout hCaptcha exceeded its time budget")
             return False
         except Exception as err:
-            logger.warning(f"结账验证码未确认通过: {err}")
+            logger.opt(exception=err).warning(f"结账验证码未确认通过: {err}")
             return False
         await page.wait_for_timeout(2000)
         await self._retry_talon_execution(page)
@@ -1231,7 +1231,7 @@ class EpicGames:
                 logger.warning("Checkout hCaptcha exceeded its time budget")
                 return False
             except Exception as err:
-                logger.warning(f"结账验证码未确认通过: {err}")
+                logger.opt(exception=err).warning(f"结账验证码未确认通过: {err}")
 
             with suppress(Exception):
                 if not await payment_btn.is_visible():
@@ -1436,7 +1436,7 @@ class EpicGames:
                     )
                 except Exception as e:
                     captcha_validation_done.set()
-                    logger.warning(f"结账验证码未确认通过: {e}")
+                    logger.opt(exception=e).warning(f"结账验证码未确认通过: {e}")
                 else:
                     captcha_validation_succeeded = (
                         getattr(challenge_result, "value", challenge_result)
