@@ -233,8 +233,6 @@ jobs:
       CAPTCHA_PROVIDER: ${{ vars.CAPTCHA_PROVIDER || 'gemini' }}
       API_SEND_THINKING_KWARG: ${{ vars.API_SEND_THINKING_KWARG || 'true' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'not_used' }}
-      PRIMARY_MODEL: agnes-2.5-flash
-      PRIMARY_MODEL_FALLBACK: agnes-2.5-flash
       API_USER_AGENT: epic-kiosk-github-actions/1.0
       API_SERVICE_TIER: ""
       RESPONSE_TIMEOUT: "90"
@@ -322,10 +320,12 @@ jobs:
             agnes)
               base="$AGNES_BASE"; key="$AGNES_KEY"; version="v1"
               model="agnes-3.0-flash"; fallback="agnes-2.5-flash"
+              text_model="agnes-3.0-flash"; text_fallback="agnes-2.5-flash"
               ;;
             gemini)
               base="$GEMINI_BASE"; key="$GEMINI_KEY"; version="v1beta/openai"
               model="gemini-3.5-flash-lite"; fallback="gemini-3.5-flash-lite"
+              text_model="gemini-3.5-flash-lite"; text_fallback="gemini-3.5-flash-lite"
               ;;
             *)
               echo "::error::Unknown CAPTCHA_PROVIDER '$PROVIDER'"
@@ -345,6 +345,11 @@ jobs:
             echo "API_VERSION=$version"
             echo "CAPTCHA_MODEL=$model"
             echo "CAPTCHA_MODEL_FALLBACK=$fallback"
+            # A gateway serves one provider's models and no other's: a
+            # text-only call sent to the other one's name answers
+            # `model_not_found`, and its fallback name fails the same way.
+            echo "PRIMARY_MODEL=$text_model"
+            echo "PRIMARY_MODEL_FALLBACK=$text_fallback"
           } >> "$GITHUB_ENV"
           echo "captcha provider: $PROVIDER | API_VERSION=$version | model=$model"
 
