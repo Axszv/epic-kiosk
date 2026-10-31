@@ -976,6 +976,64 @@ class EpicGames:
         await self._save_debug_page(page, f"region_unavailable_{promotion.namespace}")
         return True
 
+    @staticmethod
+    async def _pass_age_gate(page: Page) -> bool:
+        """Answer the date-of-birth gate Epic puts in front of some titles.
+
+        `Sorry We're Closed` opens behind
+
+            Enter your date of birth to continue
+
+        and the gate covers the purchase box. The CTA behind it still reads
+        `Get`, so the run clicked a control it could not reach, the checkout
+        never started, and the account ended with `Checkout was not
+        submitted` — runs 41161222506 and 41162006780 both died there, and the
+        page snapshot of 41163366156 shows the gate, not a signed-out store.
+
+        The fields are filled through the DOM because the gate's markup is
+        not stable across titles: whichever `select`/`input` elements it
+        holds get a birth date, then its `Continue` button is pressed.
+        """
+        with suppress(Exception):
+            if await page.get_by_text("date of birth", exact=False).count() == 0:
+                return False
+        filled = False
+        with suppress(Exception):
+            filled = await page.evaluate(
+                """() => {
+                    const gate = Array.from(document.querySelectorAll(
+                        '[data-testid*="age-gate"], #age-gate, [class*="age-gate"], [role="dialog"]'
+                    )).find(node => /date of birth/i.test(node.innerText || ''));
+                    const root = gate || document.body;
+                    if (!/date of birth/i.test(root.innerText || '')) return false;
+                    const selects = Array.from(root.querySelectorAll('select'));
+                    for (const select of selects) {
+                        const option = Array.from(select.options).find(o => o.value);
+                        if (option) {
+                            select.value = option.value;
+                            select.dispatchEvent(new Event('change', {bubbles: true}));
+                        }
+                    }
+                    const inputs = Array.from(root.querySelectorAll('input'));
+                    inputs.forEach((input, index) => {
+                        if (!input.value) {
+                            input.value = index === 0 ? '1' : '1990';
+                            input.dispatchEvent(new Event('input', {bubbles: true}));
+                            input.dispatchEvent(new Event('change', {bubbles: true}));
+                        }
+                    });
+                    const button = Array.from(root.querySelectorAll('button'))
+                        .find(node => /continue|submit/i.test(node.innerText || ''));
+                    if (!button) return false;
+                    button.click();
+                    return true;
+                }"""
+            )
+        if filled:
+            logger.info("通过年龄验证门")
+            await page.wait_for_timeout(3000)
+        return bool(filled)
+
     async def _owned_from_product_page(self, page: Page, promotion: PromotionGame) -> bool:
         with suppress(Exception):
             await page.reload(wait_until="domcontentloaded")
@@ -1541,6 +1599,7 @@ class EpicGames:
             # ------------------------------------------------------------
 
             # 1. 尝试找到主按钮
+            await self._pass_age_gate(page)
             purchase_btn = await product_cta(page)
 
             # 2. 检查按钮可见性
@@ -1603,8 +1662,8 @@ class EpicGames:
                     )
                     raise AssertionError(
                         f"Store page is anonymous for {promotion.title}: the "
-                        "account session is alive but no store session was "
-                        "established (refresh-csrf did not run)"
+                        "header still offers `Sign In` while the account "
+                        "session answers 200, so the page cannot be bought from"
                     )
 
             # 5. 根据状态判断
